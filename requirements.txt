@@ -7,3 +7,4 @@ flask-socketio
 flask-cors
 python-dotenv==1.0.0
 gunicorn
+eventlet
