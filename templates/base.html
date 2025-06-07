@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Notion Uploader{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="header-links">
+        {% if current_user.is_authenticated %}
+            <div class="dropdown">
+                <button class="dropdown-trigger">
+                    {{ current_user.username }}
+                    <div class="hamburger-icon">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                    </div>
+                </button>
+                <div class="dropdown-content">
+                    <a href="{{ url_for('change_password') }}">Change Password</a>
+                    <a href="{{ url_for('logout') }}">Logout</a>
+                </div>
+            </div>
+        {% else %}
+            <a href="{{ url_for('login') }}">Login</a>
+        {% endif %}
+    </div>
+<script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const dropdownTrigger = document.querySelector('.dropdown-trigger');
+            const dropdownContent = document.querySelector('.dropdown-content');
+            const dropdown = document.querySelector('.dropdown'); // Get the parent dropdown container
+
+            if (dropdownTrigger && dropdownContent && dropdown) {
+                dropdownTrigger.addEventListener('click', function(event) {
+                    event.stopPropagation(); // Prevent click from bubbling up to window and immediately closing
+                    dropdownContent.classList.toggle('show');
+                });
+
+                // Close the dropdown if the user clicks outside of it
+                window.addEventListener('click', function(event) {
+                    if (!dropdown.contains(event.target)) { // Check if the click is outside the entire dropdown
+                        if (dropdownContent.classList.contains('show')) {
+                            dropdownContent.classList.remove('show');
+                        }
+                    }
+                });
+            }
+        });
+    </script>
+    
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+Flask==2.3.3
+requests==2.32.0
+Werkzeug==2.3.7
+bcrypt
+flask-login
+flask-socketio
+flask-cors
+python-dotenv==1.0.0
+gunicorn
