@@ -236,7 +236,7 @@ def upload_file():
         salted_hasher = hashlib.sha512()
         salted_hasher.update(salt.encode('utf-8')) # Hash the salt first
 
-        # Create a generator to yield chunks and update hash with true streaming
+        # Create a generator to yield chunks and update hash
         def generate_chunks_and_hash():
             # Define the target chunk size for Notion multipart upload (5 MiB)
             TARGET_CHUNK_SIZE = 5 * 1024 * 1024 # 5 MiB
@@ -263,12 +263,9 @@ def upload_file():
                 current_buffer.seek(0)
                 yield current_buffer.read()
         
-        # Use a stream processor to handle true streaming from client to Notion
-        # This function buffers minimal data and starts uploading to Notion immediately
-        upload_result = uploader.upload_file_with_parallel_processing(generate_chunks_and_hash(), 
-                                                                    file.filename, 
-                                                                    current_user.id, 
-                                                                    total_size)
+        # Pass the generator to the uploader, along with the original file object
+        # The uploader will consume the generator and handle the stream
+        upload_result = uploader.upload_file_stream(generate_chunks_and_hash(), file.filename, current_user.id, total_size)
         
         salted_file_hash = salted_hasher.hexdigest() # This will be the public link hash
 
@@ -372,23 +369,23 @@ def list_files_api():
                 name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
                 size = properties.get('filesize', {}).get('number', 0)
                 file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
-                file_id = file_data.get('id') # Get the Notion page ID
-                is_public = properties.get('is_public', {}).get('checkbox', False) # Get is_public status
                 
                 if name:  # Only include files with names
                     files.append({
                         "name": name,
                         "size": size,
-                        "file_hash": file_hash, # Add file_hash
-                        "id": file_id, # Add the file_id
-                        "is_public": is_public # Add is_public status
+                        "file_hash": file_hash # Add file_hash
                     })
             except Exception as e:
                 print(f"Error processing file data: {e}")
                 continue
                 
         return jsonify({
-            "files": files
+            "files": files,
+            "debug": {
+                "user_database_id": user_database_id,
+                "results_count": len(files)
+            }
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
