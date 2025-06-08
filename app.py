@@ -232,40 +232,61 @@ def upload_file():
     # True upload progress is now handled within the `NotionFileUploader`.
     try:
         # Generate a random salt for SHA512 hashing
-        salt = secrets.token_hex(16) # 16 bytes = 32 hex characters
+        salt = secrets.token_hex(16)  # 16 bytes = 32 hex characters
         salted_hasher = hashlib.sha512()
-        salted_hasher.update(salt.encode('utf-8')) # Hash the salt first
+        salted_hasher.update(salt.encode('utf-8'))  # Hash the salt first
 
-        # Create a generator to yield chunks and update hash
+        # Initialize multipart upload before reading chunks
+        upload_info = None
+        if total_size > 5 * 1024 * 1024:  # If file is larger than 5MB
+            chunk_size = 5 * 1024 * 1024  # 5 MiB chunks
+            number_of_parts = (total_size + chunk_size - 1) // chunk_size
+            upload_info = uploader.create_multipart_upload("file.txt", "text/plain", number_of_parts)
+
         def generate_chunks_and_hash():
             # Define the target chunk size for Notion multipart upload (5 MiB)
-            TARGET_CHUNK_SIZE = 5 * 1024 * 1024 # 5 MiB
+            TARGET_CHUNK_SIZE = 5 * 1024 * 1024  # 5 MiB
+            INTERNAL_CHUNK_SIZE = 64 * 1024  # 64 KB internal chunks for better memory usage
+            bytes_read = 0
 
-            current_buffer = io.BytesIO()
-            bytes_in_buffer = 0
+            # Create an iterator that yields file chunks directly from request stream
+            def chunk_generator():
+                nonlocal bytes_read
+                try:
+                    while True:
+                        # Read in smaller chunks to avoid buffering
+                        internal_chunk = file.stream.read(INTERNAL_CHUNK_SIZE)
+                        if not internal_chunk:
+                            break
+                        
+                        bytes_read += len(internal_chunk)
+                        salted_hasher.update(internal_chunk)
+                        
+                        # Yield each internal chunk immediately
+                        yield internal_chunk
+                        
+                        # Update progress after each chunk
+                        progress = min(100, int((bytes_read / total_size) * 100))
+                        socketio.emit('upload_progress', {
+                            'filename': file.filename,
+                            'progress': progress,
+                            'bytes_read': bytes_read,
+                            'total_size': total_size
+                        })
+                except Exception as e:
+                    print(f"Error in chunk generation: {e}")
+                    raise
 
-            while True:
-                chunk = file.stream.read(8192)  # Read in 8KB chunks
-                if not chunk:
-                    break
-                salted_hasher.update(chunk) # Update hash with file content
-                current_buffer.write(chunk)
-                bytes_in_buffer += len(chunk)
+            return chunk_generator()
 
-                if bytes_in_buffer >= TARGET_CHUNK_SIZE:
-                    current_buffer.seek(0)
-                    yield current_buffer.read()
-                    current_buffer = io.BytesIO()
-                    bytes_in_buffer = 0
-            
-            # Yield any remaining data in the buffer
-            if bytes_in_buffer > 0:
-                current_buffer.seek(0)
-                yield current_buffer.read()
-        
-        # Pass the generator to the uploader, along with the original file object
-        # The uploader will consume the generator and handle the stream
-        upload_result = uploader.upload_file_stream(generate_chunks_and_hash(), file.filename, current_user.id, total_size)
+        # Pass the generator to the uploader, along with upload info if it's a multipart upload
+        upload_result = uploader.upload_file_stream(
+            generate_chunks_and_hash(),
+            file.filename,
+            current_user.id,
+            total_size,
+            existing_upload_info=upload_info  # Pass the upload info if we created it
+        )
         
         salted_file_hash = salted_hasher.hexdigest() # This will be the public link hash
 
@@ -302,10 +323,11 @@ def upload_file():
             'status': 'success',
             'original_filename': file.filename
         })
+        
         return jsonify({
             'status': 'success',
             'message': 'File uploaded successfully and Notion database updated.'
-        }), 200
+        })
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
