@@ -17,6 +17,7 @@
             <span id="progressText" style="font-weight: bold;"></span>
         </div>
     </div>
+    <p id="progressStatus" style="text-align: center; margin-top: 10px; font-weight: bold; color: #bb86fc;"></p>
     <p id="progressSubText" style="text-align: center; font-size: 0.9em; color: #b0b0b0;"></p>
 
 
@@ -81,36 +82,75 @@
         return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
     }
 
-    socket.on('upload_progress', function(data) {
+    function updateProgress(data) {
         const progressBar = document.getElementById('progressBar');
         const progressText = document.getElementById('progressText');
         const progressSubText = document.getElementById('progressSubText');
-        console.log('Upload Progress Data:', data); 
+        const progressStatus = document.getElementById('progressStatus');
+        console.log('Progress Event:', data);
 
-        if (data.percentage !== undefined) {
-            progressBar.style.width = data.percentage + '%';
-            progressText.textContent = `${data.percentage.toFixed(2)}%`;
+        const percentage = data.percentage || 0;
 
-            if (data.bytes_uploaded !== undefined && data.total_bytes !== undefined) {
-                const uploadedMB = (data.bytes_uploaded / (1024 * 1024)).toFixed(2);
-                const totalMB = (data.total_bytes / (1024 * 1024)).toFixed(2);
-                progressSubText.textContent = `${uploadedMB} MB / ${totalMB} MB`;
-            } else {
-                progressSubText.textContent = '';
-            }
+        // Directly update the progress bar. No more smoothing.
+        progressBar.style.width = percentage + '%';
+        progressText.textContent = `${Math.round(percentage)}%`;
+        
+        // Update status message based on explicit status or percentage
+        if (data.status) {
+            // Use the explicit status from the server (e.g., "Finalizing...")
+            progressStatus.textContent = data.status;
+        } else if (percentage < 100) {
+            progressStatus.textContent = 'Uploading...';
         }
-    });
+        // The 'Upload complete!' status is handled by the 'upload_complete' event handler.
+
+        // Update the bytes transferred
+        if (data.bytes_uploaded !== undefined && data.total_bytes !== undefined) {
+            const uploadedFormatted = formatBytes(data.bytes_uploaded);
+            const totalFormatted = formatBytes(data.total_bytes);
+            let statusText = `${uploadedFormatted} / ${totalFormatted}`;
+            // The part text is now less important as percentage is the source of truth
+            if (data.part && data.total_parts && percentage < 100) {
+                 statusText += ` (Part ${data.part} of ${data.total_parts})`;
+            }
+            progressSubText.textContent = statusText;
+        } else {
+            progressSubText.textContent = '';
+        }
+    }
+
+    socket.on('upload_progress', updateProgress);
 
     socket.on('upload_complete', function(data) {
-        console.log('Socket: Upload complete event received:', data);
-        const progressBarContainer = document.getElementById('progressBarContainer');
-        progressBarContainer.style.display = 'none';
-        if (data.status === 'error') {
-            alert(data.error || 'Upload failed'); // Handle error
+        console.log("Upload Complete Data:", data);
+        if (data.status === 'success') {
+            // Show final completion state
+            updateProgress({
+                percentage: 100,
+                status: 'Upload complete!',
+                bytes_uploaded: data.total_bytes,
+                total_bytes: data.total_bytes
+            });
+            
+            // Hide progress after a delay and reload to show the new file
+            setTimeout(() => {
+                const progressBarContainer = document.getElementById('progressBarContainer');
+                const progressStatus = document.getElementById('progressStatus');
+                const progressSubText = document.getElementById('progressSubText');
+                
+                progressBarContainer.style.display = 'none';
+                progressStatus.style.display = 'none';
+                progressSubText.textContent = '';
+                
+                window.location.reload();
+            }, 1000);
+        } else {
+            // Handle error
+            const progressStatus = document.getElementById('progressStatus');
+            progressStatus.textContent = data.error || 'Upload failed';
+            progressStatus.style.color = '#ff6b6b';
         }
-        // The actual success handling and page reload is now done by the fetch promise resolution
     });
-
 
     document.getElementById('uploadForm').addEventListener('submit', async function(event) {
         event.preventDefault(); // Prevent default form submission
@@ -314,6 +354,16 @@ input:checked + .slider:before {
   -webkit-transform: translateX(20px);
   -ms-transform: translateX(20px);
   transform: translateX(20px);
+}
+
+/* Add smooth transition to progress bar */
+#progressBar {
+    transition: width 0.3s ease-out;
+}
+
+/* Add transition to status message color changes */
+#progressStatus {
+    transition: color 0.3s ease;
 }
 </style>
 

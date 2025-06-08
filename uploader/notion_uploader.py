@@ -4,8 +4,12 @@ import requests
 import urllib.parse
 import threading
 import io
+import hashlib
+import secrets
+import queue
 from typing import Dict, Any, List, Optional, Tuple, Union, Iterable
 from flask_socketio import SocketIO
+import concurrent.futures
 
 class NotionFileUploader:
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28", global_file_index_db_id: str = None):
@@ -19,6 +23,7 @@ class NotionFileUploader:
             "accept": "application/json"
         }
         self.global_file_index_db_id = global_file_index_db_id
+        self.CHUNK_SIZE = 5 * 1024 * 1024  # 5 MiB for Notion's multipart upload requirement
 
     def ensure_txt_filename(self, filename: str) -> str:
         """Ensure filename has .txt extension but do not replace spaces"""
@@ -208,153 +213,197 @@ class NotionFileUploader:
             print(f"Error constructing download URL from page property: {e}")
             return ""
 
-    def upload_file_stream(self, file_stream: Iterable[bytes], filename: str, user_id: str, total_size: int) -> Dict[str, Any]:
-        """Uploads a file to Notion from a stream to the specified database."""
-        # Get or create user's database
-        database_id = self.get_user_database_id(user_id)
-
-        original_filename = filename
-        # Ensure filename has .txt extension for Notion compatibility
-        filename = self.ensure_txt_filename(filename)
-        content_type = self.get_mime_type(filename)
-
-        if total_size <= 5 * 1024 * 1024:  # 5 MiB limit for single file upload
-            return self.upload_single_file_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
-        else:
-            return self.upload_large_file_multipart_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
-
-    def upload_single_file_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str = None) -> Dict[str, Any]:
-        """Handles the upload of a single file from a stream to user's database."""
-        try:
-            if original_filename is None:
-                original_filename = filename
-
-            if self.socketio:
-                self.socketio.emit('upload_progress', {'percentage': 0, 'bytes_uploaded': 0, 'total_bytes': file_size})
-
-            # Step 1: Create file upload object
-            upload_info = self.create_file_upload(filename, content_type)
-            file_upload_id = upload_info['id']
-
-            if self.socketio:
-                # Use a small sleep to make the progress bar visible for very fast uploads
-                import time
-                time.sleep(0.1)
-                self.socketio.emit('upload_progress', {'percentage': 33, 'bytes_uploaded': 0, 'total_bytes': file_size})
-
-            # Step 2: Send file content
-            # Pass the file_stream directly to send_file_content for true streaming
-            upload_result = self.send_file_content(file_upload_id, file_stream, content_type, filename, file_size)
-
-            if self.socketio:
-                # After sending content, we can say it's mostly done.
-                import time
-                time.sleep(0.1)
-                self.socketio.emit('upload_progress', {'percentage': 66, 'bytes_uploaded': file_size, 'total_bytes': file_size})
-
-            # The download URL is directly available in the upload_result
-            download_url = upload_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}") # Placeholder if empty
-
-            if self.socketio:
-                import time
-                time.sleep(0.1)
-                self.socketio.emit('upload_progress', {'percentage': 100, 'bytes_uploaded': file_size, 'total_bytes': file_size})
-
-            return {
-                "message": "File uploaded successfully",
-                "download_link": download_url,
-                "original_filename": original_filename,
-                "database_id": database_id,
-                "file_upload_id": file_upload_id # Return this for potential use in add_file_to_user_database
+    def _emit_progress(self, percentage: float, bytes_uploaded: int, total_bytes: int, status: str = None, part: int = None, total_parts: int = None):
+        """Helper method to emit progress updates with status messages"""
+        if self.socketio:
+            data = {
+                'percentage': min(percentage, 100),  # Ensure we don't exceed 100%
+                'bytes_uploaded': bytes_uploaded,
+                'total_bytes': total_bytes
             }
-        except Exception as e:
-            raise Exception(f"Error uploading single file: {e}")
+            if status:
+                data['status'] = status
+            if part is not None:
+                data['part'] = part
+            if total_parts is not None:
+                data['total_parts'] = total_parts
+            self.socketio.emit('upload_progress', data)
 
-    def upload_large_file_multipart_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str, chunk_size: int = 5 * 1024 * 1024) -> Dict[str, Any]:
-        import math
-        import concurrent.futures
-        """Handles the multipart upload of a large file from a stream."""
+    def _concurrent_part_uploader(
+        self,
+        file_upload_id: str,
+        part_number: int,
+        chunk_data: bytes,
+        filename: str,
+        content_type: str,
+        total_size: int,
+        number_of_parts: int,
+        bytes_uploaded_counter: List[int],
+        lock: threading.Lock
+    ):
+        """Worker function for concurrent uploads. Uploads a part and updates shared progress."""
         try:
-            # Always use generic file.txt for Notion's site
-            filename = "file.txt"
-            # Calculate number of parts
-            chunk_size = 5 * 1024 * 1024  # 5 MiB
-            number_of_parts = (file_size + chunk_size - 1) // chunk_size
+            print(f"Worker uploading part {part_number}...")
+            self.send_file_part_without_progress(file_upload_id, part_number, chunk_data, filename, content_type)
+            print(f"Worker finished uploading part {part_number}.")
 
-            # Step 1: Create multipart upload
-            multipart_upload_info = self.create_multipart_upload(filename, content_type, number_of_parts)
-            file_upload_id = multipart_upload_info['id']
-
-            # Step 2: Upload parts concurrently
-            session_id = ""  # Default session ID for stream-based uploads
-            def upload_part(part_number: int, chunk_data: bytes, current_bytes_uploaded: int):
-                result = self.send_file_part(file_upload_id, part_number, chunk_data, filename, content_type, current_bytes_uploaded, file_size, number_of_parts, session_id)
-                return result
-
-            futures = []
-            cumulative_bytes_uploaded = 0
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                for part_number, chunk_data in enumerate(file_stream, 1): # Iterate directly over the stream
-                    cumulative_bytes_uploaded += len(chunk_data)
-                    futures.append(executor.submit(upload_part, part_number, chunk_data, cumulative_bytes_uploaded))
-
-                for future in concurrent.futures.as_completed(futures):
-                    _ = future.result()
-
-            # Step 3: Complete multipart upload
-            complete_result = self.complete_multipart_upload(file_upload_id)
-
-            # The download URL is directly available in the complete_result
-            download_url = complete_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}") # Placeholder if empty
-
-            return {
-                "message": "File uploaded successfully",
-                "download_link": download_url,
-                "original_filename": original_filename,
-                "database_id": database_id,
-                "file_upload_id": file_upload_id # Return this for potential use in add_file_to_user_database
-            }
-        except Exception as e:
-            raise Exception(f"Error uploading large file multipart: {e}")
-
-    def upload_part_thread(self, upload_id: str, part_number: int, upload_url: str, chunk: bytes, filename: str, total_size: int, initial_uploaded_bytes: int, lock: threading.Lock, content_type: str, total_parts: int, session_id: str = None):
-        try:
-            # Calculate bytes uploaded so far (this part + initial bytes)
-            bytes_uploaded_so_far = initial_uploaded_bytes + len(chunk)
-
-            # Call send_file_part with all required parameters
-            self.send_file_part(upload_id, part_number, chunk, filename, content_type,
-                               bytes_uploaded_so_far, total_size, total_parts, session_id or "")
-
+            # Update shared progress counter under a lock
             with lock:
-                # Progress is now handled by send_file_part
-                pass
+                bytes_uploaded_counter[0] += len(chunk_data)
+                percentage = (bytes_uploaded_counter[0] / total_size) * 100
+                self._emit_progress(
+                    percentage,
+                    bytes_uploaded_counter[0],
+                    total_size,
+                    # No status here - the UI will handle it based on percentage
+                    part=part_number, 
+                    total_parts=number_of_parts
+                )
         except Exception as e:
-            print(f"Error uploading part {part_number}: {e}")
+            print(f"Error in uploader worker thread for part {part_number}: {e}")
+            raise
 
-    def create_multipart_upload(self, filename: str, content_type: str, number_of_parts: int) -> Dict[str, Any]:
-        """Create a multipart upload for large files"""
-        url = f"{self.base_url}/file_uploads"
+    def upload_file_stream(self, file_stream: Iterable[bytes], filename: str, user_id: str, total_size: int) -> Dict[str, Any]:
+        """
+        Handles the file upload process. For small files, it's a single operation.
+        For large files, it performs a concurrent multipart upload and returns an
+        intermediate dictionary for a separate finalization step.
+        """
+        try:
+            self._emit_progress(0, 0, total_size, "Preparing upload...")
+            
+            salt = secrets.token_hex(16)
+            salted_hasher = hashlib.sha512()
+            salted_hasher.update(salt.encode('utf-8'))
 
-        payload = {
-            "filename": filename,
-            "content_type": content_type,
-            "mode": "multi_part",
-            "number_of_parts": number_of_parts
-        }
+            database_id = self.get_user_database_id(user_id)
+            if not database_id:
+                raise Exception("User database not found.")
+                
+            original_filename = filename
+            notion_filename = "file.txt"
+            content_type = self.get_mime_type(original_filename)
 
-        headers = {**self.headers, "Content-Type": "application/json"}
+            if total_size <= self.CHUNK_SIZE:
+                # Small files are uploaded and finalized in one step.
+                self._emit_progress(0, 0, total_size, status='Buffering...')
+                buffer = io.BytesIO()
+                bytes_read = 0
+                for chunk in file_stream:
+                    salted_hasher.update(chunk)
+                    buffer.write(chunk)
+                    bytes_read += len(chunk)
+                    percentage = (bytes_read / total_size) * 100 if total_size > 0 else 100
+                    self._emit_progress(percentage, bytes_read, total_size, status='Uploading...')
+                buffer.seek(0)
 
-        print(f"Creating multipart upload for {filename} with {number_of_parts} parts and content type: {content_type}...")
-        response = requests.post(url, json=payload, headers=headers)
+                upload_info = self.create_file_upload(notion_filename, content_type)
+                file_upload_id = upload_info['id']
+                
+                self.send_file_content(file_upload_id, buffer, content_type, notion_filename, total_size)
+                download_url = f"https://www.notion.so/file/{file_upload_id}"
 
-        if response.status_code != 200:
-            raise Exception(f"Multipart upload creation failed: {response.text}")
+                file_hash = salted_hasher.hexdigest()
+                user_db_entry = self.add_file_to_user_database(database_id, original_filename, total_size, file_hash, file_upload_id, is_public=False, salt=salt)
+                file_page_id = user_db_entry['id']
+                self.add_file_to_index(file_hash, file_page_id, database_id, original_filename, False)
+                
+                return {
+                    "upload_in_progress": False,
+                    "message": "File uploaded successfully",
+                    "download_link": download_url,
+                    "original_filename": original_filename,
+                    "database_id": database_id,
+                    "file_upload_id": file_upload_id,
+                    "salted_file_hash": file_hash,
+                    "salt": salt,
+                    "total_bytes": total_size
+                }
+            else:
+                # Large files: only upload parts and return data for finalization.
+                number_of_parts = (total_size + self.CHUNK_SIZE - 1) // self.CHUNK_SIZE
+                upload_info = self.create_multipart_upload(notion_filename, content_type, number_of_parts)
+                file_upload_id = upload_info['id']
 
-        return response.json()
+                lock = threading.Lock()
+                bytes_uploaded_counter = [0]
+                futures = []
+                self._emit_progress(0, 0, total_size, "Starting Upload...", part=0, total_parts=number_of_parts)
 
-    def send_file_part(self, file_upload_id: str, part_number: int, chunk_data: bytes, filename: str, content_type: str, bytes_uploaded_so_far: int, total_bytes: int, total_parts: int, session_id: str) -> Dict[str, Any]:
-        """Upload a single part of a multipart upload"""
+                with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                    current_part = 1
+                    buffer = io.BytesIO()
+                    for chunk in file_stream:
+                        salted_hasher.update(chunk)
+                        buffer.write(chunk)
+                        if buffer.tell() >= self.CHUNK_SIZE:
+                            buffer.seek(0)
+                            part_data = buffer.read(self.CHUNK_SIZE)
+                            future = executor.submit(self._concurrent_part_uploader, file_upload_id, current_part, part_data, notion_filename, content_type, total_size, number_of_parts, bytes_uploaded_counter, lock)
+                            futures.append(future)
+                            remaining_data = buffer.read()
+                            buffer = io.BytesIO()
+                            buffer.write(remaining_data)
+                            current_part += 1
+                    if buffer.tell() > 0:
+                        buffer.seek(0)
+                        last_part_data = buffer.read()
+                        future = executor.submit(self._concurrent_part_uploader, file_upload_id, current_part, last_part_data, notion_filename, content_type, total_size, number_of_parts, bytes_uploaded_counter, lock)
+                        futures.append(future)
+                    for future in concurrent.futures.as_completed(futures):
+                        future.result()
+
+                file_hash = salted_hasher.hexdigest()
+                return {
+                    "upload_in_progress": True,
+                    "file_upload_id": file_upload_id,
+                    "database_id": database_id,
+                    "original_filename": original_filename,
+                    "total_size": total_size,
+                    "salted_file_hash": file_hash,
+                    "salt": salt,
+                }
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.socketio.emit('upload_complete', {'status': 'error', 'error': str(e)})
+            raise Exception(f"Error in upload_file_stream: {str(e)}")
+
+    def finalize_large_upload(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Finalizes a large multipart upload after all parts have been sent."""
+        file_upload_id = data['file_upload_id']
+        database_id = data['database_id']
+        original_filename = data['original_filename']
+        total_size = data['total_size']
+        file_hash = data['salted_file_hash']
+        salt = data['salt']
+
+        try:
+            complete_result = self.complete_multipart_upload(file_upload_id)
+            download_url = complete_result.get('file', {}).get('url', f"https://www.notion.so/file/{file_upload_id}")
+
+            user_db_entry = self.add_file_to_user_database(database_id, original_filename, total_size, file_hash, file_upload_id, is_public=False, salt=salt)
+            file_page_id = user_db_entry['id']
+            
+            self.add_file_to_index(file_hash, file_page_id, database_id, original_filename, False)
+            
+            return {
+                "message": "File uploaded successfully",
+                "download_link": download_url,
+                "original_filename": original_filename,
+                "database_id": database_id,
+                "file_upload_id": file_upload_id,
+                "salted_file_hash": file_hash,
+                "salt": salt,
+                "total_bytes": total_size
+            }
+        except Exception as e:
+            print(f"Error finalizing large upload: {e}")
+            self.socketio.emit('upload_complete', {'status': 'error', 'error': str(e)})
+            raise
+
+    def send_file_part_without_progress(self, file_upload_id: str, part_number: int, chunk_data: bytes, filename: str, content_type: str) -> Dict[str, Any]:
+        """Upload a single part of a multipart upload without sending progress"""
         url = f"{self.base_url}/file_uploads/{file_upload_id}/send"
 
         files = {
@@ -367,27 +416,34 @@ class NotionFileUploader:
             'Notion-Version': self.headers['Notion-Version']
         }
 
-        print(f"Uploading part {part_number} ({len(chunk_data) / (1024*1024):.2f} MB)...")
         response = requests.post(url, files=files, headers=headers)
 
         if response.status_code != 200:
-            raise Exception(f"Part {part_number} upload failed: {response.text}")
+            raise Exception(f"Part upload failed with status {response.status_code}: {response.text}")
 
-        # Emit progress for each part uploaded
-        # This assumes total_bytes and bytes_uploaded are managed at a higher level
-        # and passed down or accessible. For now, we'll just emit part completion.
-        # A more robust solution would involve tracking total progress across all parts.
-        # For the purpose of this task, we'll emit a simplified progress.
-        # The actual percentage and byte count will be handled by the client-side logic
-        # which aggregates progress from multiple parts.
-        # For now, we'll emit a simplified progress based on part completion.
-        if hasattr(self, 'socketio') and self.socketio:
-            percentage = (bytes_uploaded_so_far / total_bytes) * 100
-            self.socketio.emit('upload_progress', {
-                'percentage': percentage,
-                'bytes_uploaded': bytes_uploaded_so_far,
-                'total_bytes': total_bytes
-            })
+        return response.json()
+
+    def create_multipart_upload(self, filename: str, content_type: str, number_of_parts: int) -> Dict[str, Any]:
+        """Create a multipart upload for large files"""
+        url = f"{self.base_url}/file_uploads"
+
+        # Always use generic file.txt for Notion's site
+        notion_filename = "file.txt"
+
+        payload = {
+            "filename": notion_filename,
+            "content_type": content_type,
+            "mode": "multi_part",
+            "number_of_parts": number_of_parts
+        }
+
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        print(f"Creating multipart upload for {filename} with {number_of_parts} parts and content type: {content_type}...")
+        response = requests.post(url, json=payload, headers=headers)
+
+        if response.status_code != 200:
+            raise Exception(f"Multipart upload creation failed: {response.text}")
 
         return response.json()
 
@@ -404,9 +460,6 @@ class NotionFileUploader:
             raise Exception(f"Multipart upload completion failed: {response.text}")
 
         return response.json()
-
-    # Removed upload_single_file and upload_large_file_multipart as they are no longer needed.
-    # The new upload_file_stream method handles both cases.
 
     def query_user_database_by_username(self, database_id: str, username: str) -> Dict[str, Any]:
         """Query the Notion user database for a specific username"""
