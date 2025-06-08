@@ -292,30 +292,64 @@ class NotionFileUploader:
         # Consumer function: Takes chunks from queue and uploads them to Notion
         def upload_worker():
             import concurrent.futures
+            import collections
             
             try:
-                part_number = 0
-                chunks_to_upload = []
-                bytes_uploaded = 0
+                # Use a deque to store chunks waiting to be processed
+                chunk_buffer = collections.deque()
+                active_parts = set()  # Track which parts are currently being processed
                 
                 # Process chunks as they arrive in the queue
                 with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = []
+                    futures = {}  # Map future to part_number for tracking
+                    part_number = 0
+                    bytes_uploaded = 0
+                    processing_complete = False
                     
-                    while True:
-                        try:
-                            # Get a chunk from the queue, waiting if necessary
-                            chunk = chunk_queue.get(timeout=60)  # 60 second timeout
-                            
-                            if chunk is None:  # End signal
-                                chunk_queue.task_done()
-                                break
+                    print(f"Starting upload worker with {max_workers} workers")
+                    
+                    while not processing_complete or futures or chunk_buffer:
+                        # Collect completed futures
+                        done_futures = []
+                        for future in list(futures.keys()):
+                            if future.done():
+                                try:
+                                    future.result()  # Check for exceptions
+                                except Exception as e:
+                                    print(f"Error in part upload: {e}")
+                                    upload_error[0] = e
+                                    raise
                                 
-                            # Process the chunk
+                                part_num = futures[future]
+                                active_parts.remove(part_num)
+                                done_futures.append(future)
+                        
+                        # Remove completed futures
+                        for future in done_futures:
+                            del futures[future]
+                        
+                        # Fill buffer with chunks if needed
+                        while len(chunk_buffer) < max_workers*2 and not upload_complete.is_set():
+                            try:
+                                chunk = chunk_queue.get(timeout=0.5)
+                                if chunk is None:  # End signal
+                                    processing_complete = True
+                                    chunk_queue.task_done()
+                                    break
+                                chunk_buffer.append(chunk)
+                                chunk_queue.task_done()
+                            except queue.Empty:
+                                break
+                        
+                        # Submit new tasks if we have capacity and chunks
+                        while len(futures) < max_workers and chunk_buffer:
+                            chunk = chunk_buffer.popleft()
                             part_number += 1
-                            bytes_uploaded += len(chunk)
+                            bytes_for_this_chunk = len(chunk)
+                            bytes_uploaded += bytes_for_this_chunk
                             
                             # Submit the upload task to the thread pool
+                            print(f"Submitting part {part_number} ({bytes_for_this_chunk/(1024*1024):.2f} MB) for parallel upload...")
                             future = executor.submit(
                                 self.send_file_part,
                                 file_upload_id,
@@ -323,31 +357,33 @@ class NotionFileUploader:
                                 chunk,
                                 notion_filename,
                                 content_type,
-                                bytes_uploaded,
+                                bytes_uploaded,  
                                 total_size,
                                 number_of_parts,
                                 "",  # session_id
                                 session
                             )
-                            futures.append(future)
-                            chunk_queue.task_done()
+                            futures[future] = part_number
+                            active_parts.add(part_number)
+                            print(f"Active parts: {sorted(active_parts)}")
                             
-                        except queue.Empty:
-                            # Queue timeout - check if producer is done
-                            if upload_complete.is_set():
-                                break
-                            continue
+                        # Short sleep to avoid CPU spinning
+                        if not futures and not chunk_buffer and not processing_complete:
+                            time.sleep(0.1)
                     
-                    # Wait for all futures to complete
-                    for future in concurrent.futures.as_completed(futures):
+                    print("All parts submitted. Waiting for remaining uploads to complete.")
+                    # Wait for all remaining futures to complete
+                    for future in concurrent.futures.as_completed(list(futures.keys())):
                         try:
-                            _ = future.result()
+                            future.result()
                         except Exception as e:
+                            print(f"Error in final part upload: {e}")
                             upload_error[0] = e
                             raise
                 
                 # If no errors, complete the multipart upload
                 if not upload_error[0]:
+                    print("All parts uploaded successfully. Completing multipart upload...")
                     complete_result = self.complete_multipart_upload(file_upload_id, session=session)
                     
                     # Get the download URL
@@ -375,24 +411,58 @@ class NotionFileUploader:
         # Producer: Read chunks from the input stream and add to queue
         try:
             chunk_count = 0
-            for chunk in file_stream:
-                # Check if consumer thread encountered an error
+            bytes_read = 0  # Track actual bytes read
+            
+            # Use a buffer to accumulate data into 5MB chunks for optimal performance
+            current_buffer = io.BytesIO()
+            buffer_size = 0
+            
+            # Function to add a chunk to the queue
+            def add_chunk_to_queue(chunk_data):
+                nonlocal chunk_count
                 if upload_error[0]:
                     raise upload_error[0]
                 
                 chunk_count += 1
-                chunk_queue.put(chunk)
+                chunk_queue.put(chunk_data)
                 
+                # Update progress for client after adding chunks
                 if self.socketio and chunk_count % 2 == 0:  # Update progress every other chunk
                     client_progress = min(40, int(chunk_count * 35 / number_of_parts))
                     self.socketio.emit('upload_progress', {
                         'percentage': client_progress,
-                        'bytes_uploaded': chunk_count * chunk_size,
+                        'bytes_uploaded': bytes_read,
                         'total_bytes': total_size
                     })
             
+            # Read data in smaller chunks from file_stream but batch into larger chunks for upload
+            for small_chunk in file_stream:
+                # Track total bytes read
+                bytes_read += len(small_chunk)
+                
+                # Add to buffer
+                current_buffer.write(small_chunk)
+                buffer_size += len(small_chunk)
+                
+                # When buffer reaches target size, add to queue
+                if buffer_size >= chunk_size:
+                    current_buffer.seek(0)
+                    add_chunk_to_queue(current_buffer.read())
+                    current_buffer = io.BytesIO()  # Reset buffer
+                    buffer_size = 0
+                
+                # Check for errors from consumer
+                if upload_error[0]:
+                    raise upload_error[0]
+            
+            # Add any remaining data in buffer
+            if buffer_size > 0:
+                current_buffer.seek(0)
+                add_chunk_to_queue(current_buffer.read())
+            
             # Signal end of data
             chunk_queue.put(None)
+            print(f"Producer finished reading all {bytes_read} bytes. Waiting for uploads to complete.")
             
         except Exception as e:
             upload_error[0] = upload_error[0] or e
