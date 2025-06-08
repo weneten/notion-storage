@@ -236,7 +236,7 @@ def upload_file():
         salted_hasher = hashlib.sha512()
         salted_hasher.update(salt.encode('utf-8')) # Hash the salt first
 
-        # Create a generator to yield chunks and update hash
+        # Create a generator to yield chunks and update hash with true streaming
         def generate_chunks_and_hash():
             # Define the target chunk size for Notion multipart upload (5 MiB)
             TARGET_CHUNK_SIZE = 5 * 1024 * 1024 # 5 MiB
@@ -263,9 +263,12 @@ def upload_file():
                 current_buffer.seek(0)
                 yield current_buffer.read()
         
-        # Pass the generator to the uploader, along with the original file object
-        # The uploader will consume the generator and handle the stream
-        upload_result = uploader.upload_file_stream(generate_chunks_and_hash(), file.filename, current_user.id, total_size)
+        # Use a stream processor to handle true streaming from client to Notion
+        # This function buffers minimal data and starts uploading to Notion immediately
+        upload_result = uploader.upload_file_with_parallel_processing(generate_chunks_and_hash(), 
+                                                                    file.filename, 
+                                                                    current_user.id, 
+                                                                    total_size)
         
         salted_file_hash = salted_hasher.hexdigest() # This will be the public link hash
 

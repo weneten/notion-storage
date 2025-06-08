@@ -228,6 +228,191 @@ class NotionFileUploader:
             return self.upload_single_file_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
         else:
             return self.upload_large_file_multipart_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
+            
+    def upload_file_with_parallel_processing(self, file_stream: Iterable[bytes], filename: str, user_id: str, total_size: int) -> Dict[str, Any]:
+        """
+        Uploads a file to Notion with true parallel streaming - starts uploading to Notion 
+        while still receiving data from the client.
+        """
+        import queue
+        import threading
+        import time
+        
+        # Get or create user's database
+        database_id = self.get_user_database_id(user_id)
+        
+        original_filename = filename
+        # Ensure filename has .txt extension for Notion compatibility
+        filename = self.ensure_txt_filename(filename)
+        content_type = self.get_mime_type(filename)
+        
+        # For small files, use the optimized single file upload path
+        if total_size <= 5 * 1024 * 1024:
+            return self.upload_single_file_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
+        
+        # For large files, implement a producer-consumer pattern with a queue
+        # to enable true parallel streaming
+        
+        # Initialize queue, processing status and synchronization primitives
+        chunk_queue = queue.Queue(maxsize=10)  # Buffer up to 10 chunks (50MB)
+        upload_complete = threading.Event()
+        upload_error = [None]  # List to store error if any
+        result_container = [None]  # Container for the upload result
+        
+        # Calculate number of parts for multipart upload
+        chunk_size = 5 * 1024 * 1024  # 5 MiB
+        number_of_parts = (total_size + chunk_size - 1) // chunk_size
+        
+        # Step 1: Create multipart upload early (before receiving all chunks)
+        try:
+            # Always use generic file.txt for Notion's site
+            notion_filename = "file.txt"
+            multipart_upload_info = self.create_multipart_upload(notion_filename, content_type, number_of_parts)
+            file_upload_id = multipart_upload_info['id']
+            
+            if self.socketio:
+                self.socketio.emit('upload_progress', {'percentage': 5, 'bytes_uploaded': 0, 'total_bytes': total_size})
+        except Exception as e:
+            print(f"Error creating multipart upload: {e}")
+            raise Exception(f"Error creating multipart upload: {e}")
+        
+        # Determine optimal concurrency
+        if number_of_parts <= 5:
+            max_workers = number_of_parts
+        elif number_of_parts <= 20:
+            max_workers = min(10, number_of_parts)
+        else:
+            max_workers = min(20, number_of_parts)
+        print(f"Using {max_workers} concurrent workers for parallel streaming upload")
+        
+        # Create a requests session for connection pooling
+        session = requests.Session()
+        session.headers.update(self.headers)
+        
+        # Consumer function: Takes chunks from queue and uploads them to Notion
+        def upload_worker():
+            import concurrent.futures
+            
+            try:
+                part_number = 0
+                chunks_to_upload = []
+                bytes_uploaded = 0
+                
+                # Process chunks as they arrive in the queue
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = []
+                    
+                    while True:
+                        try:
+                            # Get a chunk from the queue, waiting if necessary
+                            chunk = chunk_queue.get(timeout=60)  # 60 second timeout
+                            
+                            if chunk is None:  # End signal
+                                chunk_queue.task_done()
+                                break
+                                
+                            # Process the chunk
+                            part_number += 1
+                            bytes_uploaded += len(chunk)
+                            
+                            # Submit the upload task to the thread pool
+                            future = executor.submit(
+                                self.send_file_part,
+                                file_upload_id,
+                                part_number,
+                                chunk,
+                                notion_filename,
+                                content_type,
+                                bytes_uploaded,
+                                total_size,
+                                number_of_parts,
+                                "",  # session_id
+                                session
+                            )
+                            futures.append(future)
+                            chunk_queue.task_done()
+                            
+                        except queue.Empty:
+                            # Queue timeout - check if producer is done
+                            if upload_complete.is_set():
+                                break
+                            continue
+                    
+                    # Wait for all futures to complete
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            _ = future.result()
+                        except Exception as e:
+                            upload_error[0] = e
+                            raise
+                
+                # If no errors, complete the multipart upload
+                if not upload_error[0]:
+                    complete_result = self.complete_multipart_upload(file_upload_id, session=session)
+                    
+                    # Get the download URL
+                    download_url = complete_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}")
+                    
+                    # Store the result
+                    result_container[0] = {
+                        "message": "File uploaded successfully",
+                        "download_link": download_url,
+                        "original_filename": original_filename,
+                        "database_id": database_id,
+                        "file_upload_id": file_upload_id
+                    }
+            except Exception as e:
+                upload_error[0] = e
+                print(f"Error in upload worker: {e}")
+            finally:
+                upload_complete.set()  # Signal that upload is complete (success or error)
+        
+        # Start the consumer thread
+        upload_thread = threading.Thread(target=upload_worker)
+        upload_thread.daemon = True
+        upload_thread.start()
+        
+        # Producer: Read chunks from the input stream and add to queue
+        try:
+            chunk_count = 0
+            for chunk in file_stream:
+                # Check if consumer thread encountered an error
+                if upload_error[0]:
+                    raise upload_error[0]
+                
+                chunk_count += 1
+                chunk_queue.put(chunk)
+                
+                if self.socketio and chunk_count % 2 == 0:  # Update progress every other chunk
+                    client_progress = min(40, int(chunk_count * 35 / number_of_parts))
+                    self.socketio.emit('upload_progress', {
+                        'percentage': client_progress,
+                        'bytes_uploaded': chunk_count * chunk_size,
+                        'total_bytes': total_size
+                    })
+            
+            # Signal end of data
+            chunk_queue.put(None)
+            
+        except Exception as e:
+            upload_error[0] = upload_error[0] or e
+            print(f"Error in producer: {e}")
+        finally:
+            # Signal that producer is done
+            upload_complete.set()
+        
+        # Wait for consumer to finish
+        upload_thread.join()
+        
+        # Check for errors
+        if upload_error[0]:
+            raise Exception(f"Error uploading file with parallel processing: {upload_error[0]}")
+        
+        # Return result
+        if result_container[0] is None:
+            raise Exception("Upload completed but no result was returned")
+            
+        return result_container[0]
 
     def upload_single_file_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str = None) -> Dict[str, Any]:
         """Handles the upload of a single file from a stream to user's database."""
