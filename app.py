@@ -1,11 +1,6 @@
 import hashlib
 import mimetypes
 import secrets
-import queue
-from threading import Thread
-from streaming_form_data import StreamingFormDataParser
-from streaming_form_data.targets import BaseTarget
-from werkzeug.http import parse_options_header
 from flask import Flask, request, render_template, jsonify, redirect, url_for, send_from_directory, Response, stream_with_context
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from uploader.notion_uploader import NotionFileUploader
@@ -23,11 +18,6 @@ from flask_cors import CORS
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')
-# Configure Flask for large file uploads
-app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5 GiB max-size
-# UPLOAD_CHUNK_SIZE is no longer used by the streaming implementation
-# app.config['UPLOAD_CHUNK_SIZE'] = 5 * 1024 * 1024  # 5 MiB chunk size
-
 CORS(app)  # Enable CORS for all routes
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -53,36 +43,6 @@ NOTION_USER_DB_ID = os.environ.get('NOTION_USER_DB_ID')
 GLOBAL_FILE_INDEX_DB_ID = os.environ.get('GLOBAL_FILE_INDEX_DB_ID')
 
 uploader = NotionFileUploader(api_token=NOTION_API_TOKEN, socketio=socketio, global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID)
-
-class StreamToQueueTarget(BaseTarget):
-    def __init__(self):
-        self._queue = queue.Queue()
-        self.filename = None
-        self._part_begin_event = Thread.Event()
-
-    def on_part_begin(self, headers: dict[bytes, bytes]):
-        content_disposition_bytes = headers.get(b'content-disposition', b'')
-        content_disposition = content_disposition_bytes.decode('utf-8', 'surrogateescape')
-        _, options = parse_options_header(content_disposition)
-        self.filename = options.get("filename")
-        self._part_begin_event.set()
-
-    def on_data_received(self, chunk: bytes):
-        self._queue.put(chunk)
-
-    def on_part_end(self):
-        self._queue.put(None)
-
-    @property
-    def chunk_generator(self):
-        self._part_begin_event.wait()
-        if not self.filename:
-            raise Exception("File part has no filename.")
-        while True:
-            chunk = self._queue.get()
-            if chunk is None:
-                break
-            yield chunk
 
 # User class for Flask-Login
 class User(UserMixin):
@@ -239,74 +199,121 @@ def logout():
 @app.route('/upload_file', methods=['POST'])
 @login_required
 def upload_file():
-    total_size = request.content_length
-    if not total_size:
-        return jsonify({"error": "Content-Length header required"}), 400
-
-    MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GiB
-    if total_size > MAX_FILE_SIZE_BYTES:
-        return jsonify({"error": f"File size exceeds the 5 GiB limit."}), 413
-
-    upload_result = {}
+    print(f"DEBUG: Upload request received from {request.remote_addr}")
+    print(f"DEBUG: Headers: {dict(request.headers)}")
+    print(f"DEBUG: Cookies: {request.cookies}")
     
-    def uploader_task(target):
-        nonlocal upload_result
-        try:
-            # chunk_generator will wait until filename is parsed
-            result = uploader.upload_file_stream(
-                target.chunk_generator,
-                target.filename,
-                current_user.id,
-                total_size
-            )
-            upload_result.update(result)
-        except Exception as e:
-            print(f"Error in uploader thread: {e}")
-            upload_result['error'] = str(e)
+    if 'file' not in request.files:
+        print("DEBUG: No file part in request")
+        return jsonify({"error": "No file part"}), 400
 
+    file = request.files['file']
+    print(f"DEBUG: File received: {file.filename} ({file.content_length} bytes)")
 
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    # Notion API supports files up to 5GB (5 GiB), so we'll set the limit accordingly
+    MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024 * 1024 # 5 GiB in bytes
+    MAX_FILE_SIZE_MB = MAX_FILE_SIZE_BYTES / (1024 * 1024) # Convert to MiB for display
+
+    # Get the actual file size by seeking
+    file.seek(0, os.SEEK_END)
+    total_size = file.tell()
+    file.seek(0)
+
+    if total_size > MAX_FILE_SIZE_BYTES:
+        return jsonify({"error": f"File size exceeds the {int(MAX_FILE_SIZE_MB)} MiB limit."}), 413
+
+    # The file content is read into a BytesIO stream.
+    # The previous progress reporting loop was removed from this section.
+    # It was reporting the progress of reading the file into server memory,
+    # which is very fast and caused the progress bar to jump to 100% instantly.
+    # True upload progress is now handled within the `NotionFileUploader`.
     try:
-        stream_target = StreamToQueueTarget()
-        parser = StreamingFormDataParser(headers=request.headers)
-        parser.register('file', stream_target)
+        # Generate a random salt for SHA512 hashing
+        salt = secrets.token_hex(16) # 16 bytes = 32 hex characters
+        salted_hasher = hashlib.sha512()
+        salted_hasher.update(salt.encode('utf-8')) # Hash the salt first
+
+        # Create a generator to yield chunks and update hash
+        def generate_chunks_and_hash():
+            # Define the target chunk size for Notion multipart upload (5 MiB)
+            TARGET_CHUNK_SIZE = 5 * 1024 * 1024 # 5 MiB
+
+            current_buffer = io.BytesIO()
+            bytes_in_buffer = 0
+
+            while True:
+                chunk = file.stream.read(8192)  # Read in 8KB chunks
+                if not chunk:
+                    break
+                salted_hasher.update(chunk) # Update hash with file content
+                current_buffer.write(chunk)
+                bytes_in_buffer += len(chunk)
+
+                if bytes_in_buffer >= TARGET_CHUNK_SIZE:
+                    current_buffer.seek(0)
+                    yield current_buffer.read()
+                    current_buffer = io.BytesIO()
+                    bytes_in_buffer = 0
+            
+            # Yield any remaining data in the buffer
+            if bytes_in_buffer > 0:
+                current_buffer.seek(0)
+                yield current_buffer.read()
         
-        uploader_thread = Thread(target=uploader_task, args=(stream_target,))
-        uploader_thread.start()
+        # Pass the generator to the uploader, along with the original file object
+        # The uploader will consume the generator and handle the stream
+        upload_result = uploader.upload_file_stream(generate_chunks_and_hash(), file.filename, current_user.id, total_size)
+        
+        salted_file_hash = salted_hasher.hexdigest() # This will be the public link hash
 
-        for chunk in request.stream:
-            parser.data_received(chunk)
+        # Get user's database ID
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            raise Exception("User database not found")
 
-        uploader_thread.join()
+        # Add file information to user's database with all metadata
+        add_file_result = uploader.add_file_to_user_database(
+            user_database_id,
+            file.filename,
+            total_size,
+            salted_file_hash, # Use the salted SHA512 hash
+            upload_result.get('file_upload_id'),
+            is_public=False, # Default to private
+            salt=salt # Store the salt
+        )
 
-        if 'error' in upload_result:
-            raise Exception(upload_result['error'])
+        # Get the page_id of the newly created database entry
+        page_id = add_file_result.get('id')
 
-        if upload_result.get("upload_in_progress"):
-            # Stage 2: Finalize the large file upload.
-            
-            # Emit "Finalizing" status, as all chunks are now uploaded.
-            socketio.emit('upload_progress', {
-                'percentage': 100, 
-                'bytes_uploaded': total_size, 
-                'total_bytes': total_size, 
-                'status': 'Finalizing upload...'
-            })
+        # Add file to the Global File Index
+        uploader.add_file_to_index(
+            salted_sha512_hash=salted_file_hash,
+            file_page_id=page_id,
+            user_database_id=user_database_id,
+            original_filename=file.filename,
+            is_public=False # Initial public status in index
+        )
 
-            final_result = uploader.finalize_large_upload(upload_result)
-            
-            socketio.emit('upload_complete', {'status': 'success', **final_result})
-            return jsonify(final_result)
-        else:
-            # Small file was uploaded and finalized in one go.
-            socketio.emit('upload_complete', {'status': 'success', **upload_result})
-            return jsonify(upload_result)
-
+        # Emit upload_complete event with necessary data
+        socketio.emit('upload_complete', {
+            'status': 'success',
+            'original_filename': file.filename
+        })
+        return jsonify({
+            'status': 'success',
+            'message': 'File uploaded successfully and Notion database updated.'
+        }), 200
     except Exception as e:
         import traceback
-        error_details = traceback.format_exc()
-        print(f"Error during upload: {str(e)}\n{error_details}")
-        # The uploader should have already emitted an error, but we send a response.
+        error_trace = traceback.format_exc()
+        print(f"DEBUG: Upload failed with error: {str(e)}\n{error_trace}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        # No need to remove file_path as it's saved to disk
+        pass
 
 @app.route('/change_password', methods=['GET', 'POST'])
 @login_required
@@ -362,23 +369,23 @@ def list_files_api():
                 name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
                 size = properties.get('filesize', {}).get('number', 0)
                 file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
+                file_id = file_data.get('id') # Get the Notion page ID
+                is_public = properties.get('is_public', {}).get('checkbox', False) # Get is_public status
                 
                 if name:  # Only include files with names
                     files.append({
                         "name": name,
                         "size": size,
-                        "file_hash": file_hash # Add file_hash
+                        "file_hash": file_hash, # Add file_hash
+                        "id": file_id, # Add the file_id
+                        "is_public": is_public # Add is_public status
                     })
             except Exception as e:
                 print(f"Error processing file data: {e}")
                 continue
                 
         return jsonify({
-            "files": files,
-            "debug": {
-                "user_database_id": user_database_id,
-                "results_count": len(files)
-            }
+            "files": files
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
