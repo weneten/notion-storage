@@ -1,6 +1,11 @@
 import hashlib
 import mimetypes
 import secrets
+import queue
+from threading import Thread
+from streaming_form_data import StreamingFormDataParser
+from streaming_form_data.targets import BaseTarget
+from werkzeug.http import parse_options_header
 from flask import Flask, request, render_template, jsonify, redirect, url_for, send_from_directory, Response, stream_with_context
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from uploader.notion_uploader import NotionFileUploader
@@ -20,7 +25,8 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')
 # Configure Flask for large file uploads
 app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024 * 1024  # 5 GiB max-size
-app.config['UPLOAD_CHUNK_SIZE'] = 5 * 1024 * 1024  # 5 MiB chunk size
+# UPLOAD_CHUNK_SIZE is no longer used by the streaming implementation
+# app.config['UPLOAD_CHUNK_SIZE'] = 5 * 1024 * 1024  # 5 MiB chunk size
 
 CORS(app)  # Enable CORS for all routes
 socketio = SocketIO(app, cors_allowed_origins="*")
@@ -47,6 +53,36 @@ NOTION_USER_DB_ID = os.environ.get('NOTION_USER_DB_ID')
 GLOBAL_FILE_INDEX_DB_ID = os.environ.get('GLOBAL_FILE_INDEX_DB_ID')
 
 uploader = NotionFileUploader(api_token=NOTION_API_TOKEN, socketio=socketio, global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID)
+
+class StreamToQueueTarget(BaseTarget):
+    def __init__(self):
+        self._queue = queue.Queue()
+        self.filename = None
+        self._part_begin_event = Thread.Event()
+
+    def on_part_begin(self, headers: dict[bytes, bytes]):
+        content_disposition_bytes = headers.get(b'content-disposition', b'')
+        content_disposition = content_disposition_bytes.decode('utf-8', 'surrogateescape')
+        _, options = parse_options_header(content_disposition)
+        self.filename = options.get("filename")
+        self._part_begin_event.set()
+
+    def on_data_received(self, chunk: bytes):
+        self._queue.put(chunk)
+
+    def on_part_end(self):
+        self._queue.put(None)
+
+    @property
+    def chunk_generator(self):
+        self._part_begin_event.wait()
+        if not self.filename:
+            raise Exception("File part has no filename.")
+        while True:
+            chunk = self._queue.get()
+            if chunk is None:
+                break
+            yield chunk
 
 # User class for Flask-Login
 class User(UserMixin):
@@ -203,13 +239,6 @@ def logout():
 @app.route('/upload_file', methods=['POST'])
 @login_required
 def upload_file():
-    if 'file' not in request.files:
-        return jsonify({"error": "No file part"}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
-
     total_size = request.content_length
     if not total_size:
         return jsonify({"error": "Content-Length header required"}), 400
@@ -218,22 +247,39 @@ def upload_file():
     if total_size > MAX_FILE_SIZE_BYTES:
         return jsonify({"error": f"File size exceeds the 5 GiB limit."}), 413
 
-    try:
-        def file_chunk_generator(stream):
-            while True:
-                chunk = stream.read(256 * 1024)
-                if not chunk:
-                    break
-                yield chunk
+    upload_result = {}
+    
+    def uploader_task(target):
+        nonlocal upload_result
+        try:
+            # chunk_generator will wait until filename is parsed
+            result = uploader.upload_file_stream(
+                target.chunk_generator,
+                target.filename,
+                current_user.id,
+                total_size
+            )
+            upload_result.update(result)
+        except Exception as e:
+            print(f"Error in uploader thread: {e}")
+            upload_result['error'] = str(e)
 
-        # Stage 1: Upload the file stream.
-        # This will block until all parts are uploaded for large files.
-        upload_result = uploader.upload_file_stream(
-            file_chunk_generator(file.stream),
-            file.filename,
-            current_user.id,
-            total_size
-        )
+
+    try:
+        stream_target = StreamToQueueTarget()
+        parser = StreamingFormDataParser(headers=request.headers)
+        parser.register('file', stream_target)
+        
+        uploader_thread = Thread(target=uploader_task, args=(stream_target,))
+        uploader_thread.start()
+
+        for chunk in request.stream:
+            parser.data_received(chunk)
+
+        uploader_thread.join()
+
+        if 'error' in upload_result:
+            raise Exception(upload_result['error'])
 
         if upload_result.get("upload_in_progress"):
             # Stage 2: Finalize the large file upload.
@@ -256,7 +302,9 @@ def upload_file():
             return jsonify(upload_result)
 
     except Exception as e:
-        print(f"Error during upload: {str(e)}")
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error during upload: {str(e)}\n{error_details}")
         # The uploader should have already emitted an error, but we send a response.
         return jsonify({"error": str(e)}), 500
 
