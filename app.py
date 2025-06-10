@@ -19,7 +19,42 @@ import time
 import uuid
 import random
 import string
+import psutil  # Add psutil for memory monitoring
 
+# Function to get current memory usage
+def get_memory_usage():
+    """Get current memory usage of the process in MB"""
+    try:
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
+        return memory_mb
+    except Exception as e:
+        print(f"Error getting memory usage: {e}")
+        return 0
+
+# Function to log memory usage periodically
+def log_memory_usage():
+    """Log memory usage every minute"""
+    try:
+        memory_mb = get_memory_usage()
+        cached_chunks_count = 0
+        cached_chunks_size = 0
+        
+        if hasattr(app, 'upload_processors'):
+            for upload_id, upload_data in app.upload_processors.items():
+                cached_chunks = upload_data.get('cached_chunks', {})
+                cached_chunks_count += len(cached_chunks)
+                cached_chunks_size += sum(len(chunk) for chunk in cached_chunks.values())
+        
+        cached_chunks_mb = cached_chunks_size / (1024 * 1024)
+        print(f"MEMORY: Process using {memory_mb:.2f} MB | Cached chunks: {cached_chunks_count} ({cached_chunks_mb:.2f} MB)")
+    except Exception as e:
+        print(f"Error in memory logging: {e}")
+        
+    # Schedule next check
+    threading.Timer(60, log_memory_usage).start()
+    
 # Load environment variables from .env file
 load_dotenv()
 
@@ -267,7 +302,7 @@ def upload_file():
             
         if not hasattr(app, 'upload_processors'):
             app.upload_processors = {}
-            
+        
         # Create a lock for this upload if it doesn't exist
         if upload_id not in app.upload_locks:
             app.upload_locks[upload_id] = threading.Lock()
@@ -356,12 +391,23 @@ def upload_file():
             upload_data['pending_parts'].add(part_number)
             
             # Cache the chunk data for potential retries (if not too large)
-            max_chunk_cache_size = 20 * 1024 * 1024  # 20MB max cache per chunk
-            if chunk_size <= max_chunk_cache_size:
+            max_chunk_cache_size = 10 * 1024 * 1024  # Reduce to 10MB max cache per chunk (from 20MB)
+            
+            # Only cache 1 of every 5 chunks for very large files to save memory
+            # For small files, cache every chunk
+            if total_size > 500 * 1024 * 1024:  # For files > 500MB
+                should_cache_chunk = (part_number % 5 == 0)  # Cache only every 5th chunk
+            else:
+                should_cache_chunk = True  # Cache all chunks for smaller files
+                
+            if chunk_size <= max_chunk_cache_size and should_cache_chunk:
                 upload_data['cached_chunks'][part_number] = chunk_data
                 print(f"DEBUG: Cached chunk data for part {part_number} ({chunk_size} bytes)")
             else:
-                print(f"DEBUG: Chunk for part {part_number} too large to cache ({chunk_size} bytes)")
+                if chunk_size > max_chunk_cache_size:
+                    print(f"DEBUG: Chunk for part {part_number} too large to cache ({chunk_size} bytes)")
+                else:
+                    print(f"DEBUG: Skipping cache for part {part_number} to save memory (selective caching)")
             
         # Process this part
         print(f"DEBUG: Processing part {part_number} of {total_parts}, is_last_part={is_last_chunk}")
@@ -404,11 +450,11 @@ def upload_file():
                         response = uploader.send_file_part(
                             upload_id, 
                             part_number, 
-                            chunk_data, 
+                        chunk_data,
                             filename, 
                             content_type,
                             bytes_uploaded_so_far,
-                            total_size,
+                        total_size,
                             total_parts,
                             session_id
                         )
@@ -429,7 +475,7 @@ def upload_file():
                         if retry_attempt >= max_retries or not is_retryable:
                             print(f"ERROR: Part {part_number} upload failed after {retry_attempt} retries: {error_message}")
                             raise
-                            
+
                         # Log the error and retry
                         wait_time = retry_delay * (2 ** retry_attempt)  # Exponential backoff
                         print(f"WARNING: Upload for part {part_number} failed (attempt {retry_attempt+1}/{max_retries+1}): {error_message}")
@@ -457,6 +503,11 @@ def upload_file():
                         # Remove this thread from tracking
                         if part_number in upload_data['upload_threads']:
                             del upload_data['upload_threads'][part_number]
+                            
+                        # Remove cached chunk data to free memory
+                        if part_number in upload_data['cached_chunks']:
+                            del upload_data['cached_chunks'][part_number]
+                            print(f"DEBUG: Freed memory by removing cached data for part {part_number}")
                             
                         # Update total_parts from is_last_chunk
                         if is_last_chunk and part_number > upload_data.get('total_parts', 0):
@@ -504,7 +555,7 @@ def upload_file():
             "total_size": total_size,
             "status": "success"
         })
-        
+
     except Exception as e:
         print(f"ERROR in upload_file: {str(e)}")
         import traceback
@@ -757,7 +808,7 @@ def init_upload():
         # Ensure the filename has an extension Notion can handle
         # For simplicity, we'll use .txt for everything as Notion supports it
         if not sanitized_filename.endswith('.txt'):
-            print(f"DEBUG: Sanitizing filename: '{filename}' → '{sanitized_filename}.txt' (for Notion storage)")
+            print(f"DEBUG: Sanitizing filename: '{filename}' to '{sanitized_filename}.txt' (for Notion storage)")
             sanitized_filename = sanitized_filename + '.txt'
             
         print(f"DEBUG: Sanitized filename: {sanitized_filename} (original: {original_filename})")
@@ -773,7 +824,7 @@ def init_upload():
         total_parts = (file_size + target_chunk_size - 1) // target_chunk_size
         
         # Determine if this should be a multipart upload
-        is_multipart = total_parts > 1 or file_size >= 20 * 1024 * 1024  # Use multipart for files ≥ 20MB regardless
+        is_multipart = total_parts > 1 or file_size >= 20 * 1024 * 1024  # Use multipart for files > 20MB regardless
         
         if is_multipart:
             # For multipart uploads, log the part breakdown
@@ -1135,7 +1186,7 @@ def finalize_upload():
                     'file_hash': salted_file_hash,
                     'original_filename': original_filename
                 })
-                
+
             except Exception as e:
                 print(f"ERROR during upload finalization attempt {attempt}/{max_attempts}: {str(e)}")
                 
@@ -1360,6 +1411,10 @@ def retry_missing_part(upload_id, part_number):
         return False
 
 if __name__ == '__main__':
+    # Start memory usage monitoring
+    print("Starting memory usage monitoring...")
+    log_memory_usage()
+    
     # Only run the development server if FLASK_ENV is set to 'development'
     # In production, Gunicorn will run the app
     if os.environ.get('FLASK_ENV') == 'development':
