@@ -493,16 +493,9 @@ const uploadFile = async () => {
         let activeUploads = 0;
         let completedParts = 0;
         let failedParts = 0;
+        let uploadPromises = [];
         
-        const uploadNextChunk = async () => {
-            if (uploadQueue.length === 0) {
-                return;
-            }
-            
-            // Get next chunk to upload
-            const chunk = uploadQueue.shift();
-            activeUploads++;
-            
+        const uploadChunk = async (chunk) => {
             try {
                 // Create form data for this chunk
                 const formData = new FormData();
@@ -540,54 +533,62 @@ const uploadFile = async () => {
                 // Mark chunk as uploaded
                 chunk.uploaded = true;
                 
+                return { success: true, chunk };
             } catch (error) {
                 console.error(`Error uploading part ${chunk.partNumber}:`, error);
+                return { success: false, chunk, error };
+            }
+        };
+
+        const processQueue = async () => {
+            while (uploadQueue.length > 0) {
+                // Take up to maxConcurrent chunks from the queue
+                const chunksToUpload = uploadQueue.splice(0, maxConcurrent);
+                console.log(`Starting batch of ${chunksToUpload.length} concurrent uploads`);
                 
-                // Add back to queue if retries remaining
-                chunk.retryCount++;
-                if (chunk.retryCount <= chunk.maxRetries) {
-                    console.log(`Retrying part ${chunk.partNumber} (attempt ${chunk.retryCount}/${chunk.maxRetries})`);
-                    
-                    // Add exponential backoff
-                    const backoffTime = Math.pow(2, chunk.retryCount) * 1000;
-                    await new Promise(resolve => setTimeout(resolve, backoffTime));
-                    
-                    // Add back to queue
-                    uploadQueue.push(chunk);
-                } else {
-                    console.error(`Part ${chunk.partNumber} failed after ${chunk.maxRetries} attempts`);
-                    failedParts++;
-                    showStatus(`Upload failed, please try again`, 'error');
-                }
-            } finally {
-                activeUploads--;
+                // Upload chunks concurrently
+                const results = await Promise.all(
+                    chunksToUpload.map(chunk => uploadChunk(chunk))
+                );
                 
-                // Start next upload if queue isn't empty and we're below max concurrent
-                if (uploadQueue.length > 0 && activeUploads < maxConcurrent) {
-                    uploadNextChunk();
-                }
-                
-                // If all uploads finished (no active, no queue), finalize the upload
-                if (activeUploads === 0 && uploadQueue.length === 0) {
-                    if (failedParts === 0) {
-                        console.log('All parts uploaded successfully, finalizing...');
-                        // Show 100% without detailed text
-                        updateProgressBar(100, '');
-                        showFinalizingMessage('Preparing storage transfer...');
-                        // Wait a moment to ensure all server-side processes are complete
-                        setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
-                    } else {
-                        showStatus(`Upload failed, please try again`, 'error');
+                // Process results
+                for (const result of results) {
+                    if (!result.success) {
+                        const chunk = result.chunk;
+                        chunk.retryCount++;
+                        
+                        if (chunk.retryCount <= chunk.maxRetries) {
+                            console.log(`Retrying part ${chunk.partNumber} (attempt ${chunk.retryCount}/${chunk.maxRetries})`);
+                            
+                            // Add exponential backoff
+                            const backoffTime = Math.pow(2, chunk.retryCount) * 1000;
+                            await new Promise(resolve => setTimeout(resolve, backoffTime));
+                            
+                            // Add back to queue
+                            uploadQueue.push(chunk);
+                        } else {
+                            console.error(`Part ${chunk.partNumber} failed after ${chunk.maxRetries} attempts`);
+                            failedParts++;
+                        }
                     }
                 }
             }
+            
+            // All uploads finished
+            if (failedParts === 0) {
+                console.log('All parts uploaded successfully, finalizing...');
+                // Show 100% without detailed text
+                updateProgressBar(100, '');
+                showFinalizingMessage('Preparing storage transfer...');
+                // Wait a moment to ensure all server-side processes are complete
+                setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
+            } else {
+                showStatus(`Upload failed with ${failedParts} failed parts, please try again`, 'error');
+            }
         };
         
-        // Start initial batch of uploads
-        const initialUploads = Math.min(maxConcurrent, uploadQueue.length);
-        for (let i = 0; i < initialUploads; i++) {
-            uploadNextChunk();
-        }
+        // Start the upload process
+        processQueue();
         
     } catch (error) {
         console.error('Upload failed:', error);
