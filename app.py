@@ -390,24 +390,13 @@ def upload_file():
             # Mark this part as pending
             upload_data['pending_parts'].add(part_number)
             
-            # Cache the chunk data for potential retries (if not too large)
-            max_chunk_cache_size = 10 * 1024 * 1024  # Reduce to 10MB max cache per chunk (from 20MB)
+            # Always cache chunk data for retries (regardless of file size)
+            max_chunk_cache_size = 10 * 1024 * 1024  # Max cache size per chunk
             
-            # Only cache 1 of every 5 chunks for very large files to save memory
-            # For small files, cache every chunk
-            if total_size > 500 * 1024 * 1024:  # For files > 500MB
-                should_cache_chunk = (part_number % 5 == 0)  # Cache only every 5th chunk
-            else:
-                should_cache_chunk = True  # Cache all chunks for smaller files
-                
-            if chunk_size <= max_chunk_cache_size and should_cache_chunk:
-                upload_data['cached_chunks'][part_number] = chunk_data
-                print(f"DEBUG: Cached chunk data for part {part_number} ({chunk_size} bytes)")
-            else:
-                if chunk_size > max_chunk_cache_size:
-                    print(f"DEBUG: Chunk for part {part_number} too large to cache ({chunk_size} bytes)")
-                else:
-                    print(f"DEBUG: Skipping cache for part {part_number} to save memory (selective caching)")
+            # Always cache the chunk, regardless of size or part number
+            # This will be used for retries and deleted after successful upload
+            upload_data['cached_chunks'][part_number] = chunk_data
+            print(f"DEBUG: Cached chunk data for part {part_number} ({chunk_size} bytes)")
             
         # Process this part
         print(f"DEBUG: Processing part {part_number} of {total_parts}, is_last_part={is_last_chunk}")
@@ -441,7 +430,7 @@ def upload_file():
                 print(f"Uploading part {part_number} of {total_parts} ({chunk_size_mb:.3f} MiB)")
                 
                 # Implement retry logic with exponential backoff
-                max_retries = 5
+                max_retries = 3  # Set to 3 retries max
                 retry_delay = 1  # Start with 1 second delay
                 
                 for retry_attempt in range(max_retries + 1):
@@ -471,9 +460,17 @@ def upload_file():
                             "cloudflare", "503", "502", "500", "429", "too many requests"
                         ])
                         
-                        # If we've run out of retries or this isn't retryable, re-raise the error
+                        # If we've run out of retries or this isn't retryable, delete cached chunk and re-raise the error
                         if retry_attempt >= max_retries or not is_retryable:
                             print(f"ERROR: Part {part_number} upload failed after {retry_attempt} retries: {error_message}")
+                            
+                            # Delete chunk from cache after max retries to free memory
+                            with app.upload_locks.get(upload_id, threading.Lock()):
+                                if upload_id in app.upload_processors:
+                                    if part_number in app.upload_processors[upload_id]['cached_chunks']:
+                                        del app.upload_processors[upload_id]['cached_chunks'][part_number]
+                                        print(f"DEBUG: Removed failed chunk {part_number} from cache after max retries")
+                            
                             raise
 
                         # Log the error and retry
