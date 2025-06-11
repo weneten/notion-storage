@@ -285,9 +285,8 @@ const uploadFile = async () => {
                 if (activeUploads === 0 && uploadQueue.length === 0) {
                     if (failedParts === 0) {
                         console.log('All parts uploaded successfully, finalizing...');
-                        // Hide progress text to prepare for finalization
-                        document.getElementById('progressSubText').textContent = '';
-                        document.getElementById('progressText').textContent = '';
+                        // Show 100% without detailed text
+                        updateProgressBar(100, '');
                         showFinalizingMessage('Preparing storage transfer...');
                         // Wait a moment to ensure all server-side processes are complete
                         setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
@@ -313,9 +312,8 @@ const uploadFile = async () => {
 // Function to finalize the upload
 const finalizeUpload = async (uploadId, fileSize) => {
     try {
-        // Hide progress text and only show finalization message
-        document.getElementById('progressSubText').textContent = '';
-        document.getElementById('progressText').textContent = '';
+        // Show 100% progress with empty text
+        updateProgressBar(100, '');
         showFinalizingMessage('Transferring to storage server...');
         
         const response = await fetch('/finalize_upload', {
@@ -331,9 +329,8 @@ const finalizeUpload = async (uploadId, fileSize) => {
             // If the error indicates missing parts, try again after a delay
             if (errorData.error && errorData.error.includes('missing parts')) {
                 showFinalizingMessage('Some parts still transferring, please wait...');
-                // Keep progress bar but hide text
-                document.getElementById('progressSubText').textContent = '';
-                document.getElementById('progressText').textContent = '';
+                // Keep progress at 100% with empty text
+                updateProgressBar(100, '');
                 // Wait 5 seconds and try again
                 setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
                 return;
@@ -345,8 +342,8 @@ const finalizeUpload = async (uploadId, fileSize) => {
         const finalizeData = await response.json();
         console.log('Upload finalized:', finalizeData);
         
-        // Update UI to show completion
-        updateProgressBar(100, `Storage complete (${formatFileSize(fileSize)})`);
+        // Update UI to show completion with empty progress text
+        updateProgressBar(100, '');
         showStatus(`Upload completed successfully. File ID: ${finalizeData.file_id}`, 'success');
         
         // Refresh file list
