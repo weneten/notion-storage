@@ -410,6 +410,7 @@ class NotionFileUploader:
             if original_filename is None:
                 original_filename = filename
 
+            # Initial progress - keep this to show upload is starting
             if self.socketio:
                 self.socketio.emit('upload_progress', {'percentage': 0, 'bytes_uploaded': 0, 'total_bytes': file_size})
 
@@ -417,6 +418,7 @@ class NotionFileUploader:
             upload_info = self.create_file_upload(content_type, filename)
             file_upload_id = upload_info['id']
 
+            # Initial progress after creating upload - keep this to show upload is starting
             if self.socketio:
                 self.socketio.emit('upload_progress', {'percentage': 10, 'bytes_uploaded': 0, 'total_bytes': file_size})
 
@@ -430,18 +432,20 @@ class NotionFileUploader:
                 stream_buffer.write(chunk)
                 total_bytes_received += len(chunk)
                 
-                if self.socketio and file_size > 0:
-                    progress = min(90, int((total_bytes_received / file_size) * 80) + 10)
-                    self.socketio.emit('upload_progress', {
-                        'percentage': progress,
-                        'bytes_uploaded': total_bytes_received,
-                        'total_bytes': file_size
-                    })
+                # Comment out progress updates during streaming to prevent UI jumping
+                # if self.socketio and file_size > 0:
+                #     progress = min(90, int((total_bytes_received / file_size) * 80) + 10)
+                #     self.socketio.emit('upload_progress', {
+                #         'percentage': progress,
+                #         'bytes_uploaded': total_bytes_received,
+                #         'total_bytes': file_size
+                #     })
 
             # Upload the complete file
             stream_buffer.seek(0)
             upload_result = self.send_file_content(file_upload_id, stream_buffer, content_type, filename, file_size)
 
+            # Final progress - keep this to show upload is complete
             if self.socketio:
                 self.socketio.emit('upload_progress', {'percentage': 100, 'bytes_uploaded': file_size, 'total_bytes': file_size})
 
@@ -498,13 +502,14 @@ class NotionFileUploader:
                         ""  # session_id
                     )
 
-                    if self.socketio:
-                        progress = min(100, int((part_number * chunk_size / file_size) * 100))
-                        self.socketio.emit('upload_progress', {
-                            'percentage': progress,
-                            'bytes_uploaded': min(part_number * chunk_size, file_size),
-                            'total_bytes': file_size
-                        })
+                    # Commented out to prevent server-to-Notion progress updates from being shown to the user
+                    # if self.socketio:
+                    #     progress = min(100, int((part_number * chunk_size / file_size) * 100))
+                    #     self.socketio.emit('upload_progress', {
+                    #         'percentage': progress,
+                    #         'bytes_uploaded': min(part_number * chunk_size, file_size),
+                    #         'total_bytes': file_size
+                    #     })
 
                     return result
                 except Exception as e:
@@ -659,13 +664,14 @@ class NotionFileUploader:
                     response_data['etag'] = etag
                 
                 # Emit a progress event if socketio is available
-                if self.socketio:
-                    self.socketio.emit('upload_progress', {
-                        'percentage': progress_percentage,
-                        'bytes_uploaded': bytes_uploaded_so_far + len(chunk_data),
-                        'total_bytes': total_bytes,
-                        'session_id': session_id
-                    })
+                # Commented out to prevent server-to-Notion progress updates from being shown to the user
+                # if self.socketio:
+                #     self.socketio.emit('upload_progress', {
+                #         'percentage': progress_percentage,
+                #         'bytes_uploaded': bytes_uploaded_so_far + len(chunk_data),
+                #         'total_bytes': total_bytes,
+                #         'session_id': session_id
+                #     })
                 
                 print(f"Successfully uploaded part {part_number} of {total_parts}")
                 return response_data
