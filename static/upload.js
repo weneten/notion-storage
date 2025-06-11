@@ -1,3 +1,15 @@
+// Global reference to spinning icon element to maintain continuous animation
+let persistentSpinningIcon = null;
+
+// Function to get or create a persistent spinning icon
+function getSpinningIcon() {
+    if (!persistentSpinningIcon) {
+        persistentSpinningIcon = document.createElement('i');
+        persistentSpinningIcon.className = 'fas fa-cog fa-spin mr-2';
+    }
+    return persistentSpinningIcon;
+}
+
 // Utility function to format file sizes
 function formatFileSize(bytes, decimals = 2) {
     if (bytes === 0) return '0 Bytes';
@@ -14,6 +26,9 @@ function formatFileSize(bytes, decimals = 2) {
 function showStatus(message, type) {
     const messageContainer = document.getElementById('messageContainer');
     if (!messageContainer) return;
+    
+    // Reset spinning icon since we're showing a different type of message
+    persistentSpinningIcon = null;
     
     messageContainer.innerHTML = '';
     
@@ -93,6 +108,9 @@ function resetUploadState() {
     if (messageContainer) {
         messageContainer.innerHTML = '';
     }
+    
+    // Reset persistent spinning icon
+    persistentSpinningIcon = null;
 }
 
 // Function to load files (refresh file list)
@@ -110,16 +128,49 @@ function showInitializingMessage(message) {
     const messageContainer = document.getElementById('messageContainer');
     if (!messageContainer) return;
     
-    messageContainer.innerHTML = '';
+    // Check if there's already an initializing message displayed
+    const existingAlert = messageContainer.querySelector('.alert-processing');
     
-    const alertDiv = document.createElement('div');
-    alertDiv.className = 'alert alert-processing';
-    alertDiv.style.backgroundColor = '#1c332d';
-    alertDiv.style.borderColor = '#03dac6';
-    alertDiv.style.color = '#03dac6';
-    alertDiv.innerHTML = '<i class="fas fa-cog fa-spin mr-2"></i>' + message;
-    
-    messageContainer.appendChild(alertDiv);
+    if (existingAlert) {
+        // If a message already exists, just update the text content
+        // Preserve the existing icon by finding and updating only text nodes
+        let hasUpdatedText = false;
+        for (let i = 0; i < existingAlert.childNodes.length; i++) {
+            const node = existingAlert.childNodes[i];
+            if (node.nodeType === Node.TEXT_NODE) {
+                node.nodeValue = message;
+                hasUpdatedText = true;
+                break;
+            }
+        }
+        
+        // If we couldn't find a text node to update, append message after icon
+        if (!hasUpdatedText) {
+            // Clear all nodes except the icon
+            while (existingAlert.firstChild) {
+                existingAlert.removeChild(existingAlert.firstChild);
+            }
+            
+            // Add the icon and message back
+            existingAlert.appendChild(getSpinningIcon());
+            existingAlert.appendChild(document.createTextNode(message));
+        }
+    } else {
+        // Create a new alert if none exists
+        messageContainer.innerHTML = '';
+        
+        const alertDiv = document.createElement('div');
+        alertDiv.className = 'alert alert-processing';
+        alertDiv.style.backgroundColor = '#311b3f !important';  // Darker purple background (matching finalizing)
+        alertDiv.style.borderColor = '#bb86fc !important';      // Purple border (matching finalizing)
+        alertDiv.style.color = '#bb86fc !important';            // Purple text (matching finalizing)
+        
+        // Append the persistent spinning icon and message text
+        alertDiv.appendChild(getSpinningIcon());
+        alertDiv.appendChild(document.createTextNode(message));
+        
+        messageContainer.appendChild(alertDiv);
+    }
 }
 
 // Function to show finalization message
@@ -127,16 +178,58 @@ function showFinalizingMessage(message) {
     const messageContainer = document.getElementById('messageContainer');
     if (!messageContainer) return;
     
-    messageContainer.innerHTML = '';
+    // Check if there's already a processing or finalizing message displayed
+    let existingAlert = messageContainer.querySelector('.alert-finalizing');
+    if (!existingAlert) {
+        existingAlert = messageContainer.querySelector('.alert-processing');
+    }
     
-    const alertDiv = document.createElement('div');
-    alertDiv.className = 'alert alert-finalizing';
-    alertDiv.style.backgroundColor = '#311b3f';  // Darker purple background
-    alertDiv.style.borderColor = '#bb86fc';      // Purple border
-    alertDiv.style.color = '#bb86fc';            // Purple text
-    alertDiv.innerHTML = '<i class="fas fa-cloud-upload-alt fa-spin mr-2"></i>' + message;
-    
-    messageContainer.appendChild(alertDiv);
+    if (existingAlert) {
+        // Change class to finalizing if it was processing
+        if (existingAlert.classList.contains('alert-processing')) {
+            existingAlert.classList.remove('alert-processing');
+            existingAlert.classList.add('alert-finalizing');
+        }
+        
+        // If a message already exists, just update the text content
+        // Preserve the existing icon by finding and updating only text nodes
+        let hasUpdatedText = false;
+        for (let i = 0; i < existingAlert.childNodes.length; i++) {
+            const node = existingAlert.childNodes[i];
+            if (node.nodeType === Node.TEXT_NODE) {
+                node.nodeValue = message;
+                hasUpdatedText = true;
+                break;
+            }
+        }
+        
+        // If we couldn't find a text node to update, append message after icon
+        if (!hasUpdatedText) {
+            // Clear all nodes except the icon
+            while (existingAlert.firstChild) {
+                existingAlert.removeChild(existingAlert.firstChild);
+            }
+            
+            // Add the icon and message back
+            existingAlert.appendChild(getSpinningIcon());
+            existingAlert.appendChild(document.createTextNode(message));
+        }
+    } else {
+        // Create a new alert if none exists
+        messageContainer.innerHTML = '';
+        
+        const alertDiv = document.createElement('div');
+        alertDiv.className = 'alert alert-finalizing';
+        alertDiv.style.backgroundColor = '#311b3f !important';  // Darker purple background
+        alertDiv.style.borderColor = '#bb86fc !important';      // Purple border
+        alertDiv.style.color = '#bb86fc !important';            // Purple text
+        
+        // Append the persistent spinning icon and message text
+        alertDiv.appendChild(getSpinningIcon());
+        alertDiv.appendChild(document.createTextNode(message));
+        
+        messageContainer.appendChild(alertDiv);
+    }
 }
 
 // Function to upload a file with chunking and proper tracking
@@ -179,6 +272,9 @@ const uploadFile = async () => {
         
         console.log(`Upload initialized with ID: ${uploadId}, ${totalParts} parts`);
         updateProgressBar(0, `Upload initialized (0/${totalParts} parts, 0/${formatFileSize(fileSize)})`);
+        
+        // Update the initialization message to show we're now uploading
+        showInitializingMessage(`Uploading file: ${fileName} (${formatFileSize(fileSize)})...`);
         
         // Step 2: Split file into chunks and upload each
         const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API

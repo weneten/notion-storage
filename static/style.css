@@ -365,6 +365,23 @@ input:checked + .slider:before {
     color: #03dac6 !important;
 }
 
+/* Custom alert classes for upload process */
+.alert-processing,
+.alert.alert-processing,
+#messageContainer .alert-processing {
+    background-color: #311b3f !important;
+    border: 1px solid #bb86fc !important;
+    color: #bb86fc !important;
+}
+
+.alert-finalizing,
+.alert.alert-finalizing,
+#messageContainer .alert-finalizing {
+    background-color: #311b3f !important;
+    border: 1px solid #bb86fc !important;
+    color: #bb86fc !important;
+}
+
 /* Auth container styles */
 .auth-container {
     background: #1e1e1e;
