@@ -271,7 +271,7 @@ const uploadFile = async () => {
         const totalParts = uploadData.total_parts || 1;
         
         console.log(`Upload initialized with ID: ${uploadId}, ${totalParts} parts`);
-        updateProgressBar(0, `Upload initialized (0/${totalParts} parts, 0/${formatFileSize(fileSize)})`);
+        updateProgressBar(0, `Uploading: 0/${formatFileSize(fileSize)}`);
         
         // Update the initialization message to show we're now uploading
         showInitializingMessage(`Uploading file: ${fileName} (${formatFileSize(fileSize)})...`);
@@ -345,7 +345,7 @@ const uploadFile = async () => {
                 completedParts++;
                 const progress = Math.floor((completedParts / totalParts) * 100);
                 const uploadedBytes = completedParts * chunkSize > fileSize ? fileSize : completedParts * chunkSize;
-                updateProgressBar(progress, `Uploading: ${completedParts}/${totalParts} parts (${formatFileSize(uploadedBytes)}/${formatFileSize(fileSize)}, ${progress}%)`);
+                updateProgressBar(progress, `Uploading: ${formatFileSize(uploadedBytes)}/${formatFileSize(fileSize)}`);
                 
                 // Mark chunk as uploaded
                 chunk.uploaded = true;
@@ -367,7 +367,7 @@ const uploadFile = async () => {
                 } else {
                     console.error(`Part ${chunk.partNumber} failed after ${chunk.maxRetries} attempts`);
                     failedParts++;
-                    showStatus(`Part ${chunk.partNumber} failed after ${chunk.maxRetries} attempts`, 'error');
+                    showStatus(`Upload failed, please try again`, 'error');
                 }
             } finally {
                 activeUploads--;
@@ -387,7 +387,7 @@ const uploadFile = async () => {
                         // Wait a moment to ensure all server-side processes are complete
                         setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
                     } else {
-                        showStatus(`Upload failed: ${failedParts} parts could not be uploaded`, 'error');
+                        showStatus(`Upload failed, please try again`, 'error');
                     }
                 }
             }
@@ -424,7 +424,7 @@ const finalizeUpload = async (uploadId, fileSize) => {
             
             // If the error indicates missing parts, try again after a delay
             if (errorData.error && errorData.error.includes('missing parts')) {
-                showFinalizingMessage('Some parts still transferring, please wait...');
+                showFinalizingMessage('Still transferring, please wait...');
                 // Keep progress at 100% with empty text
                 updateProgressBar(100, '');
                 // Wait 5 seconds and try again
