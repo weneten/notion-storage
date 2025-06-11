@@ -488,8 +488,8 @@ const uploadFile = async () => {
             });
         }
         
-        // Upload chunks with max 1 concurrent uploads
-        const maxConcurrent = 1;
+        // Upload chunks with max 3 concurrent uploads
+        const maxConcurrent = 3;
         let activeUploads = 0;
         let completedParts = 0;
         let failedParts = 0;
