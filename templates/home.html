@@ -119,11 +119,12 @@
         });
         
         socket.on('upload_complete', function(data) {
+            console.log('Upload complete event received:', data);
             updateProgressBar(100, 'Upload complete');
             showStatus(`File uploaded successfully. ID: ${data.file_id}`, 'success');
             
-            // Refresh file list
-            setTimeout(loadFiles, 1500);
+            // Refresh file list with a small delay to ensure server has updated
+            setTimeout(loadFiles, 500);
         });
         
         // Add event handlers for delete buttons

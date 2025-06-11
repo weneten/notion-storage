@@ -116,11 +116,201 @@ function resetUploadState() {
 // Function to load files (refresh file list)
 async function loadFiles() {
     try {
-        // Reload the page to refresh the file list
-        window.location.reload();
+        console.log('Refreshing file list with AJAX...');
+        // Fetch the file list data from the API
+        const response = await fetch('/files-api');
+        if (!response.ok) {
+            throw new Error('Failed to fetch file list');
+        }
+        
+        const data = await response.json();
+        if (!data.files) {
+            throw new Error('Invalid response format');
+        }
+        
+        // Get the files container to update
+        const filesContainer = document.getElementById('files-container');
+        if (!filesContainer) {
+            console.error('Files container not found');
+            return;
+        }
+        
+        // If there are no files, show empty state
+        if (data.files.length === 0) {
+            filesContainer.innerHTML = `
+                <div class="alert alert-info text-center">
+                    <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
+                </div>
+            `;
+            return;
+        }
+        
+        // Generate the table HTML
+        let tableHTML = `
+            <div class="table-responsive">
+                <table class="table" id="fileTable">
+                    <thead>
+                        <tr>
+                            <th><i class="fas fa-file mr-1"></i> Filename</th>
+                            <th><i class="fas fa-weight mr-1"></i> Size</th>
+                            <th><i class="fas fa-link mr-1"></i> Public Link</th>
+                            <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
+                            <th><i class="fas fa-cogs mr-1"></i> Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
+        
+        // Generate rows for each file
+        data.files.forEach(file => {
+            const fileId = file.id || '';
+            const fileHash = file.file_hash || '';
+            const isPublic = file.is_public || false;
+            
+            tableHTML += `
+                <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
+                    <td><strong>${file.name}</strong></td>
+                    <td class="filesize-cell">${formatFileSize(file.size)}</td>
+                    <td>
+                        ${fileHash ? 
+                            `<a href="/d/${fileHash}" target="_blank" class="public-link">
+                                <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0, 10)}...
+                            </a>` : 
+                            '<span class="text-muted">N/A</span>'
+                        }
+                    </td>
+                    <td>
+                        <label class="switch">
+                            <input type="checkbox" class="public-toggle" ${isPublic ? 'checked' : ''}>
+                            <span class="slider round"></span>
+                        </label>
+                    </td>
+                    <td class="action-buttons">
+                        <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-download mr-1"></i>Download
+                        </a>
+                        <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}">
+                            <i class="fas fa-trash-alt mr-1"></i>Delete
+                        </button>
+                    </td>
+                </tr>
+            `;
+        });
+        
+        // Close the table
+        tableHTML += `
+                    </tbody>
+                </table>
+            </div>
+        `;
+        
+        // Update the container
+        filesContainer.innerHTML = tableHTML;
+        
+        // Add event listeners to the buttons
+        setupFileActionEventHandlers();
+        
+        console.log('File list refreshed successfully');
     } catch (error) {
         console.error('Error loading files:', error);
+        showStatus('Failed to refresh file list: ' + error.message, 'error');
     }
+}
+
+// Set up event handlers for file actions (delete, public toggle)
+function setupFileActionEventHandlers() {
+    // Add event handlers for delete buttons
+    document.querySelectorAll('.delete-btn').forEach(button => {
+        button.addEventListener('click', async function() {
+            const fileId = this.dataset.fileId;
+            const fileHash = this.closest('tr').dataset.fileHash;
+            
+            if (!confirm('Are you sure you want to delete this file?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/delete_file', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        file_id: fileId, 
+                        file_hash: fileHash 
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to delete file');
+                }
+                
+                const responseData = await response.json();
+                if (responseData.status === 'success') {
+                    this.closest('tr').remove();
+                    showStatus('File deleted successfully', 'success');
+                    
+                    // Check if there are any remaining files
+                    if (document.querySelectorAll('#fileTable tbody tr').length === 0) {
+                        // If no files left, update the container
+                        document.getElementById('files-container').innerHTML = `
+                            <div class="alert alert-info text-center">
+                                <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
+                            </div>
+                        `;
+                    }
+                } else {
+                    showStatus(responseData.error || 'Failed to delete file', 'error');
+                }
+            } catch (error) {
+                console.error('Delete Error:', error);
+                showStatus('Error deleting file: ' + error.message, 'error');
+            }
+        });
+    });
+    
+    // Add event handlers for public toggles
+    document.querySelectorAll('.public-toggle').forEach(toggle => {
+        toggle.addEventListener('change', async function() {
+            const row = this.closest('tr');
+            const fileId = row.dataset.fileId;
+            const fileHash = row.dataset.fileHash;
+            const isPublic = this.checked;
+            
+            try {
+                const response = await fetch('/toggle_public_access', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        file_id: fileId,
+                        is_public: isPublic,
+                        salted_sha512_hash: fileHash
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to update public status');
+                }
+                
+                const responseData = await response.json();
+                if (responseData.status === 'success') {
+                    showStatus(`File is now ${isPublic ? 'public' : 'private'}`, 'success');
+                } else {
+                    // Revert toggle if update failed
+                    this.checked = !isPublic;
+                    showStatus(responseData.error || 'Failed to update public status', 'error');
+                }
+            } catch (error) {
+                console.error('Toggle Public Access Error:', error);
+                this.checked = !isPublic; // Revert toggle on error
+                showStatus('Error updating public status: ' + error.message, 'error');
+            }
+        });
+    });
 }
 
 // Function to show initialization message
