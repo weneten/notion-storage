@@ -657,7 +657,7 @@ def download_file(filename):
         if file_hash:
             return redirect(url_for('download_by_hash', salted_sha512_hash=file_hash))
         else:
-            return "File not found in Notion database", 404
+            return "File not found in database", 404
     except Exception as e:
         return str(e), 500
 
@@ -1181,7 +1181,7 @@ def finalize_upload():
                 # Return success with file ID
                 return jsonify({
                     'status': 'success',
-                    'message': 'File uploaded successfully and Notion database updated.',
+                    'message': 'File uploaded successfully and database updated.',
                     'file_id': page_id,
                     'file_hash': salted_file_hash,
                     'original_filename': original_filename
@@ -1241,7 +1241,7 @@ def finalize_upload():
                         # Return success with file ID
                         return jsonify({
                             'status': 'success',
-                            'message': 'File uploaded successfully and Notion database updated.',
+                            'message': 'File uploaded successfully and database updated.',
                             'file_id': page_id,
                             'file_hash': salted_file_hash,
                             'original_filename': original_filename

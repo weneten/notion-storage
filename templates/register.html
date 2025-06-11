@@ -1,28 +1,29 @@
-<!DOCTYPE html>
-<html lang="de">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Registrierung</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-</head>
-<body>
-    <div class="container">
-        <h1>Registrierung</h1>
-        <form method="POST" action="{{ url_for('register') }}">
-            <div class="form-group">
-                <label for="username">Benutzername:</label>
-                <input type="text" id="username" name="username" required>
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="auth-container">
+                <h1><i class="fas fa-user-plus mr-2"></i>Register</h1>
+                <form method="post">
+                    <div class="form-group">
+                        <label for="username">Username</label>
+                        <input type="text" class="form-control" id="username" name="username" required autofocus>
+                    </div>
+                    <div class="form-group">
+                        <label for="password">Password</label>
+                        <input type="password" class="form-control" id="password" name="password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-block">
+                        <i class="fas fa-user-plus mr-1"></i> Register
+                    </button>
+                </form>
+                <div class="auth-links mt-3 text-center">
+                    <p>Already have an account? <a href="{{ url_for('login') }}">Login here</a></p>
+                </div>
             </div>
-            <div class="form-group">
-                <label for="password">Passwort:</label>
-                <input type="password" id="password" name="password" required>
-            </div>
-            <button type="submit">Registrieren</button>
-        </form>
-        <p class="link-text">
-            Bereits registriert? <a href="{{ url_for('login') }}">Zum Login</a>
-        </p>
+        </div>
     </div>
-</body>
-</html>
+</div>
+{% endblock %}

@@ -15,11 +15,39 @@ function showStatus(message, type) {
     
     messageContainer.innerHTML = '';
     
+    // Determine the correct alert class
+    let alertClass = 'alert-info'; // Default to info
+    if (type === 'error') {
+        alertClass = 'alert-danger';
+    } else if (type === 'success') {
+        alertClass = 'alert-success';
+    } else if (type === 'info') {
+        alertClass = 'alert-info';
+    }
+    
     const alertDiv = document.createElement('div');
-    alertDiv.className = `alert alert-${type === 'error' ? 'danger' : (type === 'success' ? 'success' : 'info')}`;
-    alertDiv.textContent = message;
+    alertDiv.className = `alert ${alertClass}`;
+    
+    // Add appropriate icon based on message type
+    let icon = '';
+    if (type === 'error') {
+        icon = '<i class="fas fa-exclamation-circle mr-2"></i>';
+    } else if (type === 'success') {
+        icon = '<i class="fas fa-check-circle mr-2"></i>';
+    } else {
+        icon = '<i class="fas fa-info-circle mr-2"></i>';
+    }
+    
+    alertDiv.innerHTML = icon + message;
     
     messageContainer.appendChild(alertDiv);
+    
+    // Apply inline styles to override any Bootstrap styles
+    if (type === 'info' || type === 'initializing' || type === 'finalizing') {
+        alertDiv.style.backgroundColor = '#1c332d';
+        alertDiv.style.borderColor = '#03dac6';
+        alertDiv.style.color = '#03dac6';
+    }
     
     // Auto-remove after 5 seconds for success messages
     if (type === 'success') {
@@ -75,6 +103,40 @@ async function loadFiles() {
     }
 }
 
+// Function to show initialization message
+function showInitializingMessage(message) {
+    const messageContainer = document.getElementById('messageContainer');
+    if (!messageContainer) return;
+    
+    messageContainer.innerHTML = '';
+    
+    const alertDiv = document.createElement('div');
+    alertDiv.className = 'alert alert-processing';
+    alertDiv.style.backgroundColor = '#1c332d';
+    alertDiv.style.borderColor = '#03dac6';
+    alertDiv.style.color = '#03dac6';
+    alertDiv.innerHTML = '<i class="fas fa-cog fa-spin mr-2"></i>' + message;
+    
+    messageContainer.appendChild(alertDiv);
+}
+
+// Function to show finalization message
+function showFinalizingMessage(message) {
+    const messageContainer = document.getElementById('messageContainer');
+    if (!messageContainer) return;
+    
+    messageContainer.innerHTML = '';
+    
+    const alertDiv = document.createElement('div');
+    alertDiv.className = 'alert alert-processing';
+    alertDiv.style.backgroundColor = '#1c332d';
+    alertDiv.style.borderColor = '#03dac6';
+    alertDiv.style.color = '#03dac6';
+    alertDiv.innerHTML = '<i class="fas fa-cog fa-spin mr-2"></i>' + message;
+    
+    messageContainer.appendChild(alertDiv);
+}
+
 // Function to upload a file with chunking and proper tracking
 const uploadFile = async () => {
     const fileInput = document.getElementById('fileInput');
@@ -93,7 +155,7 @@ const uploadFile = async () => {
     
     try {
         // Step 1: Initialize upload and get upload ID
-        showStatus(`Initializing upload for ${fileName} (${formatFileSize(fileSize)})...`, 'info');
+        showInitializingMessage(`Initializing upload for ${fileName} (${formatFileSize(fileSize)})...`);
         const initResponse = await fetch('/init_upload', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -244,7 +306,7 @@ const uploadFile = async () => {
 // Function to finalize the upload
 const finalizeUpload = async (uploadId) => {
     try {
-        showStatus('Finalizing upload...', 'info');
+        showFinalizingMessage('Finalizing upload...');
         updateProgressBar(95, 'Finalizing upload...');
         
         const response = await fetch('/finalize_upload', {
@@ -259,7 +321,7 @@ const finalizeUpload = async (uploadId) => {
             
             // If the error indicates missing parts, try again after a delay
             if (errorData.error && errorData.error.includes('missing parts')) {
-                showStatus('Some parts still uploading, waiting to finalize...', 'info');
+                showFinalizingMessage('Some parts still uploading, waiting to finalize...');
                 // Wait 5 seconds and try again
                 setTimeout(() => finalizeUpload(uploadId), 5000);
                 return;
