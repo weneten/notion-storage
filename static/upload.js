@@ -285,9 +285,10 @@ const uploadFile = async () => {
                 if (activeUploads === 0 && uploadQueue.length === 0) {
                     if (failedParts === 0) {
                         console.log('All parts uploaded successfully, finalizing...');
-                        // Set progress to 100% before finalizing
-                        updateProgressBar(100, `Client upload complete (${formatFileSize(fileSize)})`);
-                        showFinalizingMessage('Preparing to transfer to Notion storage...');
+                        // Hide progress text to prepare for finalization
+                        document.getElementById('progressSubText').textContent = '';
+                        document.getElementById('progressText').textContent = '';
+                        showFinalizingMessage('Preparing storage transfer...');
                         // Wait a moment to ensure all server-side processes are complete
                         setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
                     } else {
@@ -312,9 +313,10 @@ const uploadFile = async () => {
 // Function to finalize the upload
 const finalizeUpload = async (uploadId, fileSize) => {
     try {
-        // First update progress to 100% to show upload is complete
-        updateProgressBar(100, `Upload to server complete (${formatFileSize(fileSize)})`);
-        showFinalizingMessage('Finalizing: Transferring to Notion storage...');
+        // Hide progress text and only show finalization message
+        document.getElementById('progressSubText').textContent = '';
+        document.getElementById('progressText').textContent = '';
+        showFinalizingMessage('Transferring to storage server...');
         
         const response = await fetch('/finalize_upload', {
             method: 'POST',
@@ -328,9 +330,10 @@ const finalizeUpload = async (uploadId, fileSize) => {
             
             // If the error indicates missing parts, try again after a delay
             if (errorData.error && errorData.error.includes('missing parts')) {
-                showFinalizingMessage('Some parts still transferring to Notion, please wait...');
-                // Keep progress at 100% even when waiting for missing parts
-                updateProgressBar(100, `Transferring to Notion (${formatFileSize(fileSize)}), please wait...`);
+                showFinalizingMessage('Some parts still transferring, please wait...');
+                // Keep progress bar but hide text
+                document.getElementById('progressSubText').textContent = '';
+                document.getElementById('progressText').textContent = '';
                 // Wait 5 seconds and try again
                 setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
                 return;
@@ -343,7 +346,7 @@ const finalizeUpload = async (uploadId, fileSize) => {
         console.log('Upload finalized:', finalizeData);
         
         // Update UI to show completion
-        updateProgressBar(100, `Successfully stored in Notion (${formatFileSize(fileSize)})`);
+        updateProgressBar(100, `Storage complete (${formatFileSize(fileSize)})`);
         showStatus(`Upload completed successfully. File ID: ${finalizeData.file_id}`, 'success');
         
         // Refresh file list
