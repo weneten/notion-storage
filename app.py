@@ -70,7 +70,7 @@ app.upload_processors = {}
 def format_bytes(bytes, decimals=2):
     if bytes == 0:
         return '0 Bytes'
-    k = 1024
+    k = 1000  # Changed from 1024 to 1000 to display MB/GB instead of MiB/GiB
     dm = 0 if decimals < 0 else decimals
     sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
     i = math.floor(math.log(bytes) / math.log(k))

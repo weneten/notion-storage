@@ -1,7 +1,9 @@
 // Utility function to format file sizes
 function formatFileSize(bytes, decimals = 2) {
     if (bytes === 0) return '0 Bytes';
-    const k = 1024;
+    
+    // Use 1000 instead of 1024 to get MB/GB instead of MiB/GiB
+    const k = 1000;
     const dm = decimals < 0 ? 0 : decimals;
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -176,7 +178,7 @@ const uploadFile = async () => {
         const totalParts = uploadData.total_parts || 1;
         
         console.log(`Upload initialized with ID: ${uploadId}, ${totalParts} parts`);
-        updateProgressBar(0, `Upload initialized (0/${totalParts} parts)`);
+        updateProgressBar(0, `Upload initialized (0/${totalParts} parts, 0/${formatFileSize(fileSize)})`);
         
         // Step 2: Split file into chunks and upload each
         const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API
@@ -246,7 +248,8 @@ const uploadFile = async () => {
                 // Update progress
                 completedParts++;
                 const progress = Math.floor((completedParts / totalParts) * 100);
-                updateProgressBar(progress, `Uploading: ${completedParts}/${totalParts} parts (${progress}%)`);
+                const uploadedBytes = completedParts * chunkSize > fileSize ? fileSize : completedParts * chunkSize;
+                updateProgressBar(progress, `Uploading: ${completedParts}/${totalParts} parts (${formatFileSize(uploadedBytes)}/${formatFileSize(fileSize)}, ${progress}%)`);
                 
                 // Mark chunk as uploaded
                 chunk.uploaded = true;
@@ -282,8 +285,10 @@ const uploadFile = async () => {
                 if (activeUploads === 0 && uploadQueue.length === 0) {
                     if (failedParts === 0) {
                         console.log('All parts uploaded successfully, finalizing...');
+                        // Set progress to 100% before finalizing
+                        updateProgressBar(100, `Upload complete (${formatFileSize(fileSize)}), finalizing...`);
                         // Wait a moment to ensure all server-side processes are complete
-                        setTimeout(() => finalizeUpload(uploadId), 5000);
+                        setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
                     } else {
                         showStatus(`Upload failed: ${failedParts} parts could not be uploaded`, 'error');
                     }
@@ -304,10 +309,11 @@ const uploadFile = async () => {
 };
 
 // Function to finalize the upload
-const finalizeUpload = async (uploadId) => {
+const finalizeUpload = async (uploadId, fileSize) => {
     try {
-        showFinalizingMessage('Finalizing upload...');
-        updateProgressBar(95, 'Finalizing upload...');
+        // First update progress to 100% to show upload is complete
+        updateProgressBar(100, `Finalizing upload, please wait...`);
+        showFinalizingMessage('Finalizing upload, please wait...');
         
         const response = await fetch('/finalize_upload', {
             method: 'POST',
@@ -322,8 +328,10 @@ const finalizeUpload = async (uploadId) => {
             // If the error indicates missing parts, try again after a delay
             if (errorData.error && errorData.error.includes('missing parts')) {
                 showFinalizingMessage('Some parts still uploading, waiting to finalize...');
+                // Keep progress at 100% even when waiting for missing parts
+                updateProgressBar(100, `Some parts still uploading (${formatFileSize(fileSize)}), please wait...`);
                 // Wait 5 seconds and try again
-                setTimeout(() => finalizeUpload(uploadId), 5000);
+                setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
                 return;
             }
             
@@ -333,8 +341,8 @@ const finalizeUpload = async (uploadId) => {
         const finalizeData = await response.json();
         console.log('Upload finalized:', finalizeData);
         
-        // Update UI
-        updateProgressBar(100, 'Upload complete');
+        // Update UI to show completion
+        updateProgressBar(100, `Upload complete (${formatFileSize(fileSize)})`);
         showStatus(`Upload completed successfully. File ID: ${finalizeData.file_id}`, 'success');
         
         // Refresh file list
