@@ -59,7 +59,7 @@ def log_memory_usage():
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY')  # Default secret key for development
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))  # Generate random secret if not provided
 CORS(app)  # Enable CORS for all routes
 socketio = SocketIO(app, cors_allowed_origins="*")
 
@@ -1412,13 +1412,16 @@ if __name__ == '__main__':
     print("Starting memory usage monitoring...")
     log_memory_usage()
     
+    # Get port from environment variable or use default
+    port = int(os.environ.get('PORT', 8080))
+    
     # Only run the development server if FLASK_ENV is set to 'development'
     # In production, Gunicorn will run the app
     if os.environ.get('FLASK_ENV') == 'development':
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True)
+        socketio.run(app, host='0.0.0.0', port=port, debug=True)
     else:
         # For production, Gunicorn will handle running the app
         # This block is primarily for local development without FLASK_ENV=development
         # or for direct execution in environments where Gunicorn isn't used.
-        print("Running in non-development mode. Use Gunicorn for production deployment.")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False) # debug should be False in production
+        print(f"Running in non-development mode on port {port}. Use Gunicorn for production deployment.")
+        socketio.run(app, host='0.0.0.0', port=port, debug=False) # debug should be False in production

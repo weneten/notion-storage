@@ -1,0 +1,27 @@
+name: storage-project
+services:
+  - name: web
+    instance:
+      type: nano
+      memory: 512
+    ports:
+      - port: 8080
+        protocol: http
+    routes:
+      - path: /
+        port: 8080
+    env:
+      - name: PORT
+        value: 8080
+    healthcheck:
+      port: 8080
+      path: /
+      initial_delay: 10s
+      period: 30s
+      timeout: 5s
+      failure_threshold: 3
+      success_threshold: 1
+    source:
+      type: git
+      repository: <YOUR_REPOSITORY_URL>
+      branch: main 
