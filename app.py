@@ -68,10 +68,25 @@ socketio = SocketIO(
     cors_allowed_origins="*", 
     binary=True,
     async_mode='eventlet',
-    max_http_buffer_size=10 * 1024 * 1024,  # 10MB buffer
+    max_http_buffer_size=5 * 1024 * 1024,  # Reduce to 5MB buffer
     ping_timeout=60,
     ping_interval=25
 )
+
+# Add memory limit protection
+MAX_MEMORY_PERCENT = 80  # Max memory usage percentage before rejecting uploads
+
+# Function to check if memory usage is too high
+def is_memory_usage_high():
+    try:
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        memory_percent = process.memory_percent()
+        print(f"DEBUG: Current memory usage: {memory_percent:.2f}% ({memory_info.rss / (1024 * 1024):.2f} MB)")
+        return memory_percent > MAX_MEMORY_PERCENT
+    except Exception as e:
+        print(f"ERROR checking memory usage: {e}")
+        return False  # Assume it's safe if we can't check
 
 # Initialize global upload state containers
 app.upload_locks = {}
@@ -1432,6 +1447,15 @@ def handle_binary_chunk(binary_data):
     try:
         print(f"DEBUG: Binary chunk handler received data of type: {type(binary_data)}, size: {len(binary_data) if hasattr(binary_data, '__len__') else 'unknown'}")
         
+        # Check memory usage before processing
+        if is_memory_usage_high():
+            print(f"WARNING: Memory usage too high, rejecting binary chunk")
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Server memory usage too high, please try again later'
+            }))
+            return
+            
         # Get the metadata from the session
         if not hasattr(request, 'upload_metadata') or not request.upload_metadata.get('pending_binary'):
             print(f"ERROR: Received binary data without metadata")
@@ -1472,34 +1496,43 @@ def handle_binary_chunk(binary_data):
             }))
             return
         
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            upload_data = app.upload_processors[upload_id]
+        # Process data with memory protection
+        try:
+            with app.upload_locks.get(upload_id, threading.Lock()):
+                upload_data = app.upload_processors[upload_id]
+                
+                # Update hasher with chunk data
+                upload_data['hasher'].update(binary_data)
+                
+                # Cache chunk for processing - we'll process it immediately to avoid memory issues
+                thread = threading.Thread(
+                    target=process_websocket_chunk,
+                    args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, request.sid)
+                )
+                thread.daemon = True
+                thread.start()
+                
+            # Reset pending binary flag
+            request.upload_metadata['pending_binary'] = False
             
-            # Update hasher with chunk data
-            upload_data['hasher'].update(binary_data)
+            # Acknowledge receipt of binary data to client
+            emit('message', json.dumps({
+                'status': 'binary_received',
+                'part_number': part_number,
+                'upload_id': upload_id
+            }))
             
-            # Cache chunk for processing
-            upload_data['cached_chunks'][part_number] = binary_data
-            upload_data['pending_parts'].add(part_number)
+            # Clear binary_data reference to help garbage collection
+            binary_data = None
             
-            # Process the chunk in a background thread
-            thread = threading.Thread(
-                target=process_websocket_chunk,
-                args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, request.sid)
-            )
-            thread.daemon = True
-            thread.start()
+        except MemoryError as me:
+            print(f"MEMORY ERROR in binary chunk handler: {str(me)}")
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Server out of memory, please try again later'
+            }))
+            return
             
-        # Reset pending binary flag
-        request.upload_metadata['pending_binary'] = False
-        
-        # Acknowledge receipt of binary data to client
-        emit('message', json.dumps({
-            'status': 'binary_received',
-            'part_number': part_number,
-            'upload_id': upload_id
-        }))
-        
     except Exception as e:
         print(f"ERROR in binary chunk handler: {str(e)}")
         import traceback
@@ -1665,6 +1698,9 @@ def process_websocket_chunk(upload_id, part_number, chunk_data, is_last_chunk, c
             filename = upload_data.get('filename')
             salt = upload_data.get('salt')
             
+            # Mark this part as pending
+            upload_data['pending_parts'].add(part_number)
+            
         # Get user database ID (we'll need it for the Notion API)
         user_id = current_user.id
         user_database_id = uploader.get_user_database_id(user_id)
@@ -1695,13 +1731,14 @@ def process_websocket_chunk(upload_id, part_number, chunk_data, is_last_chunk, c
                     print(f"DEBUG: Successfully uploaded part {part_number} to Notion")
                     
                     with app.upload_locks.get(upload_id, threading.Lock()):
-                        upload_data = app.upload_processors[upload_id]
-                        upload_data['completed_parts'].add(part_number)
-                        if part_number in upload_data['pending_parts']:
-                            upload_data['pending_parts'].remove(part_number)
-                        
-                        # Update bytes uploaded
-                        upload_data['bytes_uploaded'] += len(chunk_data)
+                        if upload_id in app.upload_processors:
+                            upload_data = app.upload_processors[upload_id]
+                            upload_data['completed_parts'].add(part_number)
+                            if part_number in upload_data['pending_parts']:
+                                upload_data['pending_parts'].remove(part_number)
+                            
+                            # Update bytes uploaded
+                            upload_data['bytes_uploaded'] += len(chunk_data)
                         
                     # Notify client that chunk was received
                     socketio.emit('message', json.dumps({
@@ -1725,12 +1762,23 @@ def process_websocket_chunk(upload_id, part_number, chunk_data, is_last_chunk, c
                         'status': 'error',
                         'message': f'Failed to upload part {part_number} after {max_retries} attempts'
                     }), room=session_id)
+                    
+                    # Remove from pending parts to free up memory
+                    with app.upload_locks.get(upload_id, threading.Lock()):
+                        if upload_id in app.upload_processors:
+                            upload_data = app.upload_processors[upload_id]
+                            if part_number in upload_data['pending_parts']:
+                                upload_data['pending_parts'].remove(part_number)
+                    
                     return
                 
                 # Otherwise wait and retry
                 retry_delay = retry_delay * 2
                 time.sleep(retry_delay)
                 print(f"Retrying part {part_number}, attempt {retry_attempt + 2}/{max_retries + 1}")
+        
+        # Clear chunk_data reference to help garbage collection
+        chunk_data = None
                 
     except Exception as e:
         print(f"ERROR in process_websocket_chunk: {str(e)}")
@@ -1740,6 +1788,13 @@ def process_websocket_chunk(upload_id, part_number, chunk_data, is_last_chunk, c
             'status': 'error',
             'message': f'Error processing chunk: {str(e)}'
         }), room=session_id)
+        
+        # Remove from pending parts to free up memory
+        with app.upload_locks.get(upload_id, threading.Lock()):
+            if upload_id in app.upload_processors:
+                upload_data = app.upload_processors[upload_id]
+                if part_number in upload_data['pending_parts']:
+                    upload_data['pending_parts'].remove(part_number)
 
 # Helper function to process WebSocket finalization in the background
 def process_websocket_finalization(upload_id, session_id):

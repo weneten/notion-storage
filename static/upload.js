@@ -478,6 +478,9 @@ const uploadFile = async () => {
         // Ensure binary data is sent correctly
         socket.binaryType = 'arraybuffer';
         
+        // Determine if this is a large file (over 1GB)
+        const isLargeFile = fileSize > 1024 * 1024 * 1024;
+        
         // Chunk size and tracking variables
         const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API
         let completedParts = 0;
@@ -486,6 +489,7 @@ const uploadFile = async () => {
         let retryCount = 0;
         let binaryReceived = false;
         const maxRetries = 3;
+        let waitTimeBeforeNextChunk = isLargeFile ? 500 : 100; // ms
         
         // Create upload queue
         const uploadQueue = [];
@@ -512,7 +516,13 @@ const uploadFile = async () => {
                 if (response.status === 'ready_for_chunk') {
                     // Server is ready for the next chunk
                     retryCount = 0; // Reset retry count on successful message
-                    sendNextChunk();
+                    
+                    // For very large files, add a small delay to avoid memory pressure
+                    if (isLargeFile) {
+                        setTimeout(sendNextChunk, waitTimeBeforeNextChunk);
+                    } else {
+                        sendNextChunk();
+                    }
                 } 
                 else if (response.status === 'binary_received') {
                     // Binary data was received by the server but still being processed
@@ -537,10 +547,13 @@ const uploadFile = async () => {
                     
                     // If we have more chunks, tell server we're ready to send next
                     if (uploadQueue.length > 0) {
-                        socket.emit('message', JSON.stringify({ 
-                            action: 'ready_for_next_chunk',
-                            upload_id: uploadId
-                        }));
+                        // Add a small delay for large files to prevent memory pressure
+                        setTimeout(() => {
+                            socket.emit('message', JSON.stringify({ 
+                                action: 'ready_for_next_chunk',
+                                upload_id: uploadId
+                            }));
+                        }, isLargeFile ? waitTimeBeforeNextChunk : 0);
                     } else {
                         // All chunks uploaded, request finalization
                         socket.emit('message', JSON.stringify({ 
