@@ -473,7 +473,10 @@ const uploadFile = async () => {
         };
         
         console.log('Creating Socket.IO connection with config:', socketConfig);
+        // Force the binary type to be arraybuffer
         const socket = io('/ws/upload', socketConfig);
+        // Ensure binary data is sent correctly
+        socket.binaryType = 'arraybuffer';
         
         // Chunk size and tracking variables
         const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API
@@ -481,6 +484,7 @@ const uploadFile = async () => {
         let uploadedBytes = 0;
         let isUploading = false;
         let retryCount = 0;
+        let binaryReceived = false;
         const maxRetries = 3;
         
         // Create upload queue
@@ -510,8 +514,13 @@ const uploadFile = async () => {
                     retryCount = 0; // Reset retry count on successful message
                     sendNextChunk();
                 } 
+                else if (response.status === 'binary_received') {
+                    // Binary data was received by the server but still being processed
+                    console.log(`Binary data for part ${response.part_number} received by server`);
+                    binaryReceived = true;
+                }
                 else if (response.status === 'chunk_received') {
-                    // Chunk successfully received by server
+                    // Chunk successfully received and processed by server
                     const partNumber = response.part_number;
                     console.log(`Part ${partNumber}/${totalParts} upload confirmed`);
                     
@@ -523,6 +532,7 @@ const uploadFile = async () => {
                     
                     // Mark current chunk as uploaded
                     isUploading = false;
+                    binaryReceived = false;
                     retryCount = 0; // Reset retry count on successful upload
                     
                     // If we have more chunks, tell server we're ready to send next
@@ -619,17 +629,28 @@ const uploadFile = async () => {
                 chunk_size: chunk.size
             }));
             
-            // Use FileReader to read as ArrayBuffer and send in smaller pieces
+            // Use FileReader to read as ArrayBuffer
             const reader = new FileReader();
             reader.onload = function(e) {
                 try {
                     const arrayBuffer = e.target.result;
-                    // Convert to Uint8Array for Socket.IO binary transfer
-                    const uint8Array = new Uint8Array(arrayBuffer);
+                    console.log(`Ready to send binary data for part ${chunk.partNumber}, size: ${arrayBuffer.byteLength} bytes`);
                     
-                    // Send the binary data
-                    console.log(`Sending binary data for part ${chunk.partNumber}, size: ${uint8Array.length} bytes`);
-                    socket.emit('binary_chunk', uint8Array.buffer);
+                    // For large chunks, ensure successful transmission by adding a small delay
+                    const sendDelay = Math.min(chunk.size / (1024 * 1024), 2) * 100; // 100ms per MB, max 200ms
+                    
+                    // Send the binary data with a delay to ensure metadata is processed first
+                    setTimeout(() => {
+                        try {
+                            // Send raw ArrayBuffer for better compatibility
+                            socket.emit('binary_chunk', arrayBuffer);
+                            console.log(`Binary data sent for part ${chunk.partNumber}`);
+                        } catch (error) {
+                            console.error('Error sending binary chunk:', error);
+                            isUploading = false;
+                            showStatus(`Error sending chunk: ${error.message}`, 'error');
+                        }
+                    }, sendDelay);
                 } catch (error) {
                     console.error('Error processing chunk data:', error);
                     isUploading = false;

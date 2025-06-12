@@ -63,7 +63,15 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')  # Default secret key for development
 CORS(app)  # Enable CORS for all routes
-socketio = SocketIO(app, cors_allowed_origins="*", binary=True)
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    binary=True,
+    async_mode='eventlet',
+    max_http_buffer_size=10 * 1024 * 1024,  # 10MB buffer
+    ping_timeout=60,
+    ping_interval=25
+)
 
 # Initialize global upload state containers
 app.upload_locks = {}
@@ -1422,6 +1430,8 @@ def handle_disconnect():
 @socketio.on('binary_chunk', namespace='/ws/upload')
 def handle_binary_chunk(binary_data):
     try:
+        print(f"DEBUG: Binary chunk handler received data of type: {type(binary_data)}, size: {len(binary_data) if hasattr(binary_data, '__len__') else 'unknown'}")
+        
         # Get the metadata from the session
         if not hasattr(request, 'upload_metadata') or not request.upload_metadata.get('pending_binary'):
             print(f"ERROR: Received binary data without metadata")
@@ -1438,7 +1448,21 @@ def handle_binary_chunk(binary_data):
         chunk_size = metadata.get('chunk_size')
         
         # Process the binary data
-        print(f"DEBUG: Received binary data for part {part_number}, size: {len(binary_data)} bytes")
+        print(f"DEBUG: Processing binary data for part {part_number}, size: {len(binary_data) if hasattr(binary_data, '__len__') else 'unknown'} bytes")
+        
+        # Convert to bytes if needed
+        if not isinstance(binary_data, bytes):
+            if isinstance(binary_data, bytearray):
+                binary_data = bytes(binary_data)
+            elif isinstance(binary_data, memoryview):
+                binary_data = binary_data.tobytes()
+            else:
+                print(f"ERROR: Unsupported binary data type: {type(binary_data)}")
+                emit('message', json.dumps({
+                    'status': 'error',
+                    'message': f'Unsupported binary data type: {type(binary_data)}'
+                }))
+                return
         
         # Get upload processor
         if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
@@ -1459,13 +1483,22 @@ def handle_binary_chunk(binary_data):
             upload_data['pending_parts'].add(part_number)
             
             # Process the chunk in a background thread
-            threading.Thread(
+            thread = threading.Thread(
                 target=process_websocket_chunk,
                 args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, request.sid)
-            ).start()
+            )
+            thread.daemon = True
+            thread.start()
             
         # Reset pending binary flag
         request.upload_metadata['pending_binary'] = False
+        
+        # Acknowledge receipt of binary data to client
+        emit('message', json.dumps({
+            'status': 'binary_received',
+            'part_number': part_number,
+            'upload_id': upload_id
+        }))
         
     except Exception as e:
         print(f"ERROR in binary chunk handler: {str(e)}")
