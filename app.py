@@ -1418,14 +1418,63 @@ def handle_connect():
 def handle_disconnect():
     print(f"DEBUG: WebSocket disconnected: {request.sid}")
 
-# Create a WebSocket route for uploading files
-@app.route('/ws/upload/<upload_id>')
-def ws_upload(upload_id):
-    if not current_user.is_authenticated:
-        return "Unauthorized", 401
+# Add a specific handler for binary chunks
+@socketio.on('binary_chunk', namespace='/ws/upload')
+def handle_binary_chunk(binary_data):
+    try:
+        # Get the metadata from the session
+        if not hasattr(request, 'upload_metadata') or not request.upload_metadata.get('pending_binary'):
+            print(f"ERROR: Received binary data without metadata")
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Binary data received without metadata'
+            }))
+            return
+            
+        metadata = request.upload_metadata
+        upload_id = metadata.get('upload_id')
+        part_number = metadata.get('part_number')
+        is_last_chunk = metadata.get('is_last_chunk')
+        chunk_size = metadata.get('chunk_size')
         
-    print(f"DEBUG: WebSocket upgrade request for upload: {upload_id}")
-    return "WebSocket connection point", 200
+        # Process the binary data
+        print(f"DEBUG: Received binary data for part {part_number}, size: {len(binary_data)} bytes")
+        
+        # Get upload processor
+        if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Upload session not found'
+            }))
+            return
+        
+        with app.upload_locks.get(upload_id, threading.Lock()):
+            upload_data = app.upload_processors[upload_id]
+            
+            # Update hasher with chunk data
+            upload_data['hasher'].update(binary_data)
+            
+            # Cache chunk for processing
+            upload_data['cached_chunks'][part_number] = binary_data
+            upload_data['pending_parts'].add(part_number)
+            
+            # Process the chunk in a background thread
+            threading.Thread(
+                target=process_websocket_chunk,
+                args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, request.sid)
+            ).start()
+            
+        # Reset pending binary flag
+        request.upload_metadata['pending_binary'] = False
+        
+    except Exception as e:
+        print(f"ERROR in binary chunk handler: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        emit('message', json.dumps({
+            'status': 'error',
+            'message': f'Error processing binary data: {str(e)}'
+        }))
 
 # WebSocket handler for the upload route
 @socketio.on('message', namespace='/ws/upload')
@@ -1518,6 +1567,7 @@ def handle_upload_message(message):
                 ).start()
                 
         elif isinstance(message, bytes):
+            # This branch is kept for backward compatibility
             # Handle binary data (file chunk)
             if hasattr(request, 'upload_metadata') and request.upload_metadata.get('pending_binary'):
                 metadata = request.upload_metadata
@@ -1527,7 +1577,7 @@ def handle_upload_message(message):
                 chunk_size = metadata.get('chunk_size')
                 
                 # Process the binary data
-                print(f"DEBUG: Received binary data for part {part_number}, size: {len(message)} bytes")
+                print(f"DEBUG: Received binary data (legacy mode) for part {part_number}, size: {len(message)} bytes")
                 
                 # Get upload processor
                 if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:

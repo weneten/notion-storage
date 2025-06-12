@@ -467,20 +467,21 @@ const uploadFile = async () => {
         showInitializingMessage(`Uploading file: ${fileName} (${formatFileSize(fileSize)})...`);
         
         // Step 2: Create Socket.IO connection for chunk uploads
-        const socket = io('/ws/upload', {
-            transports: ['websocket'],
-            upgrade: false,
-            query: {
-                upload_id: uploadId
-            }
-        });
+        const socketConfig = {
+            ...window.socketIOConfig,
+            query: { upload_id: uploadId }
+        };
+        
+        console.log('Creating Socket.IO connection with config:', socketConfig);
+        const socket = io('/ws/upload', socketConfig);
         
         // Chunk size and tracking variables
         const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API
         let completedParts = 0;
         let uploadedBytes = 0;
-        let currentPartNumber = 1;
         let isUploading = false;
+        let retryCount = 0;
+        const maxRetries = 3;
         
         // Create upload queue
         const uploadQueue = [];
@@ -506,6 +507,7 @@ const uploadFile = async () => {
                 
                 if (response.status === 'ready_for_chunk') {
                     // Server is ready for the next chunk
+                    retryCount = 0; // Reset retry count on successful message
                     sendNextChunk();
                 } 
                 else if (response.status === 'chunk_received') {
@@ -521,6 +523,7 @@ const uploadFile = async () => {
                     
                     // Mark current chunk as uploaded
                     isUploading = false;
+                    retryCount = 0; // Reset retry count on successful upload
                     
                     // If we have more chunks, tell server we're ready to send next
                     if (uploadQueue.length > 0) {
@@ -590,6 +593,12 @@ const uploadFile = async () => {
             }
         });
         
+        // Add an error event handler
+        socket.on('error', (error) => {
+            console.error('Socket.IO error:', error);
+            showStatus('Socket error: ' + (error.message || 'Unknown error'), 'error');
+        });
+        
         // Function to send the next chunk in the queue
         const sendNextChunk = () => {
             if (isUploading || uploadQueue.length === 0) return;
@@ -610,16 +619,32 @@ const uploadFile = async () => {
                 chunk_size: chunk.size
             }));
             
-            // Then send the actual chunk data as ArrayBuffer
-            chunkBlob.arrayBuffer().then(buffer => {
-                // Convert to Uint8Array for Socket.IO binary transfer
-                const uint8Array = new Uint8Array(buffer);
-                socket.emit('message', uint8Array);
-            }).catch(error => {
-                console.error('Error sending chunk:', error);
+            // Use FileReader to read as ArrayBuffer and send in smaller pieces
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const arrayBuffer = e.target.result;
+                    // Convert to Uint8Array for Socket.IO binary transfer
+                    const uint8Array = new Uint8Array(arrayBuffer);
+                    
+                    // Send the binary data
+                    console.log(`Sending binary data for part ${chunk.partNumber}, size: ${uint8Array.length} bytes`);
+                    socket.emit('binary_chunk', uint8Array.buffer);
+                } catch (error) {
+                    console.error('Error processing chunk data:', error);
+                    isUploading = false;
+                    showStatus(`Error processing chunk: ${error.message}`, 'error');
+                }
+            };
+            
+            reader.onerror = function(error) {
+                console.error('Error reading file chunk:', error);
                 isUploading = false;
-                showStatus(`Error sending chunk: ${error.message}`, 'error');
-            });
+                showStatus(`Error reading file chunk: ${error.message || 'Unknown error'}`, 'error');
+            };
+            
+            // Read the blob as ArrayBuffer
+            reader.readAsArrayBuffer(chunkBlob);
         };
         
     } catch (error) {
