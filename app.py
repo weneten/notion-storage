@@ -20,6 +20,8 @@ import uuid
 import random
 import string
 import psutil  # Add psutil for memory monitoring
+import json
+from flask_socketio import emit
 
 # Function to get current memory usage
 def get_memory_usage():
@@ -61,7 +63,7 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')  # Default secret key for development
 CORS(app)  # Enable CORS for all routes
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", binary=True)
 
 # Initialize global upload state containers
 app.upload_locks = {}
@@ -1406,6 +1408,393 @@ def retry_missing_part(upload_id, part_number):
                     upload_data['pending_parts'].remove(part_number)
                     
         return False
+
+# Add WebSocket handler for uploads
+@socketio.on('connect')
+def handle_connect():
+    print(f"DEBUG: WebSocket connection established with SID: {request.sid}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print(f"DEBUG: WebSocket disconnected: {request.sid}")
+
+# Create a WebSocket route for uploading files
+@app.route('/ws/upload/<upload_id>')
+def ws_upload(upload_id):
+    if not current_user.is_authenticated:
+        return "Unauthorized", 401
+        
+    print(f"DEBUG: WebSocket upgrade request for upload: {upload_id}")
+    return "WebSocket connection point", 200
+
+# WebSocket handler for the upload route
+@socketio.on('message', namespace='/ws/upload')
+def handle_upload_message(message):
+    try:
+        # Extract data from message
+        if isinstance(message, str):
+            # Parse JSON message
+            data = json.loads(message)
+            action = data.get('action')
+            upload_id = data.get('upload_id')
+            
+            print(f"DEBUG: WebSocket message received: {action} for upload: {upload_id}")
+            
+            if action == 'start_upload':
+                # Initialize upload session
+                filename = data.get('filename')
+                original_filename = data.get('original_filename')
+                total_size = data.get('total_size')
+                total_parts = data.get('total_parts')
+                salt = data.get('salt')
+                
+                # Create or get upload processor
+                if not hasattr(app, 'upload_processors'):
+                    app.upload_processors = {}
+                if not hasattr(app, 'upload_locks'):
+                    app.upload_locks = {}
+                    
+                with app.upload_locks.get(upload_id, threading.Lock()):
+                    if upload_id not in app.upload_processors:
+                        app.upload_processors[upload_id] = {
+                            'hasher': hashlib.sha512(salt.encode()),
+                            'total_size': total_size,
+                            'filename': filename,
+                            'original_filename': original_filename,
+                            'salt': salt,
+                            'bytes_uploaded': 0,
+                            'completed_parts': set(),
+                            'pending_parts': set(),
+                            'upload_threads': {},
+                            'total_parts': total_parts,
+                            'cached_chunks': {},
+                            'last_activity': time.time(),
+                        }
+                    
+                    # Update last activity timestamp
+                    app.upload_processors[upload_id]['last_activity'] = time.time()
+                
+                # Tell client we're ready for the first chunk
+                emit('message', json.dumps({
+                    'status': 'ready_for_chunk',
+                    'upload_id': upload_id
+                }))
+                
+            elif action == 'chunk_metadata':
+                # Handle chunk metadata
+                part_number = int(data.get('part_number'))
+                is_last_chunk = data.get('is_last_chunk', False)
+                chunk_size = data.get('chunk_size', 0)
+                
+                # Store metadata for the upcoming binary transfer
+                if not hasattr(request, 'upload_metadata'):
+                    request.upload_metadata = {}
+                    
+                request.upload_metadata = {
+                    'upload_id': upload_id,
+                    'part_number': part_number,
+                    'is_last_chunk': is_last_chunk,
+                    'chunk_size': chunk_size,
+                    'pending_binary': True
+                }
+                
+                print(f"DEBUG: Ready to receive binary data for part {part_number}")
+                
+            elif action == 'ready_for_next_chunk':
+                # Client is ready for next chunk
+                emit('message', json.dumps({
+                    'status': 'ready_for_chunk',
+                    'upload_id': upload_id
+                }))
+                
+            elif action == 'finalize':
+                # Finalize the upload
+                total_parts = data.get('total_parts')
+                
+                # Process finalization in the background to not block the socket
+                threading.Thread(
+                    target=process_websocket_finalization,
+                    args=(upload_id, request.sid)
+                ).start()
+                
+        elif isinstance(message, bytes):
+            # Handle binary data (file chunk)
+            if hasattr(request, 'upload_metadata') and request.upload_metadata.get('pending_binary'):
+                metadata = request.upload_metadata
+                upload_id = metadata.get('upload_id')
+                part_number = metadata.get('part_number')
+                is_last_chunk = metadata.get('is_last_chunk')
+                chunk_size = metadata.get('chunk_size')
+                
+                # Process the binary data
+                print(f"DEBUG: Received binary data for part {part_number}, size: {len(message)} bytes")
+                
+                # Get upload processor
+                if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
+                    emit('message', json.dumps({
+                        'status': 'error',
+                        'message': 'Upload session not found'
+                    }))
+                    return
+                
+                with app.upload_locks.get(upload_id, threading.Lock()):
+                    upload_data = app.upload_processors[upload_id]
+                    
+                    # Update hasher with chunk data
+                    upload_data['hasher'].update(message)
+                    
+                    # Cache chunk for processing
+                    upload_data['cached_chunks'][part_number] = message
+                    upload_data['pending_parts'].add(part_number)
+                    
+                    # Process the chunk in a background thread
+                    threading.Thread(
+                        target=process_websocket_chunk,
+                        args=(upload_id, part_number, message, is_last_chunk, chunk_size, request.sid)
+                    ).start()
+                    
+                # Reset pending binary flag
+                request.upload_metadata['pending_binary'] = False
+                
+    except Exception as e:
+        print(f"ERROR in WebSocket handler: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        emit('message', json.dumps({
+            'status': 'error',
+            'message': f'Error processing message: {str(e)}'
+        }))
+
+# Helper function to process a WebSocket chunk in the background
+def process_websocket_chunk(upload_id, part_number, chunk_data, is_last_chunk, chunk_size, session_id):
+    try:
+        # Get upload data
+        with app.upload_locks.get(upload_id, threading.Lock()):
+            if upload_id not in app.upload_processors:
+                print(f"ERROR: Upload processor not found for {upload_id}")
+                socketio.emit('message', json.dumps({
+                    'status': 'error',
+                    'message': 'Upload session not found'
+                }), room=session_id)
+                return
+                
+            upload_data = app.upload_processors[upload_id]
+            filename = upload_data.get('filename')
+            salt = upload_data.get('salt')
+            
+        # Get user database ID (we'll need it for the Notion API)
+        user_id = current_user.id
+        user_database_id = uploader.get_user_database_id(user_id)
+        if not user_database_id:
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'User database not found'
+            }), room=session_id)
+            return
+            
+        # Implement retry logic with exponential backoff
+        max_retries = 3
+        retry_delay = 1
+        
+        for retry_attempt in range(max_retries + 1):
+            try:
+                # Call the Notion uploader to send the part
+                content_type = 'text/plain'  # Default for Notion uploads
+                response = uploader.send_file_part(
+                    file_id=upload_id,
+                    part_number=part_number,
+                    part_data=chunk_data,
+                    content_type=content_type
+                )
+                
+                # Check if the upload was successful
+                if response and 'partId' in response:
+                    print(f"DEBUG: Successfully uploaded part {part_number} to Notion")
+                    
+                    with app.upload_locks.get(upload_id, threading.Lock()):
+                        upload_data = app.upload_processors[upload_id]
+                        upload_data['completed_parts'].add(part_number)
+                        if part_number in upload_data['pending_parts']:
+                            upload_data['pending_parts'].remove(part_number)
+                        
+                        # Update bytes uploaded
+                        upload_data['bytes_uploaded'] += len(chunk_data)
+                        
+                    # Notify client that chunk was received
+                    socketio.emit('message', json.dumps({
+                        'status': 'chunk_received',
+                        'part_number': part_number,
+                        'upload_id': upload_id,
+                        'chunk_size': len(chunk_data)
+                    }), room=session_id)
+                    
+                    # Break out of retry loop
+                    break
+                else:
+                    raise Exception(f"Failed to upload part {part_number}: {response}")
+                    
+            except Exception as e:
+                print(f"ERROR uploading part {part_number}: {str(e)}")
+                
+                # If we've used all retries, report failure
+                if retry_attempt >= max_retries:
+                    socketio.emit('message', json.dumps({
+                        'status': 'error',
+                        'message': f'Failed to upload part {part_number} after {max_retries} attempts'
+                    }), room=session_id)
+                    return
+                
+                # Otherwise wait and retry
+                retry_delay = retry_delay * 2
+                time.sleep(retry_delay)
+                print(f"Retrying part {part_number}, attempt {retry_attempt + 2}/{max_retries + 1}")
+                
+    except Exception as e:
+        print(f"ERROR in process_websocket_chunk: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        socketio.emit('message', json.dumps({
+            'status': 'error',
+            'message': f'Error processing chunk: {str(e)}'
+        }), room=session_id)
+
+# Helper function to process WebSocket finalization in the background
+def process_websocket_finalization(upload_id, session_id):
+    try:
+        print(f"DEBUG: Finalizing WebSocket upload {upload_id}")
+        
+        # Make sure we have the upload processor for this ID
+        if not hasattr(app, 'upload_processors'):
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Upload session tracking not initialized'
+            }), room=session_id)
+            return
+            
+        if upload_id not in app.upload_processors:
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Upload session not found or expired'
+            }), room=session_id)
+            return
+        
+        # Get user database ID
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'User database not found'
+            }), room=session_id)
+            return
+        
+        # First check if all parts are fully uploaded
+        with app.upload_locks.get(upload_id, threading.Lock()):
+            # Check if we have the upload processor
+            if upload_id not in app.upload_processors:
+                socketio.emit('message', json.dumps({
+                    'status': 'error',
+                    'message': 'Upload session not found or expired'
+                }), room=session_id)
+                return
+                
+            upload_data = app.upload_processors[upload_id]
+            total_parts = upload_data.get('total_parts', 0)
+            completed_parts = upload_data.get('completed_parts', set())
+            
+            # Check if all parts are uploaded
+            if len(completed_parts) < total_parts:
+                missing_parts = []
+                for i in range(1, total_parts + 1):
+                    if i not in completed_parts:
+                        missing_parts.append(i)
+                
+                socketio.emit('message', json.dumps({
+                    'status': 'error',
+                    'message': f'Missing parts: {missing_parts}'
+                }), room=session_id)
+                return
+            
+            # Get upload data needed for finalization
+            filename = upload_data.get('filename', 'file.txt')
+            original_filename = upload_data.get('original_filename', filename)
+            total_size = upload_data.get('total_size', 0)
+            salt = upload_data.get('salt', '')
+            file_hash = upload_data.get('hasher').hexdigest()
+            bytes_uploaded = upload_data.get('bytes_uploaded', 0)
+            
+        # Finalize the upload with Notion API
+        max_retries = 3
+        retry_delay = 1
+        
+        for retry_attempt in range(max_retries + 1):
+            try:
+                finalize_response = uploader.finalize_file_upload(
+                    file_id=upload_id
+                )
+                
+                if finalize_response and 'url' in finalize_response:
+                    print(f"DEBUG: Successfully finalized upload {upload_id}")
+                    
+                    # Create file entry in user's database
+                    file_entry = uploader.create_file_entry(
+                        database_id=user_database_id,
+                        filename=original_filename,
+                        notion_url=finalize_response.get('url'),
+                        size=total_size,
+                        file_hash=salt + file_hash
+                    )
+                    
+                    if file_entry and 'id' in file_entry:
+                        print(f"DEBUG: Created file entry in user database: {file_entry.get('id')}")
+                        
+                        # Notify client of successful finalization
+                        socketio.emit('message', json.dumps({
+                            'status': 'finalized',
+                            'upload_id': upload_id,
+                            'file_id': file_entry.get('id'),
+                            'file_hash': salt + file_hash
+                        }), room=session_id)
+                        
+                        # Clean up upload data after successful finalization
+                        with app.upload_locks.get(upload_id, threading.Lock()):
+                            if upload_id in app.upload_processors:
+                                # Clear large data structures
+                                app.upload_processors[upload_id]['cached_chunks'] = {}
+                                app.upload_processors[upload_id]['hasher'] = None
+                                # Keep the entry for a while for status checks
+                                app.upload_processors[upload_id]['finalized'] = True
+                        
+                        # Break out of retry loop
+                        break
+                    else:
+                        raise Exception(f"Failed to create file entry: {file_entry}")
+                else:
+                    raise Exception(f"Failed to finalize upload: {finalize_response}")
+                    
+            except Exception as e:
+                print(f"ERROR finalizing upload {upload_id}: {str(e)}")
+                
+                # If we've used all retries, report failure
+                if retry_attempt >= max_retries:
+                    socketio.emit('message', json.dumps({
+                        'status': 'error',
+                        'message': f'Failed to finalize upload after {max_retries} attempts: {str(e)}'
+                    }), room=session_id)
+                    return
+                
+                # Otherwise wait and retry
+                retry_delay = retry_delay * 2
+                time.sleep(retry_delay)
+                print(f"Retrying finalization, attempt {retry_attempt + 2}/{max_retries + 1}")
+                
+    except Exception as e:
+        print(f"ERROR in process_websocket_finalization: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        socketio.emit('message', json.dumps({
+            'status': 'error',
+            'message': f'Error finalizing upload: {str(e)}'
+        }), room=session_id)
 
 if __name__ == '__main__':
     # Start memory usage monitoring

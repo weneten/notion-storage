@@ -422,7 +422,7 @@ function showFinalizingMessage(message) {
     }
 }
 
-// Function to upload a file with chunking and proper tracking
+// Function to upload a file with WebSockets for faster transfers
 const uploadFile = async () => {
     const fileInput = document.getElementById('fileInput');
     
@@ -461,13 +461,26 @@ const uploadFile = async () => {
         const totalParts = uploadData.total_parts || 1;
         
         console.log(`Upload initialized with ID: ${uploadId}, ${totalParts} parts`);
-        updateProgressBar(0, `Uploading: 0/${formatFileSize(fileSize)}`);
+        updateProgressBar(0, `Preparing upload: ${formatFileSize(0)}/${formatFileSize(fileSize)}`);
         
         // Update the initialization message to show we're now uploading
         showInitializingMessage(`Uploading file: ${fileName} (${formatFileSize(fileSize)})...`);
         
-        // Step 2: Split file into chunks and upload each
+        // Step 2: Create Socket.IO connection for chunk uploads
+        const socket = io('/ws/upload', {
+            transports: ['websocket'],
+            upgrade: false,
+            query: {
+                upload_id: uploadId
+            }
+        });
+        
+        // Chunk size and tracking variables
         const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API
+        let completedParts = 0;
+        let uploadedBytes = 0;
+        let currentPartNumber = 1;
+        let isUploading = false;
         
         // Create upload queue
         const uploadQueue = [];
@@ -481,157 +494,136 @@ const uploadFile = async () => {
                 start,
                 end,
                 isLastChunk,
-                uploaded: false,
-                retryCount: 0,
-                maxRetries: 3,
-                blob: file.slice(start, end)
+                size: end - start
             });
         }
         
-        // Upload chunks with max 10 concurrent uploads
-        const maxConcurrent = 10;
-        let activeUploads = 0;
-        let completedParts = 0;
-        let failedParts = 0;
-        
-        // Create a pool of workers to maintain constant concurrency
-        const uploadPool = async () => {
-            const workers = new Array(maxConcurrent).fill(null);
-            
-            // Function for a single worker to process chunks
-            const worker = async (workerId) => {
-                while (uploadQueue.length > 0) {
-                    // Get next chunk to upload
-                    const chunk = uploadQueue.shift();
-                    console.log(`Worker ${workerId} uploading part ${chunk.partNumber}/${totalParts}`);
+        // Process Socket.IO messages from server
+        socket.on('message', (data) => {
+            try {
+                const response = JSON.parse(data);
+                console.log('Socket.IO message:', response);
+                
+                if (response.status === 'ready_for_chunk') {
+                    // Server is ready for the next chunk
+                    sendNextChunk();
+                } 
+                else if (response.status === 'chunk_received') {
+                    // Chunk successfully received by server
+                    const partNumber = response.part_number;
+                    console.log(`Part ${partNumber}/${totalParts} upload confirmed`);
                     
-                    try {
-                        // Create form data for this chunk
-                        const formData = new FormData();
-                        formData.append('file', chunk.blob);
-                        formData.append('upload_id', uploadId);
-                        formData.append('part_number', chunk.partNumber);
-                        formData.append('total_size', fileSize);
-                        formData.append('filename', uploadData.sanitized_filename || fileName);
-                        formData.append('original_filename', fileName);
-                        formData.append('salt', salt);
-                        formData.append('is_last_chunk', chunk.isLastChunk ? 'true' : 'false');
-                        formData.append('is_multipart', uploadData.is_multipart ? 'true' : 'false');
+                    // Update progress
+                    completedParts++;
+                    const progress = Math.floor((completedParts / totalParts) * 100);
+                    uploadedBytes += response.chunk_size || 0;
+                    updateProgressBar(progress, `Uploading: ${formatFileSize(uploadedBytes)}/${formatFileSize(fileSize)}`);
+                    
+                    // Mark current chunk as uploaded
+                    isUploading = false;
+                    
+                    // If we have more chunks, tell server we're ready to send next
+                    if (uploadQueue.length > 0) {
+                        socket.emit('message', JSON.stringify({ 
+                            action: 'ready_for_next_chunk',
+                            upload_id: uploadId
+                        }));
+                    } else {
+                        // All chunks uploaded, request finalization
+                        socket.emit('message', JSON.stringify({ 
+                            action: 'finalize',
+                            upload_id: uploadId,
+                            total_parts: totalParts
+                        }));
                         
-                        // Upload the chunk
-                        console.log(`Uploading part ${chunk.partNumber}/${totalParts} (${formatFileSize(chunk.blob.size)})`);
-                        const response = await fetch('/upload_file', {
-                            method: 'POST',
-                            body: formData
-                        });
-                        
-                        if (!response.ok) {
-                            const errorData = await response.json();
-                            throw new Error(`Part ${chunk.partNumber} upload failed: ${errorData.error || 'Unknown error'}`);
-                        }
-                        
-                        const responseData = await response.json();
-                        console.log(`Part ${chunk.partNumber} upload response:`, responseData);
-                        
-                        // Update progress
-                        completedParts++;
-                        const progress = Math.floor((completedParts / totalParts) * 100);
-                        const uploadedBytes = completedParts * chunkSize > fileSize ? fileSize : completedParts * chunkSize;
-                        updateProgressBar(progress, `Uploading: ${formatFileSize(uploadedBytes)}/${formatFileSize(fileSize)}`);
-                        
-                        // Mark chunk as uploaded
-                        chunk.uploaded = true;
-                        
-                    } catch (error) {
-                        console.error(`Error uploading part ${chunk.partNumber}:`, error);
-                        
-                        // Add back to queue if retries remaining
-                        chunk.retryCount++;
-                        if (chunk.retryCount <= chunk.maxRetries) {
-                            console.log(`Retrying part ${chunk.partNumber} (attempt ${chunk.retryCount}/${chunk.maxRetries})`);
-                            
-                            // Add exponential backoff
-                            const backoffTime = Math.pow(2, chunk.retryCount) * 1000;
-                            await new Promise(resolve => setTimeout(resolve, backoffTime));
-                            
-                            // Add back to queue
-                            uploadQueue.push(chunk);
-                        } else {
-                            console.error(`Part ${chunk.partNumber} failed after ${chunk.maxRetries} attempts`);
-                            failedParts++;
-                            showStatus(`Upload failed for part ${chunk.partNumber}, please try again`, 'error');
-                        }
+                        // Show finalizing message
+                        updateProgressBar(100, '');
+                        showFinalizingMessage('Transferring to storage server...');
                     }
                 }
-            };
-            
-            // Start all workers
-            await Promise.all(workers.map((_, i) => worker(i + 1)));
-            
-            // All uploads finished
-            if (failedParts === 0) {
-                console.log('All parts uploaded successfully, finalizing...');
-                // Show 100% without detailed text
-                updateProgressBar(100, '');
-                showFinalizingMessage('Preparing storage transfer...');
-                // Wait a moment to ensure all server-side processes are complete
-                setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
-            } else {
-                showStatus(`Upload failed with ${failedParts} failed parts, please try again`, 'error');
+                else if (response.status === 'finalized') {
+                    // Upload successfully finalized
+                    console.log('Upload finalized:', response);
+                    updateProgressBar(100, '');
+                    showStatus(`Upload completed successfully. File ID: ${response.file_id}`, 'success');
+                    
+                    // Close the socket
+                    socket.disconnect();
+                    
+                    // Refresh file list
+                    loadFiles();
+                }
+                else if (response.status === 'error') {
+                    throw new Error(response.message || 'Unknown WebSocket error');
+                }
+            } catch (error) {
+                console.error('Error processing Socket.IO message:', error);
+                showStatus(`Upload error: ${error.message}`, 'error');
+                socket.disconnect();
             }
-        };
+        });
         
-        // Start the upload pool
-        uploadPool();
+        // Handle Socket.IO events
+        socket.on('connect', () => {
+            console.log('Socket.IO connection established');
+            // Tell server we're ready to start uploading
+            socket.emit('message', JSON.stringify({ 
+                action: 'start_upload',
+                upload_id: uploadId,
+                filename: uploadData.sanitized_filename || fileName,
+                original_filename: fileName,
+                total_size: fileSize,
+                total_parts: totalParts,
+                salt: salt
+            }));
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('Socket.IO connection error:', error);
+            showStatus('Connection error: ' + error.message, 'error');
+        });
+        
+        socket.on('disconnect', (reason) => {
+            console.log('Socket.IO disconnected:', reason);
+            if (completedParts < totalParts && reason !== 'io client disconnect') {
+                showStatus('Connection closed unexpectedly. Please try again.', 'error');
+            }
+        });
+        
+        // Function to send the next chunk in the queue
+        const sendNextChunk = () => {
+            if (isUploading || uploadQueue.length === 0) return;
+            
+            isUploading = true;
+            const chunk = uploadQueue.shift();
+            console.log(`Sending part ${chunk.partNumber}/${totalParts} (${formatFileSize(chunk.size)})`);
+            
+            // Extract blob for this chunk
+            const chunkBlob = file.slice(chunk.start, chunk.end);
+            
+            // First send chunk metadata
+            socket.emit('message', JSON.stringify({
+                action: 'chunk_metadata',
+                upload_id: uploadId,
+                part_number: chunk.partNumber,
+                is_last_chunk: chunk.isLastChunk,
+                chunk_size: chunk.size
+            }));
+            
+            // Then send the actual chunk data as ArrayBuffer
+            chunkBlob.arrayBuffer().then(buffer => {
+                // Convert to Uint8Array for Socket.IO binary transfer
+                const uint8Array = new Uint8Array(buffer);
+                socket.emit('message', uint8Array);
+            }).catch(error => {
+                console.error('Error sending chunk:', error);
+                isUploading = false;
+                showStatus(`Error sending chunk: ${error.message}`, 'error');
+            });
+        };
         
     } catch (error) {
         console.error('Upload failed:', error);
         showStatus(`Upload failed: ${error.message}`, 'error');
-    }
-};
-
-// Function to finalize the upload
-const finalizeUpload = async (uploadId, fileSize) => {
-    try {
-        // Show 100% progress with empty text
-        updateProgressBar(100, '');
-        showFinalizingMessage('Transferring to storage server...');
-        
-        const response = await fetch('/finalize_upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ upload_id: uploadId })
-        });
-        
-        if (!response.ok) {
-            const errorData = await response.json();
-            console.error('Finalization error:', errorData);
-            
-            // If the error indicates missing parts, try again after a delay
-            if (errorData.error && errorData.error.includes('missing parts')) {
-                showFinalizingMessage('Still transferring, please wait...');
-                // Keep progress at 100% with empty text
-                updateProgressBar(100, '');
-                // Wait 5 seconds and try again
-                setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
-                return;
-            }
-            
-            throw new Error(`Upload finalization failed: ${errorData.error || 'Unknown error'}`);
-        }
-        
-        const finalizeData = await response.json();
-        console.log('Upload finalized:', finalizeData);
-        
-        // Update UI to show completion with empty progress text
-        updateProgressBar(100, '');
-        showStatus(`Upload completed successfully. File ID: ${finalizeData.file_id}`, 'success');
-        
-        // Refresh file list
-        loadFiles();
-        
-    } catch (error) {
-        console.error('Finalization failed:', error);
-        showStatus(`Finalization failed: ${error.message}`, 'error');
     }
 }; 
