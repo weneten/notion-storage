@@ -1,0 +1,26 @@
+{
+  "name": "StorageProject",
+  "description": "Flask file storage application using Notion",
+  "docker": {
+    "dockerCompose": "docker-compose.yml",
+    "dockerComposeService": "app"
+  },
+  "env": [
+    {
+      "name": "NOTION_API_TOKEN",
+      "description": "Notion API Token"
+    },
+    {
+      "name": "NOTION_USER_DB_ID",
+      "description": "Notion User Database ID"
+    },
+    {
+      "name": "GLOBAL_FILE_INDEX_DB_ID",
+      "description": "Notion Global File Index Database ID"
+    },
+    {
+      "name": "SECRET_KEY",
+      "description": "Secret key for Flask application"
+    }
+  ]
+} 
