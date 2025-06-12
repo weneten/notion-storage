@@ -92,6 +92,9 @@ def is_memory_usage_high():
 app.upload_locks = {}
 app.upload_processors = {}
 
+# Add global metadata store
+app.upload_metadata = {}
+
 def format_bytes(bytes, decimals=2):
     if bytes == 0:
         return '0 Bytes'
@@ -1455,17 +1458,23 @@ def handle_binary_chunk(binary_data):
                 'message': 'Server memory usage too high, please try again later'
             }))
             return
+        
+        # Get the session ID
+        session_id = request.sid
+        
+        # Get metadata from global store instead of request object
+        if not hasattr(app, 'upload_metadata'):
+            app.upload_metadata = {}
             
-        # Get the metadata from the session
-        if not hasattr(request, 'upload_metadata') or not request.upload_metadata.get('pending_binary'):
-            print(f"ERROR: Received binary data without metadata")
+        if session_id not in app.upload_metadata:
+            print(f"ERROR: Received binary data without metadata for session {session_id}")
             emit('message', json.dumps({
                 'status': 'error',
                 'message': 'Binary data received without metadata'
             }))
             return
             
-        metadata = request.upload_metadata
+        metadata = app.upload_metadata[session_id]
         upload_id = metadata.get('upload_id')
         part_number = metadata.get('part_number')
         is_last_chunk = metadata.get('is_last_chunk')
@@ -1507,13 +1516,14 @@ def handle_binary_chunk(binary_data):
                 # Cache chunk for processing - we'll process it immediately to avoid memory issues
                 thread = threading.Thread(
                     target=process_websocket_chunk,
-                    args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, request.sid)
+                    args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, session_id)
                 )
                 thread.daemon = True
                 thread.start()
                 
-            # Reset pending binary flag
-            request.upload_metadata['pending_binary'] = False
+            # Clear metadata after processing to prevent reuse
+            if session_id in app.upload_metadata:
+                app.upload_metadata[session_id]['pending_binary'] = False
             
             # Acknowledge receipt of binary data to client
             emit('message', json.dumps({
@@ -1546,6 +1556,10 @@ def handle_binary_chunk(binary_data):
 @socketio.on('message', namespace='/ws/upload')
 def handle_upload_message(message):
     try:
+        # Get the session ID
+        session_id = request.sid
+        print(f"DEBUG: Handling message for session {session_id}")
+        
         # Extract data from message
         if isinstance(message, str):
             # Parse JSON message
@@ -1601,19 +1615,21 @@ def handle_upload_message(message):
                 is_last_chunk = data.get('is_last_chunk', False)
                 chunk_size = data.get('chunk_size', 0)
                 
-                # Store metadata for the upcoming binary transfer
-                if not hasattr(request, 'upload_metadata'):
-                    request.upload_metadata = {}
+                # Initialize upload metadata store if needed
+                if not hasattr(app, 'upload_metadata'):
+                    app.upload_metadata = {}
                     
-                request.upload_metadata = {
+                # Store metadata in global app state with session ID
+                app.upload_metadata[session_id] = {
                     'upload_id': upload_id,
                     'part_number': part_number,
                     'is_last_chunk': is_last_chunk,
                     'chunk_size': chunk_size,
-                    'pending_binary': True
+                    'pending_binary': True,
+                    'timestamp': time.time()
                 }
                 
-                print(f"DEBUG: Ready to receive binary data for part {part_number}")
+                print(f"DEBUG: Ready to receive binary data for part {part_number} (session {session_id})")
                 
             elif action == 'ready_for_next_chunk':
                 # Client is ready for next chunk
@@ -1627,50 +1643,70 @@ def handle_upload_message(message):
                 total_parts = data.get('total_parts')
                 
                 # Process finalization in the background to not block the socket
-                threading.Thread(
+                thread = threading.Thread(
                     target=process_websocket_finalization,
-                    args=(upload_id, request.sid)
-                ).start()
+                    args=(upload_id, session_id)
+                )
+                thread.daemon = True
+                thread.start()
                 
         elif isinstance(message, bytes):
             # This branch is kept for backward compatibility
             # Handle binary data (file chunk)
-            if hasattr(request, 'upload_metadata') and request.upload_metadata.get('pending_binary'):
-                metadata = request.upload_metadata
-                upload_id = metadata.get('upload_id')
-                part_number = metadata.get('part_number')
-                is_last_chunk = metadata.get('is_last_chunk')
-                chunk_size = metadata.get('chunk_size')
+            if not hasattr(app, 'upload_metadata') or session_id not in app.upload_metadata:
+                print(f"ERROR: Received binary data (legacy mode) without metadata for session {session_id}")
+                emit('message', json.dumps({
+                    'status': 'error',
+                    'message': 'Binary data received without metadata'
+                }))
+                return
                 
-                # Process the binary data
-                print(f"DEBUG: Received binary data (legacy mode) for part {part_number}, size: {len(message)} bytes")
+            metadata = app.upload_metadata[session_id]
+            if not metadata.get('pending_binary'):
+                print(f"ERROR: Received unexpected binary data for session {session_id}")
+                emit('message', json.dumps({
+                    'status': 'error',
+                    'message': 'Unexpected binary data'
+                }))
+                return
                 
-                # Get upload processor
-                if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
-                    emit('message', json.dumps({
-                        'status': 'error',
-                        'message': 'Upload session not found'
-                    }))
-                    return
+            upload_id = metadata.get('upload_id')
+            part_number = metadata.get('part_number')
+            is_last_chunk = metadata.get('is_last_chunk')
+            chunk_size = metadata.get('chunk_size')
+            
+            # Process the binary data
+            print(f"DEBUG: Received binary data (legacy mode) for part {part_number}, size: {len(message)} bytes")
+            
+            # Get upload processor
+            if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
+                emit('message', json.dumps({
+                    'status': 'error',
+                    'message': 'Upload session not found'
+                }))
+                return
+            
+            with app.upload_locks.get(upload_id, threading.Lock()):
+                upload_data = app.upload_processors[upload_id]
                 
-                with app.upload_locks.get(upload_id, threading.Lock()):
-                    upload_data = app.upload_processors[upload_id]
-                    
-                    # Update hasher with chunk data
-                    upload_data['hasher'].update(message)
-                    
-                    # Cache chunk for processing
-                    upload_data['cached_chunks'][part_number] = message
-                    upload_data['pending_parts'].add(part_number)
-                    
-                    # Process the chunk in a background thread
-                    threading.Thread(
-                        target=process_websocket_chunk,
-                        args=(upload_id, part_number, message, is_last_chunk, chunk_size, request.sid)
-                    ).start()
-                    
-                # Reset pending binary flag
-                request.upload_metadata['pending_binary'] = False
+                # Update hasher with chunk data
+                upload_data['hasher'].update(message)
+                
+                # Cache chunk for processing
+                upload_data['cached_chunks'][part_number] = message
+                upload_data['pending_parts'].add(part_number)
+                
+                # Process the chunk in a background thread
+                thread = threading.Thread(
+                    target=process_websocket_chunk,
+                    args=(upload_id, part_number, message, is_last_chunk, chunk_size, session_id)
+                )
+                thread.daemon = True
+                thread.start()
+                
+            # Clear metadata after processing
+            if session_id in app.upload_metadata:
+                app.upload_metadata[session_id]['pending_binary'] = False
                 
     except Exception as e:
         print(f"ERROR in WebSocket handler: {str(e)}")
@@ -1933,6 +1969,43 @@ def process_websocket_finalization(upload_id, session_id):
             'status': 'error',
             'message': f'Error finalizing upload: {str(e)}'
         }), room=session_id)
+
+# Add a function to clean up stale metadata
+def cleanup_stale_metadata():
+    """
+    Periodically clean up stale metadata entries.
+    """
+    print("DEBUG: Starting metadata cleanup thread")
+    
+    while True:
+        try:
+            # Sleep for 5 minutes before checking
+            time.sleep(300)
+            
+            if not hasattr(app, 'upload_metadata'):
+                print("DEBUG: No upload_metadata attribute found, skipping cleanup")
+                continue
+                
+            now = time.time()
+            stale_session_ids = []
+            
+            # Find stale metadata entries (older than 10 minutes)
+            for session_id, metadata in app.upload_metadata.items():
+                timestamp = metadata.get('timestamp', 0)
+                if now - timestamp > 600:  # 10 minutes
+                    stale_session_ids.append(session_id)
+            
+            # Remove stale entries
+            for session_id in stale_session_ids:
+                print(f"DEBUG: Cleaning up stale metadata for session: {session_id}")
+                del app.upload_metadata[session_id]
+                
+        except Exception as e:
+            print(f"ERROR in metadata cleanup thread: {e}")
+            
+# Start the metadata cleanup thread
+metadata_cleanup_thread = threading.Thread(target=cleanup_stale_metadata, daemon=True)
+metadata_cleanup_thread.start()
 
 if __name__ == '__main__':
     # Start memory usage monitoring

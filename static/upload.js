@@ -642,20 +642,21 @@ const uploadFile = async () => {
                 chunk_size: chunk.size
             }));
             
-            // Use FileReader to read as ArrayBuffer
-            const reader = new FileReader();
-            reader.onload = function(e) {
-                try {
-                    const arrayBuffer = e.target.result;
-                    console.log(`Ready to send binary data for part ${chunk.partNumber}, size: ${arrayBuffer.byteLength} bytes`);
-                    
-                    // For large chunks, ensure successful transmission by adding a small delay
-                    const sendDelay = Math.min(chunk.size / (1024 * 1024), 2) * 100; // 100ms per MB, max 200ms
-                    
-                    // Send the binary data with a delay to ensure metadata is processed first
-                    setTimeout(() => {
+            console.log(`Sent metadata for part ${chunk.partNumber}, waiting before sending binary data`);
+            
+            // Always add a small delay between metadata and binary data
+            setTimeout(() => {
+                // Use FileReader to read as ArrayBuffer
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        const arrayBuffer = e.target.result;
+                        console.log(`Ready to send binary data for part ${chunk.partNumber}, size: ${arrayBuffer.byteLength} bytes`);
+                        
+                        // Send the binary data with a delay to ensure metadata is processed first
                         try {
                             // Send raw ArrayBuffer for better compatibility
+                            console.log(`Sending binary data for part ${chunk.partNumber}`);
                             socket.emit('binary_chunk', arrayBuffer);
                             console.log(`Binary data sent for part ${chunk.partNumber}`);
                         } catch (error) {
@@ -663,22 +664,22 @@ const uploadFile = async () => {
                             isUploading = false;
                             showStatus(`Error sending chunk: ${error.message}`, 'error');
                         }
-                    }, sendDelay);
-                } catch (error) {
-                    console.error('Error processing chunk data:', error);
+                    } catch (error) {
+                        console.error('Error processing chunk data:', error);
+                        isUploading = false;
+                        showStatus(`Error processing chunk: ${error.message}`, 'error');
+                    }
+                };
+                
+                reader.onerror = function(error) {
+                    console.error('Error reading file chunk:', error);
                     isUploading = false;
-                    showStatus(`Error processing chunk: ${error.message}`, 'error');
-                }
-            };
-            
-            reader.onerror = function(error) {
-                console.error('Error reading file chunk:', error);
-                isUploading = false;
-                showStatus(`Error reading file chunk: ${error.message || 'Unknown error'}`, 'error');
-            };
-            
-            // Read the blob as ArrayBuffer
-            reader.readAsArrayBuffer(chunkBlob);
+                    showStatus(`Error reading file chunk: ${error.message || 'Unknown error'}`, 'error');
+                };
+                
+                // Read the blob as ArrayBuffer
+                reader.readAsArrayBuffer(chunkBlob);
+            }, 200); // Fixed 200ms delay between metadata and binary data
         };
         
     } catch (error) {
