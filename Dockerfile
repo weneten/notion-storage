@@ -23,4 +23,4 @@ COPY . .
 EXPOSE 8080
 
 # Default command to run the app with Gunicorn + Eventlet
-CMD ["gunicorn", "-b", "0.0.0.0:${PORT:-8080}", "-k", "eventlet", "-w", "1", "--timeout", "60", "app:app"]
+CMD ["gunicorn", "-b", "0.0.0.0:8080", "-k", "eventlet", "-w", "1", "--timeout", "60", "app:app"]
