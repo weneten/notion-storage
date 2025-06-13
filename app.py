@@ -5,6 +5,7 @@ from flask_cors import CORS
 from uploader import NotionFileUploader, ChunkProcessor
 from dotenv import load_dotenv
 import os
+import sys # Added for debugging to stderr
 import secrets
 import hashlib
 import concurrent.futures
@@ -65,6 +66,18 @@ dotenv_path = os.path.join(app_root_dir, '..', '.env')
 
 # Load environment variables from the specified .env file
 load_dotenv(dotenv_path=dotenv_path)
+
+# --- TEMPORARY DEBUGGING ---
+# This will print to your server's error logs.
+# Check the logs to see if the .env file path is correct and if the token is loaded.
+print(f"DEBUG: Attempting to load .env from: {dotenv_path}", file=sys.stderr)
+token_from_env = os.environ.get('NOTION_API_TOKEN')
+if token_from_env:
+    # Print only a portion of the key to confirm it's loaded without exposing it.
+    print(f"DEBUG: NOTION_API_TOKEN loaded successfully. Starts with '{token_from_env[:4]}', Ends with '{token_from_env[-4:]}'", file=sys.stderr)
+else:
+    print("DEBUG: FAILED to load NOTION_API_TOKEN. The variable is empty.", file=sys.stderr)
+# --- END TEMPORARY DEBUGGING ---
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')  # Default secret key for development
