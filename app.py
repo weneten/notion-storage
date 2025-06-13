@@ -58,8 +58,13 @@ def log_memory_usage():
     # Schedule next check
     threading.Timer(60, log_memory_usage).start()
     
-# Load environment variables from .env file
-load_dotenv()
+# Construct the path to the .env file located one directory above the app's root
+# This allows you to keep your .env file in the home directory, outside of httpdocs
+app_root_dir = os.path.dirname(os.path.abspath(__file__))
+dotenv_path = os.path.join(app_root_dir, '..', '.env')
+
+# Load environment variables from the specified .env file
+load_dotenv(dotenv_path=dotenv_path)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')  # Default secret key for development
