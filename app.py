@@ -10,7 +10,7 @@ import hashlib
 import concurrent.futures
 import math
 import base64
-import bcrypt
+from passlib.context import CryptContext  # Replace bcrypt
 import mimetypes
 import traceback
 from typing import Dict, Any, List
@@ -19,19 +19,22 @@ import time
 import uuid
 import random
 import string
-import psutil  # Add psutil for memory monitoring
+# import psutil  # Removed for compatibility
+
+# CryptContext for passlib
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # Function to get current memory usage
 def get_memory_usage():
     """Get current memory usage of the process in MB"""
-    try:
-        process = psutil.Process(os.getpid())
-        memory_info = process.memory_info()
-        memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
-        return memory_mb
-    except Exception as e:
-        print(f"Error getting memory usage: {e}")
-        return 0
+    # try:
+    #     process = psutil.Process(os.getpid())
+    #     memory_info = process.memory_info()
+    #     memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
+    #     return memory_mb
+    # except Exception as e:
+    #     print(f"Error getting memory usage: {e}")
+    return 0  # Disabled for compatibility
 
 # Function to log memory usage periodically
 def log_memory_usage():
@@ -98,9 +101,8 @@ class User(UserMixin):
         self.password_hash = password_hash
 
     def check_password(self, password):
-        # Decode base64 string to bytes
-        hashed_bytes = base64.b64decode(self.password_hash)
-        return bcrypt.checkpw(password.encode('utf-8'), hashed_bytes)
+        # Use passlib to verify the password
+        return pwd_context.verify(password, self.password_hash)
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -193,10 +195,8 @@ def register():
         username = request.form.get('username')
         password = request.form.get('password')
 
-        # Hash password
-        # Encode hash as base64 string for safe storage
-        hashed_bytes = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        password_hash = base64.b64encode(hashed_bytes).decode('utf-8')
+        # Hash password using passlib
+        password_hash = pwd_context.hash(password)
 
         try:
             # Ensure the User Database relation property exists in the main user database
@@ -565,24 +565,26 @@ def change_password():
     if request.method == 'POST':
         current_password = request.form.get('current_password')
         new_password = request.form.get('new_password')
-        confirm_password = request.form.get('confirm_password')
 
-        # Verify new password matches confirmation
-        if new_password != confirm_password:
-            return "New password and confirmation do not match", 400
-
-        # Verify current password
+        # Check current password
         if not current_user.check_password(current_password):
-            return "Current password is incorrect", 401
+            return "Invalid current password", 403
 
-        # Hash new password
-        hashed_bytes = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
-        new_password_hash = base64.b64encode(hashed_bytes).decode('utf-8')
+        # Hash new password using passlib
+        new_password_hash = pwd_context.hash(new_password)
 
         try:
-            # Update user password in Notion
-            uploader.update_user_password(current_user.id, new_password_hash)
-            return redirect(url_for('home'))
+            # Update user properties in Notion
+            uploader.update_user_properties(current_user.id, {
+                'Password-Hash': {
+                    'rich_text': [{
+                        'text': {
+                            'content': new_password_hash
+                        }
+                    }]
+                }
+            })
+            return "Password changed successfully", 200
         except Exception as e:
             return f"Error changing password: {str(e)}", 500
 
