@@ -1,0 +1,18 @@
+version: '3'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - SECRET_KEY=${SECRET_KEY}
+      - NOTION_API_TOKEN=${NOTION_API_TOKEN}
+      - NOTION_USER_DB_ID=${NOTION_USER_DB_ID}
+      - GLOBAL_FILE_INDEX_DB_ID=${GLOBAL_FILE_INDEX_DB_ID}
+    volumes:
+      - ./static:/app/static
+    restart: unless-stopped 
