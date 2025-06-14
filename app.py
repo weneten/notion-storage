@@ -1407,6 +1407,11 @@ def retry_missing_part(upload_id, part_number):
                     
         return False
 
+@app.route('/ping', methods=['HEAD', 'GET'])
+def ping():
+    """Simple endpoint to keep connections warm between chunk uploads"""
+    return '', 200
+
 if __name__ == '__main__':
     # Start memory usage monitoring
     print("Starting memory usage monitoring...")
