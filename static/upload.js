@@ -539,49 +539,56 @@ const uploadFile = async () => {
                         failedParts++;
                         throw error; // Max retries exceeded, re-throw error
                     }
-                    // Exponential backoff before next retry
-                    const backoffTime = Math.pow(2, attempt) * 1000;
+                    // Shorter backoff before next retry - reduce delays
+                    const backoffTime = Math.min(1000, Math.pow(1.5, attempt) * 200);
                     console.log(`Retrying part ${chunk.partNumber} in ${backoffTime}ms`);
                     await new Promise(res => setTimeout(res, backoffTime));
                 }
             }
         };
 
-        const processQueue = async () => {
-            let nextChunkIndex = 0;
+        // Distribute chunks optimally across workers
+        const processUploads = async () => {
+            // Divide chunks among workers more efficiently
+            const workerChunks = Array(maxConcurrent).fill().map(() => []);
             
-            const worker = async () => {
-                while(nextChunkIndex < uploadQueue.length) {
-                    const chunkIndex = nextChunkIndex++;
-                    if (chunkIndex < uploadQueue.length) {
-                        const chunk = uploadQueue[chunkIndex];
-                        try {
-                            await uploadChunkWithRetries(chunk);
-                        } catch (err) {
-                            // This error is caught after all retries have failed.
-                            // `failedParts` is already incremented. We log it and continue.
-                            console.error(`Chunk ${chunk.partNumber} failed to upload permanently.`);
-                        }
+            // Pre-allocate chunks to workers in a round-robin fashion
+            uploadQueue.forEach((chunk, index) => {
+                const workerIndex = index % maxConcurrent;
+                workerChunks[workerIndex].push(chunk);
+            });
+            
+            // Create a worker for each batch of chunks
+            const workers = workerChunks.map(async (chunks, workerIndex) => {
+                console.log(`Worker ${workerIndex} assigned ${chunks.length} chunks`);
+                
+                // Process all chunks assigned to this worker
+                for (const chunk of chunks) {
+                    try {
+                        await uploadChunkWithRetries(chunk);
+                    } catch (err) {
+                        console.error(`Worker ${workerIndex}: Chunk ${chunk.partNumber} failed permanently`);
+                        // Error already logged and failedParts incremented in uploadChunkWithRetries
                     }
                 }
-            };
+            });
             
-            const workerPromises = Array(maxConcurrent).fill(null).map(worker);
-            await Promise.all(workerPromises);
+            // Wait for all workers to complete
+            await Promise.all(workers);
             
             // All uploads finished
             if (failedParts === 0) {
                 console.log('All parts uploaded successfully, finalizing...');
                 updateProgressBar(100, '');
                 showFinalizingMessage('Preparing storage transfer...');
-                setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
+                setTimeout(() => finalizeUpload(uploadId, fileSize), 2000);
             } else {
                 showStatus(`Upload failed with ${failedParts} failed parts, please try again`, 'error');
             }
         };
 
         // Start the upload process
-        processQueue();
+        processUploads();
         
     } catch (error) {
         console.error('Upload failed:', error);
