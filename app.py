@@ -389,14 +389,15 @@ def upload_file():
                     
             # Mark this part as pending
             upload_data['pending_parts'].add(part_number)
-            
-            # Always cache chunk data for retries (regardless of file size)
+              # Always cache chunk data for retries, but limit cache size for memory management
+            # For small files (under 20MB), we could skip caching since they're single-part uploads
+            # But we'll cache all chunks for consistency and retry reliability
             max_chunk_cache_size = 10 * 1024 * 1024  # Max cache size per chunk
             
-            # Always cache the chunk, regardless of size or part number
-            # This will be used for retries and deleted after successful upload
+            # Always cache the chunk for retries, but immediately process and delete it
+            # This ensures we can retry failed uploads while minimizing memory usage
             upload_data['cached_chunks'][part_number] = chunk_data
-            print(f"DEBUG: Cached chunk data for part {part_number} ({chunk_size} bytes)")
+            print(f"DEBUG: Cached chunk data for part {part_number} ({chunk_size} bytes) - will be freed after upload")
             
         # Process this part
         print(f"DEBUG: Processing part {part_number} of {total_parts}, is_last_part={is_last_chunk}")
@@ -416,8 +417,7 @@ def upload_file():
         session_id = str(uuid.uuid4())
         if hasattr(request, 'sid'):
             session_id = request.sid
-            
-        # Execute the upload in a new thread so we don't block
+              # Execute the upload in a new thread so we don't block
         def upload_thread_func(upload_id, part_number, chunk_data, filename, salt, is_last_chunk, bytes_uploaded_so_far, session_id):
             try:
                 content_type = 'text/plain'  # Default for Notion uploads
@@ -439,11 +439,11 @@ def upload_file():
                         response = uploader.send_file_part(
                             upload_id, 
                             part_number, 
-                        chunk_data,
+                            chunk_data,
                             filename, 
                             content_type,
                             bytes_uploaded_so_far,
-                        total_size,
+                            total_size,
                             total_parts,
                             session_id
                         )
@@ -460,17 +460,9 @@ def upload_file():
                             "cloudflare", "503", "502", "500", "429", "too many requests"
                         ])
                         
-                        # If we've run out of retries or this isn't retryable, delete cached chunk and re-raise the error
+                        # If we've run out of retries or this isn't retryable, re-raise the error
                         if retry_attempt >= max_retries or not is_retryable:
                             print(f"ERROR: Part {part_number} upload failed after {retry_attempt} retries: {error_message}")
-                            
-                            # Delete chunk from cache after max retries to free memory
-                            with app.upload_locks.get(upload_id, threading.Lock()):
-                                if upload_id in app.upload_processors:
-                                    if part_number in app.upload_processors[upload_id]['cached_chunks']:
-                                        del app.upload_processors[upload_id]['cached_chunks'][part_number]
-                                        print(f"DEBUG: Removed failed chunk {part_number} from cache after max retries")
-                            
                             raise
 
                         # Log the error and retry
@@ -479,7 +471,7 @@ def upload_file():
                         print(f"Retrying in {wait_time} seconds...")
                         time.sleep(wait_time)
                 
-                # Update the upload data atomically
+                # Update the upload data atomically and immediately free memory
                 with app.upload_locks.get(upload_id, threading.Lock()):
                     if upload_id in app.upload_processors:
                         upload_data = app.upload_processors[upload_id]
@@ -501,16 +493,19 @@ def upload_file():
                         if part_number in upload_data['upload_threads']:
                             del upload_data['upload_threads'][part_number]
                             
-                        # Remove cached chunk data to free memory
+                        # IMMEDIATELY remove cached chunk data to free memory after successful upload
                         if part_number in upload_data['cached_chunks']:
                             del upload_data['cached_chunks'][part_number]
-                            print(f"DEBUG: Freed memory by removing cached data for part {part_number}")
+                            print(f"DEBUG: Immediately freed memory by removing cached data for part {part_number}")
                             
                         # Update total_parts from is_last_chunk
                         if is_last_chunk and part_number > upload_data.get('total_parts', 0):
                             upload_data['total_parts'] = part_number
                             print(f"DEBUG: Updated total parts to {upload_data['total_parts']} based on last chunk")
                             
+                # Free the chunk_data reference to help garbage collection
+                chunk_data = None
+                        
                 print(f"Successfully uploaded part {part_number} of {total_parts}")
                 
             except Exception as e:
@@ -518,7 +513,7 @@ def upload_file():
                 import traceback
                 traceback.print_exc()
                 
-                # Update state atomically to remove pending status
+                # Update state atomically to remove pending status and free memory
                 with app.upload_locks.get(upload_id, threading.Lock()):
                     if upload_id in app.upload_processors:
                         upload_data = app.upload_processors[upload_id]
@@ -526,6 +521,13 @@ def upload_file():
                             upload_data['pending_parts'].remove(part_number)
                         if part_number in upload_data['upload_threads']:
                             del upload_data['upload_threads'][part_number]
+                        # Clean up cached chunk even on failure to prevent memory leaks
+                        if part_number in upload_data['cached_chunks']:
+                            del upload_data['cached_chunks'][part_number]
+                            print(f"DEBUG: Cleaned up cached chunk {part_number} after upload failure")
+                
+                # Free the chunk_data reference
+                chunk_data = None
         
         # Start the upload thread and register it
         upload_thread = threading.Thread(
@@ -1370,16 +1372,79 @@ def retry_missing_part(upload_id, part_number):
             # Warn that this is not the original data
             print(f"WARNING: Using placeholder data for part {part_number} - this will not match the original file content!")
         else:
-            print(f"Using cached chunk data for part {part_number} ({len(chunk_data)} bytes)")
+            print(f"Using cached chunk data for part {part_number} ({len(chunk_data)} bytes)")        # Create a simplified upload function for retry
+        def retry_upload_func():
+            try:
+                content_type = 'text/plain'
+                session_id = str(uuid.uuid4())  # Generate session ID for this retry
+                
+                print(f"Retrying upload for part {part_number} of {total_parts}")
+                
+                # Perform the upload with retry logic
+                max_retries = 3
+                retry_delay = 1
+                
+                for retry_attempt in range(max_retries + 1):
+                    try:
+                        uploader.send_file_part(
+                            upload_id, 
+                            part_number, 
+                            chunk_data,
+                            filename, 
+                            content_type,
+                            bytes_uploaded_so_far,
+                            total_size,
+                            total_parts,
+                            session_id
+                        )
+                        break
+                        
+                    except Exception as upload_error:
+                        if retry_attempt >= max_retries:
+                            raise
+                        
+                        wait_time = retry_delay * (2 ** retry_attempt)
+                        print(f"Retry attempt {retry_attempt+1} failed, waiting {wait_time}s...")
+                        time.sleep(wait_time)
+                
+                # Update the upload data atomically and free memory
+                with app.upload_locks.get(upload_id, threading.Lock()):
+                    if upload_id in app.upload_processors:
+                        upload_data = app.upload_processors[upload_id]
+                        
+                        # Mark part as completed
+                        upload_data['completed_parts'].add(part_number)
+                        print(f"DEBUG: Retry succeeded - marked part {part_number} as completed")
+                        
+                        # Update bytes uploaded
+                        upload_data['bytes_uploaded'] += len(chunk_data)
+                        
+                        # Remove from pending parts
+                        if part_number in upload_data['pending_parts']:
+                            upload_data['pending_parts'].remove(part_number)
+                            
+                        # IMMEDIATELY free cached chunk data after successful retry
+                        if part_number in upload_data.get('cached_chunks', {}):
+                            del upload_data['cached_chunks'][part_number]
+                            print(f"DEBUG: Freed memory after successful retry of part {part_number}")
+                
+                print(f"Successfully retried upload for part {part_number}")
+                
+            except Exception as e:
+                print(f"ERROR in retry upload for part {part_number}: {str(e)}")
+                
+                # Clean up on failure
+                with app.upload_locks.get(upload_id, threading.Lock()):
+                    if upload_id in app.upload_processors:
+                        upload_data = app.upload_processors[upload_id]
+                        if part_number in upload_data['pending_parts']:
+                            upload_data['pending_parts'].remove(part_number)
+                        if part_number in upload_data.get('cached_chunks', {}):
+                            del upload_data['cached_chunks'][part_number]
+                            print(f"DEBUG: Cleaned up cached chunk {part_number} after retry failure")
         
-        # Generate a new session ID for this retry
-        session_id = str(uuid.uuid4())
-        
-        # Start a new thread to upload this part
-        thread = threading.Thread(
-            target=upload_thread_func,
-            args=(upload_id, part_number, chunk_data, filename, salt, is_last_chunk, bytes_uploaded_so_far, session_id)
-        )
+        # Start the retry upload
+        thread = threading.Thread(target=retry_upload_func)
         thread.daemon = True
         
         # Store the thread reference
@@ -1407,10 +1472,54 @@ def retry_missing_part(upload_id, part_number):
                     
         return False
 
+# Function to cleanup old upload processors and free memory
+def cleanup_old_uploads():
+    """Clean up upload processors that haven't been active for more than 1 hour"""
+    try:
+        current_time = time.time()
+        cleanup_threshold = 3600  # 1 hour in seconds
+        
+        if hasattr(app, 'upload_processors'):
+            upload_ids_to_remove = []
+            
+            for upload_id, upload_data in app.upload_processors.items():
+                last_activity = upload_data.get('last_activity', 0)
+                if current_time - last_activity > cleanup_threshold:
+                    upload_ids_to_remove.append(upload_id)
+            
+            # Remove old upload processors
+            for upload_id in upload_ids_to_remove:
+                with app.upload_locks.get(upload_id, threading.Lock()):
+                    if upload_id in app.upload_processors:
+                        upload_data = app.upload_processors[upload_id]
+                        
+                        # Free cached chunks
+                        cached_chunks = upload_data.get('cached_chunks', {})
+                        cached_size = sum(len(chunk) for chunk in cached_chunks.values())
+                        cached_count = len(cached_chunks)
+                        
+                        del app.upload_processors[upload_id]
+                        print(f"CLEANUP: Removed old upload processor {upload_id} (freed {cached_count} chunks, {cached_size / (1024*1024):.2f} MB)")
+                
+                # Remove the lock as well
+                if upload_id in app.upload_locks:
+                    del app.upload_locks[upload_id]
+        
+        print(f"CLEANUP: Cleanup completed. Active uploads: {len(getattr(app, 'upload_processors', {}))}")
+    except Exception as e:
+        print(f"Error in cleanup_old_uploads: {e}")
+    
+    # Schedule next cleanup in 30 minutes
+    threading.Timer(1800, cleanup_old_uploads).start()
+
 if __name__ == '__main__':
     # Start memory usage monitoring
     print("Starting memory usage monitoring...")
     log_memory_usage()
+    
+    # Start upload cleanup monitoring
+    print("Starting upload cleanup monitoring...")
+    cleanup_old_uploads()
     
     # Only run the development server if FLASK_ENV is set to 'development'
     # In production, Gunicorn will run the app

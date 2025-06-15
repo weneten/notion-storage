@@ -422,7 +422,7 @@ function showFinalizingMessage(message) {
     }
 }
 
-// Function to upload a file with chunking and proper tracking
+// Function to upload a file with streamlined chunking and continuous progress
 const uploadFile = async () => {
     const fileInput = document.getElementById('fileInput');
     
@@ -466,126 +466,154 @@ const uploadFile = async () => {
         // Update the initialization message to show we're now uploading
         showInitializingMessage(`Uploading file: ${fileName} (${formatFileSize(fileSize)})...`);
         
-        // Step 2: Split file into chunks and upload each
-        const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API
-        
-        // Create upload queue
-        const uploadQueue = [];
-        for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
-            const start = (partNumber - 1) * chunkSize;
-            const end = Math.min(start + chunkSize, fileSize);
-            const isLastChunk = partNumber === totalParts;
-            
-            uploadQueue.push({
-                partNumber,
-                start,
-                end,
-                isLastChunk,
-                uploaded: false,
-                retryCount: 0,
-                maxRetries: 3,
-                blob: file.slice(start, end)
-            });
-        }
-        
-        // Upload chunks with max 6 concurrent uploads
-        const maxConcurrent = 6;
-        let activeUploads = 0;
-        let completedParts = 0;
-        let failedParts = 0;
-        
-        // Create a pool of workers to maintain constant concurrency
-        const uploadPool = async () => {
-            const workers = new Array(maxConcurrent).fill(null);
-            
-            // Function for a single worker to process chunks
-            const worker = async (workerId) => {
-                while (uploadQueue.length > 0) {
-                    // Get next chunk to upload
-                    const chunk = uploadQueue.shift();
-                    console.log(`Worker ${workerId} uploading part ${chunk.partNumber}/${totalParts}`);
-                    
-                    try {
-                        // Create form data for this chunk
-                        const formData = new FormData();
-                        formData.append('file', chunk.blob);
-                        formData.append('upload_id', uploadId);
-                        formData.append('part_number', chunk.partNumber);
-                        formData.append('total_size', fileSize);
-                        formData.append('filename', uploadData.sanitized_filename || fileName);
-                        formData.append('original_filename', fileName);
-                        formData.append('salt', salt);
-                        formData.append('is_last_chunk', chunk.isLastChunk ? 'true' : 'false');
-                        formData.append('is_multipart', uploadData.is_multipart ? 'true' : 'false');
-                        
-                        // Upload the chunk
-                        console.log(`Uploading part ${chunk.partNumber}/${totalParts} (${formatFileSize(chunk.blob.size)})`);
-                        const response = await fetch('/upload_file', {
-                            method: 'POST',
-                            body: formData
-                        });
-                        
-                        if (!response.ok) {
-                            const errorData = await response.json();
-                            throw new Error(`Part ${chunk.partNumber} upload failed: ${errorData.error || 'Unknown error'}`);
-                        }
-                        
-                        const responseData = await response.json();
-                        console.log(`Part ${chunk.partNumber} upload response:`, responseData);
-                        
-                        // Update progress
-                        completedParts++;
-                        const progress = Math.floor((completedParts / totalParts) * 100);
-                        const uploadedBytes = completedParts * chunkSize > fileSize ? fileSize : completedParts * chunkSize;
-                        updateProgressBar(progress, `Uploading: ${formatFileSize(uploadedBytes)}/${formatFileSize(fileSize)}`);
-                        
-                        // Mark chunk as uploaded
-                        chunk.uploaded = true;
-                        
-                    } catch (error) {
-                        console.error(`Error uploading part ${chunk.partNumber}:`, error);
-                        
-                        // Add back to queue if retries remaining
-                        chunk.retryCount++;
-                        if (chunk.retryCount <= chunk.maxRetries) {
-                            console.log(`Retrying part ${chunk.partNumber} (attempt ${chunk.retryCount}/${chunk.maxRetries})`);
-                            
-                            // Add exponential backoff
-                            const backoffTime = Math.pow(2, chunk.retryCount) * 1000;
-                            await new Promise(resolve => setTimeout(resolve, backoffTime));
-                            
-                            // Add back to queue
-                            uploadQueue.push(chunk);
-                        } else {
-                            console.error(`Part ${chunk.partNumber} failed after ${chunk.maxRetries} attempts`);
-                            failedParts++;
-                            showStatus(`Upload failed for part ${chunk.partNumber}, please try again`, 'error');
-                        }
-                    }
-                }
-            };
-            
-            // Start all workers
-            await Promise.all(workers.map((_, i) => worker(i + 1)));
-            
-            // All uploads finished
-            if (failedParts === 0) {
-                console.log('All parts uploaded successfully, finalizing...');
-                // Show 100% without detailed text
-                updateProgressBar(100, '');
-                showFinalizingMessage('Preparing storage transfer...');
-                // Wait a moment to ensure all server-side processes are complete
-                setTimeout(() => finalizeUpload(uploadId, fileSize), 5000);
-            } else {
-                showStatus(`Upload failed with ${failedParts} failed parts, please try again`, 'error');
-            }
-        };
-        
-        // Start the upload pool
-        uploadPool();
+        // Step 2: Stream upload with continuous progress
+        await streamUploadFile(file, uploadId, uploadData, totalParts, fileSize, fileName, salt);
         
     } catch (error) {
         console.error('Upload failed:', error);
+        showStatus(`Upload failed: ${error.message}`, 'error');
+    }
+};
+
+// Streamlined upload function that maintains continuous upload stream
+const streamUploadFile = async (file, uploadId, uploadData, totalParts, fileSize, fileName, salt) => {
+    const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API
+    const maxConcurrent = 8; // Increased for better throughput
+    
+    let completedParts = 0;
+    let failedParts = 0;
+    let activeUploads = 0;
+    const uploadPromises = [];
+    
+    // Create a semaphore to control concurrency
+    const semaphore = {
+        current: 0,
+        max: maxConcurrent,
+        waitQueue: [],
+        
+        async acquire() {
+            if (this.current < this.max) {
+                this.current++;
+                return;
+            }
+            
+            return new Promise(resolve => {
+                this.waitQueue.push(resolve);
+            });
+        },
+        
+        release() {
+            this.current--;
+            if (this.waitQueue.length > 0) {
+                const resolve = this.waitQueue.shift();
+                this.current++;
+                resolve();
+            }
+        }
+    };
+    
+    // Function to upload a single chunk with retry logic
+    const uploadChunk = async (partNumber, chunkBlob, isLastChunk) => {
+        await semaphore.acquire();
+        
+        try {
+            const maxRetries = 3;
+            let retryCount = 0;
+            
+            while (retryCount <= maxRetries) {
+                try {
+                    // Create form data for this chunk
+                    const formData = new FormData();
+                    formData.append('file', chunkBlob);
+                    formData.append('upload_id', uploadId);
+                    formData.append('part_number', partNumber);
+                    formData.append('total_size', fileSize);
+                    formData.append('filename', uploadData.sanitized_filename || fileName);
+                    formData.append('original_filename', fileName);
+                    formData.append('salt', salt);
+                    formData.append('is_last_chunk', isLastChunk ? 'true' : 'false');
+                    formData.append('is_multipart', uploadData.is_multipart ? 'true' : 'false');
+                    
+                    // Upload the chunk
+                    console.log(`Uploading part ${partNumber}/${totalParts} (${formatFileSize(chunkBlob.size)})`);
+                    const response = await fetch('/upload_file', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(`Part ${partNumber} upload failed: ${errorData.error || 'Unknown error'}`);
+                    }
+                    
+                    const responseData = await response.json();
+                    console.log(`Part ${partNumber} upload response:`, responseData);
+                      // Update progress
+                    completedParts++;
+                    const progress = Math.floor((completedParts / totalParts) * 100);
+                    const uploadedBytes = Math.min(completedParts * chunkSize, fileSize);
+                    
+                    // Calculate actual uploaded bytes more accurately
+                    let actualUploadedBytes = 0;
+                    if (completedParts === totalParts) {
+                        actualUploadedBytes = fileSize; // Ensure we show the exact file size when complete
+                    } else {
+                        actualUploadedBytes = uploadedBytes;
+                    }
+                    
+                    updateProgressBar(progress, `Uploading: ${formatFileSize(actualUploadedBytes)}/${formatFileSize(fileSize)}`);
+                    
+                    return responseData;
+                    
+                } catch (error) {
+                    retryCount++;
+                    if (retryCount > maxRetries) {
+                        throw error;
+                    }
+                    
+                    console.log(`Retrying part ${partNumber} (attempt ${retryCount}/${maxRetries})`);
+                    const backoffTime = Math.pow(2, retryCount) * 1000;
+                    await new Promise(resolve => setTimeout(resolve, backoffTime));
+                }
+            }
+        } finally {
+            semaphore.release();
+        }
+    };
+    
+    // Start uploading all chunks immediately (streaming approach)
+    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+        const start = (partNumber - 1) * chunkSize;
+        const end = Math.min(start + chunkSize, fileSize);
+        const isLastChunk = partNumber === totalParts;
+        const chunkBlob = file.slice(start, end);
+        
+        // Start upload immediately without waiting
+        const uploadPromise = uploadChunk(partNumber, chunkBlob, isLastChunk)
+            .catch(error => {
+                console.error(`Error uploading part ${partNumber}:`, error);
+                failedParts++;
+                throw error;
+            });
+        
+        uploadPromises.push(uploadPromise);
+    }
+    
+    try {
+        // Wait for all uploads to complete
+        await Promise.all(uploadPromises);
+          if (failedParts === 0) {
+            console.log('All parts uploaded successfully, finalizing...');
+            updateProgressBar(100, '');
+            showFinalizingMessage('Preparing storage transfer...');
+            // Wait less time since chunks are processed immediately
+            setTimeout(() => finalizeUpload(uploadId, fileSize), 1000);
+        } else {
+            showStatus(`Upload failed with ${failedParts} failed parts, please try again`, 'error');
+        }
+        
+    } catch (error) {
+        console.error('Upload stream failed:', error);
         showStatus(`Upload failed: ${error.message}`, 'error');
     }
 };
