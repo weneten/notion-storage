@@ -251,8 +251,7 @@ class NotionStreamingUploader:
         
         if self.notion_uploader:
             print(f"DEBUG: Using notion_uploader to upload file")
-            try:
-                # Create a generator from the buffer
+            try:                # Create a generator from the buffer
                 def buffer_generator():
                     file_buffer.seek(0)
                     chunk_size = 64 * 1024  # 64KB chunks
@@ -261,16 +260,18 @@ class NotionStreamingUploader:
                         if not chunk:
                             break
                         yield chunk
-                  # Use file.txt for Notion API, but preserve original filename for database
+                
+                # Use file.txt for Notion API, but preserve original filename for database
                 notion_filename = "file.txt"  # Always use file.txt for Notion API
                 print(f"DEBUG: Using '{notion_filename}' for Notion API, real filename: {filename}")
+                print(f"DEBUG: Using content-type 'text/plain' (required by Notion API)")
                 
                 # Use existing uploader's stream method
                 result = self.notion_uploader.upload_single_file_stream(
                     file_stream=buffer_generator(),
                     filename=notion_filename,  # Use file.txt for API
                     database_id=user_database_id,
-                    content_type='application/octet-stream',
+                    content_type='text/plain',  # Required by Notion API for all files
                     file_size=file_size,
                     original_filename=filename  # Keep original filename for database
                 )
@@ -302,8 +303,7 @@ class NotionStreamingUploader:
         if self.notion_uploader:
             try:                # Initialize multipart upload if this is the first chunk
                 if 'multipart_upload_id' not in upload_session:
-                    print(f"DEBUG: Initializing multipart upload for {upload_session['filename']}")
-                    
+                    print(f"DEBUG: Initializing multipart upload for {upload_session['filename']}")                    
                     # Calculate total parts
                     total_parts = upload_session['total_parts']
                     
@@ -312,13 +312,13 @@ class NotionStreamingUploader:
                     print(f"DEBUG: Using '{notion_filename}' for Notion API, real filename: {upload_session['filename']}")
                     
                     multipart_info = self.notion_uploader.create_file_upload(
-                        content_type='application/octet-stream',
+                        content_type='text/plain',  # Required by Notion API for all files
                         filename=notion_filename,  # Use file.txt for API
                         mode='multi_part',
-                        number_of_parts=total_parts
-                    )
+                        number_of_parts=total_parts                    )
                     
                     print(f"DEBUG: Created multipart upload with filename='{notion_filename}' for Notion API")
+                    print(f"DEBUG: Using content-type 'text/plain' (required by Notion API)")
                     print(f"DEBUG: Original filename '{upload_session['filename']}' will be stored in database")
                     
                     upload_session['multipart_upload_id'] = multipart_info['id']
@@ -334,7 +334,7 @@ class NotionStreamingUploader:
                     part_number=part_number,
                     chunk_data=chunk_data,
                     filename=upload_session.get('notion_filename', 'file.txt'),  # Use file.txt for API
-                    content_type='application/octet-stream',
+                    content_type='text/plain',  # Required by Notion API for all files
                     bytes_uploaded_so_far=part_number * self.MULTIPART_CHUNK_SIZE,
                     total_bytes=upload_session['file_size'],
                     total_parts=upload_session['total_parts'],

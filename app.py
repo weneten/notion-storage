@@ -418,7 +418,7 @@ def create_streaming_upload_session():
         
         filename = data.get('filename')
         file_size = data.get('fileSize')
-        content_type = data.get('contentType', 'application/octet-stream')
+        content_type = data.get('contentType', 'text/plain')  # Default to text/plain for Notion compatibility
         
         print(f"DEBUG: Creating session for {filename}, size: {file_size}")
         
