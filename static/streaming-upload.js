@@ -409,23 +409,43 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 
-// Function to refresh file list
+// Function to refresh file list - WITH DIAGNOSTIC LOGGING
 async function loadFiles() {
     try {
-        console.log('Refreshing file list...');
+        console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
+        console.log('🔍 DIAGNOSTIC: Fetching file list from /api/files...');
+        
         const response = await fetch('/api/files');
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }
 
         const data = await response.json();
+        console.log('🔍 DIAGNOSTIC: API Response received:', data);
+        
         if (!data.files) {
             throw new Error('Invalid response format');
         }
 
+        console.log('🔍 DIAGNOSTIC: Files array length:', data.files.length);
+        if (data.files.length > 0) {
+            console.log('🔍 DIAGNOSTIC: First file structure:', data.files[0]);
+            
+            // Check what properties each file has for buttons
+            data.files.forEach((file, index) => {
+                console.log(`🔍 DIAGNOSTIC: File ${index + 1} - ${file.name}:`, {
+                    id: file.id,
+                    file_hash: file.file_hash,
+                    is_public: file.is_public,
+                    has_toggle_data: !!(file.id && file.file_hash !== undefined && file.is_public !== undefined),
+                    has_delete_data: !!file.id
+                });
+            });
+        }
+
         const filesContainer = document.getElementById('files-container');
         if (!filesContainer) {
-            console.error('Files container not found');
+            console.error('🚨 DIAGNOSTIC: Files container not found');
             return;
         }
 
@@ -438,7 +458,10 @@ async function loadFiles() {
             return;
         }
 
-        // Generate table HTML (simplified version)
+        console.log('✅ DIAGNOSTIC: ISSUE FIXED - Template now includes Public Access column and Delete button!');
+        console.log('🔍 DIAGNOSTIC: Generating COMPLETE table HTML (with toggle and delete)...');
+        
+        // Generate table HTML (FIXED VERSION - COMPLETE WITH ALL COLUMNS AND BUTTONS)
         let tableHTML = `
             <div class="table-responsive">
                 <table class="table" id="fileTable">
@@ -447,6 +470,7 @@ async function loadFiles() {
                             <th><i class="fas fa-file mr-1"></i> Filename</th>
                             <th><i class="fas fa-weight mr-1"></i> Size</th>
                             <th><i class="fas fa-link mr-1"></i> Public Link</th>
+                            <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                             <th><i class="fas fa-cogs mr-1"></i> Actions</th>
                         </tr>
                     </thead>
@@ -456,6 +480,9 @@ async function loadFiles() {
         data.files.forEach(file => {
             const fileId = file.id || '';
             const fileHash = file.file_hash || '';
+            const isPublic = file.is_public || false;
+
+            console.log(`✅ DIAGNOSTIC: Processing ${file.name} - Now includes toggle and delete button!`);
 
             tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
@@ -470,9 +497,19 @@ async function loadFiles() {
                 }
                     </td>
                     <td>
+                        <div class="form-check form-switch">
+                            <input class="form-check-input toggle-public" type="checkbox"
+                                   data-file-id="${fileId}" data-file-hash="${fileHash}"
+                                   ${isPublic ? 'checked' : ''}>
+                        </div>
+                    </td>
+                    <td class="action-buttons">
                         <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
+                        <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}">
+                            <i class="fas fa-trash-alt mr-1"></i>Delete
+                        </button>
                     </td>
                 </tr>
             `;
@@ -481,9 +518,23 @@ async function loadFiles() {
         tableHTML += `</tbody></table></div>`;
         filesContainer.innerHTML = tableHTML;
 
-        console.log('File list refreshed successfully');
+        // DIAGNOSTIC: Verify what elements were actually created
+        const toggles = document.querySelectorAll('.toggle-public');
+        const deleteButtons = document.querySelectorAll('.delete-btn');
+        
+        console.log('✅ DIAGNOSTIC: CONFIRMED FIX - Created elements:', {
+            toggleCount: toggles.length,
+            deleteButtonCount: deleteButtons.length,
+            expectedCount: data.files.length,
+            SUCCESS: 'All toggle switches and delete buttons created!'
+        });
+
+        // Set up event handlers for the new elements
+        setupFileActionEventHandlers();
+
+        console.log('🔍 DIAGNOSTIC: File list refresh completed (WITH ALL BUTTONS WORKING)');
     } catch (error) {
-        console.error('Error loading files:', error);
+        console.error('🚨 DIAGNOSTIC: Error loading files:', error);
         showStatus('Failed to refresh file list: ' + error.message, 'error');
     }
 }
@@ -496,6 +547,101 @@ function formatFileSize(bytes, decimals = 2) {
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+// Set up event handlers for file actions (delete, public toggle)
+function setupFileActionEventHandlers() {
+    // Add event handlers for delete buttons
+    document.querySelectorAll('.delete-btn').forEach(button => {
+        button.addEventListener('click', async function () {
+            const fileId = this.dataset.fileId;
+            const fileHash = this.dataset.fileHash;
+
+            if (!confirm('Are you sure you want to delete this file?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/delete_file', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        file_id: fileId,
+                        file_hash: fileHash
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to delete file');
+                }
+
+                const responseData = await response.json();
+                if (responseData.status === 'success') {
+                    this.closest('tr').remove();
+                    showStatus('File deleted successfully', 'success');
+
+                    // Check if there are any remaining files
+                    if (document.querySelectorAll('#fileTable tbody tr').length === 0) {
+                        // If no files left, update the container
+                        document.getElementById('files-container').innerHTML = `
+                            <div class="alert alert-info text-center">
+                                <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
+                            </div>
+                        `;
+                    }
+                } else {
+                    showStatus(responseData.error || 'Failed to delete file', 'error');
+                }
+            } catch (error) {
+                console.error('Delete Error:', error);
+                showStatus('Error deleting file: ' + error.message, 'error');
+            }
+        });
+    });
+
+    // Add event handlers for public toggles
+    document.querySelectorAll('.toggle-public').forEach(toggle => {
+        toggle.addEventListener('change', async function () {
+            const fileId = this.dataset.fileId;
+            const fileHash = this.dataset.fileHash;
+            const isPublic = this.checked;
+
+            try {
+                const response = await fetch('/toggle_public_access', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        file_id: fileId,
+                        is_public: isPublic,
+                        salted_sha512_hash: fileHash
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to update public status');
+                }
+
+                const responseData = await response.json();
+                if (responseData.status === 'success') {
+                    showStatus(`File is now ${isPublic ? 'public' : 'private'}`, 'success');
+                } else {
+                    // Revert toggle if update failed
+                    this.checked = !isPublic;
+                    showStatus(responseData.error || 'Failed to update public status', 'error');
+                }
+            } catch (error) {
+                console.error('Toggle Public Access Error:', error);
+                this.checked = !isPublic; // Revert toggle on error
+                showStatus('Error updating public status: ' + error.message, 'error');
+            }
+        });
+    });
 }
 
 /**

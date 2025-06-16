@@ -449,32 +449,61 @@ def download_by_hash(salted_sha512_hash):
 @login_required
 def get_files_api():
     """
-    API endpoint to get user's files (for AJAX requests)
+    API endpoint to get user's files (for AJAX requests) - WITH DIAGNOSTIC LOGGING
     """
+    print("🔍 DIAGNOSTIC: /api/files endpoint called (used by streaming upload)")
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
+        print(f"🔍 DIAGNOSTIC: User database ID: {user_database_id}")
+        
         if not user_database_id:
+            print("🚨 DIAGNOSTIC: User database not found")
             return jsonify({'error': 'User database not found'}), 404
         
         files_response = uploader.get_files_from_user_database(user_database_id)
         files = files_response.get('results', [])
         
+        print(f"🔍 DIAGNOSTIC: Raw files from database: {len(files)} files")
+        
         # Format files for JSON response
         formatted_files = []
-        for file_data in files:
+        for i, file_data in enumerate(files):
             file_props = file_data.get('properties', {})
-            formatted_files.append({
-                'id': file_data.get('id'),
-                'name': file_props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown'),
-                'size': file_props.get('filesize', {}).get('number', 0),
-                'file_hash': file_props.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', ''),
-                'is_public': file_props.get('is_public', {}).get('checkbox', False)
-            })
+            
+            # Extract all properties with diagnostic logging
+            file_id = file_data.get('id')
+            name = file_props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown')
+            size = file_props.get('filesize', {}).get('number', 0)
+            file_hash = file_props.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            is_public = file_props.get('is_public', {}).get('checkbox', False)
+            
+            print(f"🔍 DIAGNOSTIC: File {i+1} - {name}:")
+            print(f"  - ID: {file_id} (needed for delete button)")
+            print(f"  - Hash: {file_hash} (needed for toggle)")
+            print(f"  - Is Public: {is_public} (needed for toggle state)")
+            print(f"  - Size: {size}")
+            print(f"  - Has all button data: {bool(file_id and file_hash is not None and is_public is not None)}")
+            
+            formatted_file = {
+                'id': file_id,
+                'name': name,
+                'size': size,
+                'file_hash': file_hash,
+                'is_public': is_public
+            }
+            
+            formatted_files.append(formatted_file)
+        
+        print(f"🔍 DIAGNOSTIC: Returning {len(formatted_files)} formatted files to frontend")
+        if formatted_files:
+            print(f"🔍 DIAGNOSTIC: First file in response: {formatted_files[0]}")
         
         return jsonify({'files': formatted_files})
         
     except Exception as e:
-        print(f"Error getting files: {e}")
+        print(f"🚨 DIAGNOSTIC: Error in /api/files: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
