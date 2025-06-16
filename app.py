@@ -324,44 +324,125 @@ def logout():
     return redirect(url_for('login'))
 
 
+@app.route('/change_password', methods=['GET', 'POST'])
+@login_required
+def change_password():
+    if request.method == 'POST':
+        current_password = request.form.get('current_password')
+        new_password = request.form.get('new_password')
+        confirm_password = request.form.get('confirm_password')
+
+        # Verify new password matches confirmation
+        if new_password != confirm_password:
+            return "New password and confirmation do not match", 400
+
+        # Verify current password
+        if not current_user.check_password(current_password):
+            return "Current password is incorrect", 401
+
+        # Hash new password
+        hashed_bytes = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt())
+        new_password_hash = base64.b64encode(hashed_bytes).decode('utf-8')
+
+        try:
+            # Update user password in Notion
+            uploader.update_user_password(current_user.id, new_password_hash)
+            return redirect(url_for('home'))
+        except Exception as e:
+            return f"Error changing password: {str(e)}", 500
+
+    return render_template('change_password.html')
+
+
 # ============================================================================
 # FILE DOWNLOAD ROUTES
 # ============================================================================
 
+@app.route('/download/<filename>')
+@login_required
+def download_file(filename):
+    """
+    Download file by filename (authenticated route) - redirects to hash-based download
+    """
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return "User database not found", 404
+
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        file_hash = None
+        for file_data in files_data.get('results', []):
+            properties = file_data.get('properties', {})
+            name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            if name == filename:
+                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                break
+
+        if file_hash:
+            return redirect(url_for('download_by_hash', salted_sha512_hash=file_hash))
+        else:
+            return "File not found in database", 404
+    except Exception as e:
+        return str(e), 500
+
+
 @app.route('/d/<salted_sha512_hash>')
 def download_by_hash(salted_sha512_hash):
     """
-    Download file by hash (public route)
+    Download file by hash (public/private route with access control)
     """
     try:
         # Find the file in the global file index using the hash
-        file_info = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
-        
-        if not file_info:
+        index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
+
+        if not index_entry:
             return "File not found", 404
+
+        properties = index_entry.get('properties', {})
         
-        # Get file properties
-        properties = file_info.get('properties', {})
-        filename = properties.get('Name', {}).get('title', [{}])[0].get('text', {}).get('content', 'download')
-        file_size = properties.get('Size', {}).get('number', 0)
-        
-        # Get the file URL from Notion
-        try:
-            file_url = uploader.get_notion_file_url_from_page_property(file_info['id'], filename)
-            if not file_url:
-                return "File URL not available", 404
-            
-            # Redirect to the Notion file URL
-            from flask import redirect
-            return redirect(file_url)
-            
-        except Exception as e:
-            print(f"Error getting file URL: {e}")
-            return "Error accessing file", 500
-        
+        # Extract properties from the index_entry
+        is_public = properties.get('Is Public', {}).get('checkbox', False)
+        file_page_id = properties.get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        file_user_db_id = properties.get('User Database ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        original_filename = properties.get('Original Filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'download')
+
+        # Now fetch the actual file details from the user's specific database using file_page_id
+        # This is necessary to get the actual download link and other file-specific properties
+        file_details = uploader.get_user_by_id(file_page_id)
+        if not file_details:
+            return "File details not found in user database.", 404
+
+        # Explicitly retrieve a new signed download URL from Notion
+        notion_download_link = uploader.get_notion_file_url_from_page_property(file_page_id, original_filename)
+
+        # Check access control
+        if not is_public:
+            if not current_user.is_authenticated:
+                return redirect(url_for('login', next=request.url))
+
+            current_user_db_id = uploader.get_user_database_id(current_user.id)
+
+            if file_user_db_id != current_user_db_id:
+                return "Access Denied: You do not have permission to download this file.", 403
+
+        if not notion_download_link:
+            return "Download link not available for this file", 500
+
+        # Import necessary modules for streaming
+        import mimetypes
+        mimetype, _ = mimetypes.guess_type(original_filename)
+        if not mimetype:
+            mimetype = 'application/octet-stream'
+
+        response = Response(stream_with_context(uploader.stream_file_from_notion(notion_download_link)), mimetype=mimetype)
+        response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
+        return response
+
     except Exception as e:
-        print(f"Error downloading file by hash {salted_sha512_hash}: {e}")
-        return "Error downloading file", 500
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"DEBUG: Error in /d/<hash> route: {str(e)}\n{error_trace}")
+        return "An error occurred during download.", 500
 
 
 @app.route('/api/files')
@@ -397,13 +478,53 @@ def get_files_api():
         return jsonify({'error': str(e)}), 500
 
 
-@app.route('/files-api', methods=['GET'])
+@app.route('/files-api')
 @login_required
-def files_api():
+def list_files_api():
     """
-    Redirect endpoint for /files-api to /api/files (for compatibility)
+    Legacy API endpoint to get user's files (matches old code implementation)
     """
-    return redirect(url_for('get_files_api'))
+    try:
+        # Get user's database ID
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({"error": "No user database ID found"}), 404
+            
+        # Query files from Notion database using uploader's method
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        
+        # Format files for API response (matches old code format)
+        files = []
+        for file_data in files_data.get('results', []):
+            try:
+                properties = file_data.get('properties', {})
+                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                size = properties.get('filesize', {}).get('number', 0)
+                file_id = file_data.get('id')  # Extract the Notion page ID
+                is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
+                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
+                
+                if name:  # Only include files with names
+                    files.append({
+                        "name": name,
+                        "size": size,
+                        "id": file_id,  # Add the file_id to the dictionary
+                        "is_public": is_public,  # Add is_public status
+                        "file_hash": file_hash  # Add file_hash
+                    })
+            except Exception as e:
+                print(f"Error processing file data: {e}")
+                continue
+                
+        return jsonify({
+            "files": files,
+            "debug": {
+                "user_database_id": user_database_id,
+                "results_count": len(files)
+            }
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/delete_file', methods=['POST'])
@@ -442,33 +563,37 @@ def delete_file():
 @login_required
 def toggle_public_access():
     """
-    Toggle public access status for a file
+    Toggle public access status for a file - matches old code implementation
     """
+    print("DEBUG: /toggle_public_access route accessed.")
     try:
         data = request.get_json()
+        print(f"DEBUG: Received JSON data: {data}")
+        
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
         file_id = data.get('file_id')
-        is_public = data.get('is_public', False)
-        salted_sha512_hash = data.get('salted_sha512_hash')
+        is_public = data.get('is_public')
+        salted_sha512_hash = data.get('salted_sha512_hash')  # Get the hash to update index
         
-        if not file_id:
-            return jsonify({'error': 'file_id is required'}), 400
+        if not file_id or is_public is None or not salted_sha512_hash:
+            print("DEBUG: Missing file_id, is_public, or salted_sha512_hash from request.")
+            return jsonify({"error": "File ID, public status, and hash are required"}), 400
         
-        print(f"Toggling public access: ID={file_id}, Public={is_public}, Hash={salted_sha512_hash}")
+        print(f"DEBUG: File with ID {file_id} public status set to {is_public}.")
         
-        # Update public status in user database and global index
-        result = uploader.update_file_public_status(file_id, is_public, salted_sha512_hash)
+        # Call the function in notion_uploader.py to update the public status
+        uploader.update_file_public_status(file_id, is_public, salted_sha512_hash)
+        print(f"DEBUG: File with ID {file_id} public status set to {is_public}.")
         
-        return jsonify({
-            'status': 'success',
-            'message': f'File is now {"public" if is_public else "private"}'
-        })
+        return jsonify({"status": "success", "message": "File public status updated successfully"}), 200
         
     except Exception as e:
-        print(f"Error updating public status: {e}")
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"DEBUG: Toggling public access failed with error: {str(e)}\n{error_trace}")
+        return jsonify({"error": str(e)}), 500
 
 
 # ============================================================================
@@ -646,13 +771,17 @@ def stream_file_upload(upload_id):
                     'total_size': result['bytes_uploaded']
                 })
             
+            # **ISSUE 3 FIX**: Enhanced response to include all data needed for UI buttons
             return jsonify({
                 'status': 'completed',
                 'upload_id': upload_id,
                 'filename': result['filename'],
                 'file_size': result['bytes_uploaded'],
                 'file_hash': result['file_hash'],
-                'file_id': result['file_id']
+                'file_id': file_page_result['id'] if 'file_page_result' in locals() else result['file_id'],
+                'is_public': False,  # Default to private
+                'name': result.get('original_filename', result['filename']),  # For UI display
+                'size': result['bytes_uploaded']  # For UI consistency
             })
             
         except MemoryError as e:
