@@ -384,9 +384,9 @@ def get_files_api():
             file_props = file_data.get('properties', {})
             formatted_files.append({
                 'id': file_data.get('id'),
-                'name': file_props.get('Name', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown'),
-                'size': file_props.get('Size', {}).get('number', 0),
-                'file_hash': file_props.get('Hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', ''),
+                'name': file_props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown'),
+                'size': file_props.get('filesize', {}).get('number', 0),
+                'file_hash': file_props.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', ''),
                 'is_public': file_props.get('is_public', {}).get('checkbox', False)
             })
         
@@ -394,6 +394,80 @@ def get_files_api():
         
     except Exception as e:
         print(f"Error getting files: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/files-api', methods=['GET'])
+@login_required
+def files_api():
+    """
+    Redirect endpoint for /files-api to /api/files (for compatibility)
+    """
+    return redirect(url_for('get_files_api'))
+
+
+@app.route('/delete_file', methods=['POST'])
+@login_required
+def delete_file():
+    """
+    Delete a file from user's database and global index
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        file_id = data.get('file_id')
+        file_hash = data.get('file_hash')
+        
+        if not file_id:
+            return jsonify({'error': 'file_id is required'}), 400
+        
+        print(f"Deleting file: ID={file_id}, Hash={file_hash}")
+        
+        # Delete from user database and global index
+        result = uploader.delete_file_from_db(file_id)
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'File deleted successfully'
+        })
+        
+    except Exception as e:
+        print(f"Error deleting file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/toggle_public_access', methods=['POST'])
+@login_required
+def toggle_public_access():
+    """
+    Toggle public access status for a file
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        file_id = data.get('file_id')
+        is_public = data.get('is_public', False)
+        salted_sha512_hash = data.get('salted_sha512_hash')
+        
+        if not file_id:
+            return jsonify({'error': 'file_id is required'}), 400
+        
+        print(f"Toggling public access: ID={file_id}, Public={is_public}, Hash={salted_sha512_hash}")
+        
+        # Update public status in user database and global index
+        result = uploader.update_file_public_status(file_id, is_public, salted_sha512_hash)
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'File is now {"public" if is_public else "private"}'
+        })
+        
+    except Exception as e:
+        print(f"Error updating public status: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -517,6 +591,50 @@ def stream_file_upload(upload_id):
             result = streaming_upload_manager.process_upload_stream(upload_id, stream_generator())
             
             print(f"DEBUG: Upload processing completed successfully: {result}")
+            
+            # **ISSUE 2 FIX**: Add database integration after successful Notion upload
+            try:
+                print("DEBUG: Starting database integration after successful upload")
+                
+                # Get user database ID
+                user_database_id = uploader.get_user_database_id(current_user.id)
+                if not user_database_id:
+                    print("ERROR: User database not found for database integration")
+                    raise Exception("User database not found")
+                
+                print(f"DEBUG: User database ID: {user_database_id}")
+                
+                # Save file metadata to user database
+                file_page_result = uploader.add_file_to_user_database(
+                    user_database_id,
+                    result['filename'],
+                    result['bytes_uploaded'],
+                    result['file_hash'],
+                    result['file_id'],
+                    is_public=False,  # Default to private
+                    salt="",  # Add salt if needed
+                    original_filename=result.get('original_filename', result['filename'])
+                )
+                
+                print(f"DEBUG: File added to user database: {file_page_result['id']}")
+                
+                # Add to global index
+                uploader.add_file_to_index(
+                    result['file_hash'],
+                    file_page_result['id'],
+                    user_database_id,
+                    result.get('original_filename', result['filename']),
+                    False  # is_public = False by default
+                )
+                
+                print("DEBUG: File added to global index successfully")
+                
+            except Exception as db_error:
+                print(f"ERROR: Database integration failed: {db_error}")
+                # Don't fail the entire upload, but log the error
+                # The file is already uploaded to Notion successfully
+                import traceback
+                traceback.print_exc()
             
             # Emit final progress update
             if socketio:
