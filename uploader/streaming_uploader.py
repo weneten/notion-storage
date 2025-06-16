@@ -174,14 +174,13 @@ class NotionStreamingUploader:
                     buffer = io.BytesIO()
                     buffer.write(remaining_data)
                     buffer_size = len(remaining_data)
-                    
-                    # Upload this part
+                      # Upload this part
                     self._upload_multipart_chunk(upload_session, part_number, part_data)
                     part_number += 1
                     
                     # Update progress
+                    progress = (bytes_received / upload_session['file_size']) * 100
                     if upload_session['progress_callback']:
-                        progress = (bytes_received / upload_session['file_size']) * 100
                         upload_session['progress_callback'](progress, bytes_received)
                     
                     # Emit progress via SocketIO if available
@@ -200,8 +199,7 @@ class NotionStreamingUploader:
                 buffer.seek(0)
                 final_data = buffer.read()
                 self._upload_multipart_chunk(upload_session, part_number, final_data, is_final=True)
-            
-            # Complete multipart upload
+              # Complete multipart upload
             self._complete_multipart_upload(upload_session)
             
             upload_session.update({
@@ -216,7 +214,8 @@ class NotionStreamingUploader:
         except Exception as e:
             # Abort multipart upload on error
             self._abort_multipart_upload(upload_session)
-            upload_session.update({                'status': 'failed',
+            upload_session.update({
+                'status': 'failed',
                 'error': str(e),
                 'failed_at': time.time()
             })
