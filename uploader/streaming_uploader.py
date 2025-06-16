@@ -78,10 +78,31 @@ class NotionStreamingUploader:
         """
         Process the incoming file stream and handle upload based on file size
         """
-        if upload_session['is_multipart']:
-            return self._process_multipart_stream(upload_session, stream_generator)
-        else:
-            return self._process_single_part_stream(upload_session, stream_generator)
+        try:
+            print(f"DEBUG: Starting stream processing for upload {upload_session['upload_id']}")
+            print(f"DEBUG: File: {upload_session['filename']}, Size: {upload_session['file_size']}, Multipart: {upload_session['is_multipart']}")
+            
+            if upload_session['is_multipart']:
+                result = self._process_multipart_stream(upload_session, stream_generator)
+            else:
+                result = self._process_single_part_stream(upload_session, stream_generator)
+            
+            print(f"DEBUG: Stream processing completed successfully for upload {upload_session['upload_id']}")
+            return result
+            
+        except Exception as e:
+            print(f"ERROR: Stream processing failed for upload {upload_session['upload_id']}: {str(e)}")
+            print(f"ERROR: Exception type: {type(e).__name__}")
+            
+            # Update upload session with error info
+            upload_session.update({
+                'status': 'failed',
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'failed_at': time.time()
+            })
+            
+            raise
     
     def _process_single_part_stream(self, upload_session: Dict[str, Any], stream_generator) -> Dict[str, Any]:
         """

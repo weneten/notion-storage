@@ -1014,17 +1014,51 @@ class NotionFileUploader:
         return response.json()
 
     def get_user_by_id(self, user_id: str) -> Dict[str, Any]:
-        """Get a user page by its ID"""
+        """Get a user page by its ID with retry logic for temporary failures"""
+        import time
+        
         url = f"{self.base_url}/pages/{user_id}"
-
         headers = {**self.headers, "Content-Type": "application/json"}
+        
+        print(f"DEBUG: Making request to Notion API: {url}")
+        print(f"DEBUG: Request headers: {headers}")
 
-        response = requests.get(url, headers=headers)
-
-        if response.status_code != 200:
-            raise Exception(f"Failed to get user by ID: {response.text}")
-
-        return response.json()
+        max_retries = 3
+        base_delay = 1  # Start with 1 second delay
+        
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.get(url, headers=headers, timeout=30)
+                print(f"DEBUG: Attempt {attempt + 1}: Response status: {response.status_code}")
+                print(f"DEBUG: Response headers: {dict(response.headers)}")
+                
+                if response.status_code == 200:
+                    return response.json()
+                elif response.status_code in [502, 503, 504] and attempt < max_retries:
+                    # Temporary server errors - retry with exponential backoff
+                    delay = base_delay * (2 ** attempt)
+                    print(f"DEBUG: Server error {response.status_code}, retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"DEBUG: Response text: {response.text[:500]}")  # Limit response text for readability
+                    raise Exception(f"Failed to get user by ID: HTTP {response.status_code} - {response.text}")
+                    
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"DEBUG: Network error on attempt {attempt + 1}: {str(e)}, retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"DEBUG: Request exception after {max_retries + 1} attempts: {str(e)}")
+                    raise Exception(f"Failed to get user by ID - Network error: {str(e)}")
+            except Exception as e:
+                print(f"DEBUG: Unexpected error: {str(e)}")
+                raise
+        
+        # Should not reach here, but just in case
+        raise Exception("Failed to get user by ID after all retry attempts")
 
     def get_user_database_id(self, user_id: str) -> Optional[str]:
         """
