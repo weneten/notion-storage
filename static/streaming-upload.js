@@ -413,7 +413,7 @@ document.addEventListener('DOMContentLoaded', function () {
 async function loadFiles() {
     try {
         console.log('Refreshing file list...');
-        const response = await fetch('/files-api');
+        const response = await fetch('/api/files');
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }

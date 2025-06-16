@@ -324,26 +324,82 @@ def logout():
     return redirect(url_for('login'))
 
 
-# TEMPORARY: Disable old upload routes to force streaming upload usage
-# These can be re-enabled later if needed for backwards compatibility
+# ============================================================================
+# FILE DOWNLOAD ROUTES
+# ============================================================================
 
-# @app.route('/upload_file', methods=['POST'])
-# @login_required
-# def upload_file():
-#     # OLD UPLOAD ROUTE - DISABLED FOR TESTING
-#     return jsonify({"error": "Old upload route disabled - use streaming upload"}), 403
+@app.route('/d/<salted_sha512_hash>')
+def download_by_hash(salted_sha512_hash):
+    """
+    Download file by hash (public route)
+    """
+    try:
+        # Find the file in the global file index using the hash
+        file_info = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
+        
+        if not file_info:
+            return "File not found", 404
+        
+        # Get file properties
+        properties = file_info.get('properties', {})
+        filename = properties.get('Name', {}).get('title', [{}])[0].get('text', {}).get('content', 'download')
+        file_size = properties.get('Size', {}).get('number', 0)
+        
+        # Get the file URL from Notion
+        try:
+            file_url = uploader.get_notion_file_url_from_page_property(file_info['id'], filename)
+            if not file_url:
+                return "File URL not available", 404
+            
+            # Redirect to the Notion file URL
+            from flask import redirect
+            return redirect(file_url)
+            
+        except Exception as e:
+            print(f"Error getting file URL: {e}")
+            return "Error accessing file", 500
+        
+    except Exception as e:
+        print(f"Error downloading file by hash {salted_sha512_hash}: {e}")
+        return "Error downloading file", 500
 
-# @app.route('/init_upload', methods=['POST']) 
-# @login_required
-# def init_upload():
-#     # OLD INIT ROUTE - DISABLED FOR TESTING
-#     return jsonify({"error": "Old init route disabled - use streaming upload"}), 403
 
-# @app.route('/finalize_upload', methods=['POST'])
-# @login_required  
-# def finalize_upload():
-#     # OLD FINALIZE ROUTE - DISABLED FOR TESTING
-#     return jsonify({"error": "Old finalize route disabled - use streaming upload"}), 403
+@app.route('/api/files')
+@login_required
+def get_files_api():
+    """
+    API endpoint to get user's files (for AJAX requests)
+    """
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+        
+        files_response = uploader.get_files_from_user_database(user_database_id)
+        files = files_response.get('results', [])
+        
+        # Format files for JSON response
+        formatted_files = []
+        for file_data in files:
+            file_props = file_data.get('properties', {})
+            formatted_files.append({
+                'id': file_data.get('id'),
+                'name': file_props.get('Name', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown'),
+                'size': file_props.get('Size', {}).get('number', 0),
+                'file_hash': file_props.get('Hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', ''),
+                'is_public': file_props.get('is_public', {}).get('checkbox', False)
+            })
+        
+        return jsonify({'files': formatted_files})
+        
+    except Exception as e:
+        print(f"Error getting files: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# END FILE DOWNLOAD ROUTES
+# ============================================================================
 
 # ============================================================================
 # STREAMING UPLOAD API ENDPOINTS
