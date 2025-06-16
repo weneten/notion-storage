@@ -188,9 +188,11 @@ class NotionStreamingUploader:
                 bytes_received += len(chunk)
                 upload_session['hasher'].update(chunk)
                 
-                # Update progress
+                # Calculate progress unconditionally
+                progress = (bytes_received / upload_session['file_size']) * 100
+                
+                # Update progress callback if available
                 if upload_session['progress_callback']:
-                    progress = (bytes_received / upload_session['file_size']) * 100
                     upload_session['progress_callback'](progress, bytes_received)
                 
                 # Emit progress via SocketIO if available
