@@ -241,13 +241,16 @@ class NotionStreamingUploader:
                 'failed_at': time.time()
             })
             raise
-    
+
     def _upload_to_notion_single_part(self, user_database_id: str, filename: str, 
                                     file_buffer: io.BytesIO, file_size: int) -> Dict[str, Any]:
         """
         Upload file to Notion using single-part upload
         """
+        print(f"DEBUG: _upload_to_notion_single_part called for {filename}, size: {file_size}")
+        
         if self.notion_uploader:
+            print(f"DEBUG: Using notion_uploader to upload file")
             try:
                 # Create a generator from the buffer
                 def buffer_generator():
@@ -265,8 +268,7 @@ class NotionStreamingUploader:
                     filename=filename,
                     database_id=user_database_id,
                     content_type='application/octet-stream',
-                    file_size=file_size,
-                    original_filename=filename
+                    file_size=file_size,                    original_filename=filename
                 )
                 
                 return {
@@ -281,64 +283,132 @@ class NotionStreamingUploader:
         else:
             # Fallback placeholder implementation
             time.sleep(0.1)
-            return {                'file_id': str(uuid.uuid4()),
+            return {
+                'file_id': str(uuid.uuid4()),
                 'status': 'success',
-                'size': file_size
-            }
-    
+                'size': file_size            }
+
     def _upload_multipart_chunk(self, upload_session: Dict[str, Any], part_number: int, 
                               chunk_data: bytes, is_final: bool = False) -> Dict[str, Any]:
         """
-        Upload a single chunk in multipart upload
+        Upload a single chunk immediately to Notion API (true streaming)
         """
-        if self.notion_uploader and hasattr(self.notion_uploader, 'upload_large_file_multipart_stream'):
+        print(f"DEBUG: Immediately uploading part {part_number}, size: {len(chunk_data)} bytes, is_final: {is_final}")
+        
+        if self.notion_uploader:
             try:
-                # For now, use placeholder implementation
-                # In a full implementation, you would integrate with Notion's multipart upload API
-                time.sleep(0.05)
+                # Initialize multipart upload if this is the first chunk
+                if 'multipart_upload_id' not in upload_session:
+                    print(f"DEBUG: Initializing multipart upload for {upload_session['filename']}")
+                    
+                    # Calculate total parts
+                    total_parts = upload_session['total_parts']
+                    
+                    # Create multipart upload
+                    multipart_info = self.notion_uploader.create_file_upload(
+                        content_type='application/octet-stream',
+                        filename=upload_session['filename'],
+                        mode='multi_part',
+                        number_of_parts=total_parts
+                    )
+                    
+                    upload_session['multipart_upload_id'] = multipart_info['id']
+                    upload_session['multipart_info'] = multipart_info
+                    print(f"DEBUG: Multipart upload initialized with ID: {multipart_info['id']}")
                 
-                # Store part completion info
+                # Upload this chunk immediately to Notion
+                print(f"DEBUG: Sending part {part_number} to Notion API...")
+                
+                result = self.notion_uploader.send_file_part(
+                    file_upload_id=upload_session['multipart_upload_id'],
+                    part_number=part_number,
+                    chunk_data=chunk_data,
+                    filename=upload_session['filename'],
+                    content_type='application/octet-stream',
+                    bytes_uploaded_so_far=part_number * self.MULTIPART_CHUNK_SIZE,
+                    total_bytes=upload_session['file_size'],
+                    total_parts=upload_session['total_parts'],
+                    session_id=""
+                )
+                
+                # Mark this part as completed
                 upload_session['completed_parts'].add(part_number)
-                upload_session['part_etags'][part_number] = f"etag-{part_number}"
+                upload_session['part_etags'][part_number] = result.get('etag', f"etag-{part_number}")
+                
+                print(f"DEBUG: Part {part_number} uploaded successfully to Notion! Memory freed. Total parts completed: {len(upload_session['completed_parts'])}")
+                
+                # Chunk data is automatically freed from memory after this function returns
+                # No need to store it anywhere - true streaming!
                 
                 return {
                     'part_number': part_number,
-                    'etag': f"etag-{part_number}",
-                    'status': 'success'
+                    'etag': result.get('etag', f"etag-{part_number}"),
+                    'status': 'success',
+                    'result': result
                 }
+                
             except Exception as e:
-                print(f"Error uploading multipart chunk: {e}")
+                print(f"ERROR: Failed to upload part {part_number} to Notion: {e}")
                 raise
         else:
-            # Placeholder implementation
-            time.sleep(0.05)
-            upload_session['completed_parts'].add(part_number)
-            upload_session['part_etags'][part_number] = f"etag-{part_number}"
-            
-            return {
-                'part_number': part_number,
-                'etag': f"etag-{part_number}",
-                'status': 'success'
-            }
-    
+            print("ERROR: No notion_uploader available")
+            raise Exception("NotionUploader not available")
+
     def _complete_multipart_upload(self, upload_session: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Complete the multipart upload by calling Notion's completion endpoint
+        Complete the multipart upload - all chunks have already been uploaded to Notion
         """
-        # This is a placeholder for the actual Notion API completion call
-        # You would provide the upload key and all part ETags
+        print(f"DEBUG: Completing multipart upload for {upload_session['filename']}")
         
-        time.sleep(0.1)
+        if 'multipart_upload_id' not in upload_session:
+            raise Exception("No multipart upload ID found - upload was never initialized")
         
-        upload_session['notion_file_id'] = str(uuid.uuid4())
-        return {'status': 'completed', 'file_id': upload_session['notion_file_id']}
-    
+        multipart_upload_id = upload_session['multipart_upload_id']
+        
+        print(f"DEBUG: All {len(upload_session['completed_parts'])} parts already uploaded to Notion")
+        print(f"DEBUG: Finalizing multipart upload with ID: {multipart_upload_id}")
+        
+        if self.notion_uploader:
+            try:
+                # Complete the multipart upload in Notion
+                result = self.notion_uploader.complete_multipart_upload(multipart_upload_id)
+                
+                upload_session['notion_file_id'] = result.get('id', multipart_upload_id)
+                print(f"DEBUG: Multipart upload completed successfully! File ID: {upload_session['notion_file_id']}")
+                
+                return {'status': 'completed', 'file_id': upload_session['notion_file_id'], 'result': result}
+                
+            except Exception as e:
+                print(f"ERROR: Failed to complete multipart upload: {e}")                # Try to abort the upload
+                try:
+                    multipart_info = upload_session.get('multipart_info', {})
+                    upload_url = multipart_info.get('upload_url', '')
+                    self.notion_uploader._abort_multipart_upload(upload_url, multipart_upload_id)
+                    print(f"DEBUG: Aborted multipart upload {multipart_upload_id}")
+                except Exception as abort_error:
+                    print(f"DEBUG: Failed to abort multipart upload {multipart_upload_id}: {abort_error}")
+                raise
+        else:
+            print("ERROR: No notion_uploader available")
+            raise Exception("NotionUploader not available")
     def _abort_multipart_upload(self, upload_session: Dict[str, Any]) -> None:
         """
         Abort the multipart upload in case of error
         """
-        # This is a placeholder for the actual Notion API abort call
-        print(f"Aborting multipart upload for session {upload_session['upload_id']}")
+        print(f"DEBUG: Aborting multipart upload for session {upload_session['upload_id']}")
+        
+        if 'multipart_upload_id' in upload_session and self.notion_uploader:
+            try:
+                multipart_info = upload_session.get('multipart_info', {})
+                upload_url = multipart_info.get('upload_url', '')
+                upload_id = upload_session['multipart_upload_id']
+                
+                self.notion_uploader._abort_multipart_upload(upload_url, upload_id)
+                print(f"DEBUG: Successfully aborted multipart upload {upload_id}")
+            except Exception as e:
+                print(f"DEBUG: Failed to abort multipart upload: {e}")
+        else:
+            print(f"DEBUG: No multipart upload to abort or no notion_uploader available")
 
 
 class StreamingUploadManager:
