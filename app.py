@@ -35,8 +35,56 @@ def get_memory_usage():
         print(f"Error getting memory usage: {e}")
         return 0
 
-# Function to log memory usage periodically
+# Function to log memory usage periodically and clean up old sessions
 def log_memory_usage():
+    """Log memory usage every minute and clean up old upload sessions"""
+    try:
+        memory_mb = get_memory_usage()
+        cached_chunks_count = 0
+        cached_chunks_size = 0
+        current_time = time.time()
+        
+        if hasattr(app, 'upload_processors'):
+            # Clean up old upload sessions (older than 30 minutes)
+            expired_sessions = []
+            for upload_id, upload_data in app.upload_processors.items():
+                last_activity = upload_data.get('last_activity', 0)
+                if current_time - last_activity > 1800:  # 30 minutes
+                    expired_sessions.append(upload_id)
+                else:
+                    # Count active sessions
+                    cached_chunks = upload_data.get('cached_chunks', {})
+                    cached_chunks_count += len(cached_chunks)
+                    cached_chunks_size += sum(len(chunk) for chunk in cached_chunks.values())
+            
+            # Clean up expired sessions
+            for upload_id in expired_sessions:
+                print(f"Cleaning up expired upload session: {upload_id}")
+                cleanup_upload_session(upload_id)
+        
+        # Clean up old metadata entries
+        if hasattr(app, 'upload_metadata'):
+            expired_metadata = []
+            for session_id, metadata in app.upload_metadata.items():
+                if current_time - metadata.get('timestamp', 0) > 300:  # 5 minutes
+                    expired_metadata.append(session_id)
+            
+            for session_id in expired_metadata:
+                del app.upload_metadata[session_id]
+                print(f"Cleaned up expired metadata for session: {session_id}")
+        
+        cached_chunks_mb = cached_chunks_size / (1024 * 1024)
+        active_sessions = len(app.upload_processors) if hasattr(app, 'upload_processors') else 0
+        print(f"MEMORY: Process using {memory_mb:.2f} MB | Active sessions: {active_sessions} | Cached chunks: {cached_chunks_count} ({cached_chunks_mb:.2f} MB)")
+        
+    except Exception as e:
+        print(f"Error in memory logging: {e}")
+        
+    # Schedule next check
+    threading.Timer(60, log_memory_usage).start()
+    
+# Function to log memory usage periodically
+def log_memory_usage_old():
     """Log memory usage every minute"""
     try:
         memory_mb = get_memory_usage()
@@ -55,7 +103,7 @@ def log_memory_usage():
         print(f"Error in memory logging: {e}")
         
     # Schedule next check
-    threading.Timer(60, log_memory_usage).start()
+    threading.Timer(60, log_memory_usage_old).start()
     
 # Load environment variables from .env file
 load_dotenv()
@@ -1402,11 +1450,10 @@ def retry_missing_part(upload_id, part_number):
         
         # Generate a new session ID for this retry
         session_id = str(uuid.uuid4())
-        
-        # Start a new thread to upload this part
+          # Start a new thread to upload this part
         thread = threading.Thread(
-            target=upload_thread_func,
-            args=(upload_id, part_number, chunk_data, filename, salt, is_last_chunk, bytes_uploaded_so_far, session_id)
+            target=process_websocket_chunk_robust,
+            args=(upload_id, part_number, chunk_data, is_last_chunk, len(chunk_data), session_id)
         )
         thread.daemon = True
         
@@ -1444,10 +1491,11 @@ def handle_connect():
 def handle_disconnect():
     print(f"DEBUG: WebSocket disconnected: {request.sid}")
 
-# Add a specific handler for binary chunks
+# Add a specific handler for binary chunks with improved error handling
 @socketio.on('binary_chunk', namespace='/ws/upload')
 def handle_binary_chunk(binary_data):
     try:
+        session_id = request.sid
         print(f"DEBUG: Binary chunk handler received data of type: {type(binary_data)}, size: {len(binary_data) if hasattr(binary_data, '__len__') else 'unknown'}")
         
         # Check memory usage before processing
@@ -1459,14 +1507,8 @@ def handle_binary_chunk(binary_data):
             }))
             return
         
-        # Get the session ID
-        session_id = request.sid
-        
-        # Get metadata from global store instead of request object
-        if not hasattr(app, 'upload_metadata'):
-            app.upload_metadata = {}
-            
-        if session_id not in app.upload_metadata:
+        # Get metadata from global store
+        if not hasattr(app, 'upload_metadata') or session_id not in app.upload_metadata:
             print(f"ERROR: Received binary data without metadata for session {session_id}")
             emit('message', json.dumps({
                 'status': 'error',
@@ -1480,8 +1522,10 @@ def handle_binary_chunk(binary_data):
         is_last_chunk = metadata.get('is_last_chunk')
         chunk_size = metadata.get('chunk_size')
         
-        # Process the binary data
-        print(f"DEBUG: Processing binary data for part {part_number}, size: {len(binary_data) if hasattr(binary_data, '__len__') else 'unknown'} bytes")
+        # Validate chunk size
+        actual_size = len(binary_data) if hasattr(binary_data, '__len__') else 0
+        if abs(actual_size - chunk_size) > 1024:  # Allow small difference
+            print(f"WARNING: Chunk size mismatch. Expected: {chunk_size}, Actual: {actual_size}")
         
         # Convert to bytes if needed
         if not isinstance(binary_data, bytes):
@@ -1497,31 +1541,44 @@ def handle_binary_chunk(binary_data):
                 }))
                 return
         
-        # Get upload processor
+        # Get upload processor with timeout check
         if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
             emit('message', json.dumps({
                 'status': 'error',
-                'message': 'Upload session not found'
+                'message': 'Upload session not found or expired'
             }))
             return
         
-        # Process data with memory protection
+        # Check if upload session is still active (within 30 minutes)
+        upload_data = app.upload_processors[upload_id]
+        if time.time() - upload_data.get('last_activity', 0) > 1800:  # 30 minutes
+            print(f"WARNING: Upload session {upload_id} expired")
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Upload session expired, please restart'
+            }))
+            # Clean up expired session
+            cleanup_upload_session(upload_id)
+            return
+        
+        # Update activity timestamp
+        upload_data['last_activity'] = time.time()
+        
+        # Process data with improved error handling
         try:
             with app.upload_locks.get(upload_id, threading.Lock()):
-                upload_data = app.upload_processors[upload_id]
-                
                 # Update hasher with chunk data
                 upload_data['hasher'].update(binary_data)
                 
-                # Cache chunk for processing - we'll process it immediately to avoid memory issues
+                # Process chunk immediately to avoid memory buildup
                 thread = threading.Thread(
-                    target=process_websocket_chunk,
-                    args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, session_id)
+                    target=process_websocket_chunk_robust,
+                    args=(upload_id, part_number, binary_data, is_last_chunk, chunk_size, session_id),
+                    daemon=True
                 )
-                thread.daemon = True
                 thread.start()
                 
-            # Clear metadata after processing to prevent reuse
+            # Clear metadata after processing
             if session_id in app.upload_metadata:
                 app.upload_metadata[session_id]['pending_binary'] = False
             
@@ -1532,16 +1589,14 @@ def handle_binary_chunk(binary_data):
                 'upload_id': upload_id
             }))
             
-            # Clear binary_data reference to help garbage collection
-            binary_data = None
-            
         except MemoryError as me:
             print(f"MEMORY ERROR in binary chunk handler: {str(me)}")
             emit('message', json.dumps({
                 'status': 'error',
                 'message': 'Server out of memory, please try again later'
             }))
-            return
+            # Clean up to free memory
+            cleanup_upload_session(upload_id)
             
     except Exception as e:
         print(f"ERROR in binary chunk handler: {str(e)}")
@@ -1552,17 +1607,139 @@ def handle_binary_chunk(binary_data):
             'message': f'Error processing binary data: {str(e)}'
         }))
 
-# WebSocket handler for the upload route
+# Function to clean up upload sessions
+def cleanup_upload_session(upload_id):
+    try:
+        if hasattr(app, 'upload_processors') and upload_id in app.upload_processors:
+            # Clear cached chunks to free memory
+            upload_data = app.upload_processors[upload_id]
+            if 'cached_chunks' in upload_data:
+                upload_data['cached_chunks'].clear()
+            
+            # Remove from processors
+            del app.upload_processors[upload_id]
+            
+        if hasattr(app, 'upload_locks') and upload_id in app.upload_locks:
+            del app.upload_locks[upload_id]
+            
+        print(f"DEBUG: Cleaned up upload session {upload_id}")
+    except Exception as e:
+        print(f"ERROR cleaning up upload session {upload_id}: {e}")
+
+# Improved WebSocket chunk processing with retry logic
+def process_websocket_chunk_robust(upload_id, part_number, chunk_data, is_last_chunk, chunk_size, session_id):
+    max_retries = 3
+    retry_delay = 1
+    
+    for attempt in range(max_retries + 1):
+        try:
+            # Get upload data with lock
+            with app.upload_locks.get(upload_id, threading.Lock()):
+                if upload_id not in app.upload_processors:
+                    print(f"ERROR: Upload processor not found for {upload_id}")
+                    socketio.emit('message', json.dumps({
+                        'status': 'error',
+                        'message': 'Upload session not found'
+                    }), room=session_id, namespace='/ws/upload')
+                    return
+                    
+                upload_data = app.upload_processors[upload_id]
+                filename = upload_data.get('filename')
+                salt = upload_data.get('salt')
+                
+                # Check if this part was already completed (duplicate)
+                if part_number in upload_data.get('completed_parts', set()):
+                    print(f"WARNING: Part {part_number} already completed, skipping")
+                    socketio.emit('message', json.dumps({
+                        'status': 'chunk_received',
+                        'part_number': part_number,
+                        'upload_id': upload_id,
+                        'chunk_size': len(chunk_data)
+                    }), room=session_id, namespace='/ws/upload')
+                    return
+                
+                # Mark this part as pending
+                upload_data.setdefault('pending_parts', set()).add(part_number)
+                
+            # Get user database ID
+            user_id = current_user.id
+            user_database_id = uploader.get_user_database_id(user_id)
+            if not user_database_id:
+                socketio.emit('message', json.dumps({
+                    'status': 'error',
+                    'message': 'User database not found'
+                }), room=session_id, namespace='/ws/upload')
+                return
+            
+            # Upload the chunk with timeout
+            content_type = 'application/octet-stream'
+            response = uploader.send_file_part(
+                file_id=upload_id,
+                part_number=part_number,
+                part_data=chunk_data,
+                content_type=content_type
+            )
+            
+            # Validate response
+            if response and 'partId' in response:
+                print(f"DEBUG: Successfully uploaded part {part_number} to Notion (attempt {attempt + 1})")
+                
+                with app.upload_locks.get(upload_id, threading.Lock()):
+                    if upload_id in app.upload_processors:
+                        upload_data = app.upload_processors[upload_id]
+                        upload_data.setdefault('completed_parts', set()).add(part_number)
+                        upload_data.setdefault('pending_parts', set()).discard(part_number)
+                        
+                        # Update bytes uploaded
+                        upload_data['bytes_uploaded'] = upload_data.get('bytes_uploaded', 0) + len(chunk_data)
+                        upload_data['last_activity'] = time.time()
+                    
+                # Notify client that chunk was received
+                socketio.emit('message', json.dumps({
+                    'status': 'chunk_received',
+                    'part_number': part_number,
+                    'upload_id': upload_id,
+                    'chunk_size': len(chunk_data)
+                }), room=session_id, namespace='/ws/upload')
+                
+                # Success - clear chunk data and exit
+                chunk_data = None
+                return
+            else:
+                raise Exception(f"Invalid response from Notion API: {response}")
+                
+        except Exception as e:
+            print(f"ERROR uploading part {part_number} (attempt {attempt + 1}): {str(e)}")
+            
+            if attempt < max_retries:
+                # Wait before retry with exponential backoff
+                delay = retry_delay * (2 ** attempt)
+                print(f"Retrying part {part_number} in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                # All retries exhausted
+                print(f"FAILED to upload part {part_number} after {max_retries + 1} attempts")
+                socketio.emit('message', json.dumps({
+                    'status': 'error',
+                    'message': f'Failed to upload part {part_number} after {max_retries + 1} attempts: {str(e)}'
+                }), room=session_id, namespace='/ws/upload')
+                
+                # Clean up on failure
+                with app.upload_locks.get(upload_id, threading.Lock()):
+                    if upload_id in app.upload_processors:
+                        upload_data = app.upload_processors[upload_id]
+                        upload_data.setdefault('pending_parts', set()).discard(part_number)
+                return
+
+# WebSocket handler for the upload route with improved robustness
 @socketio.on('message', namespace='/ws/upload')
 def handle_upload_message(message):
     try:
-        # Get the session ID
         session_id = request.sid
         print(f"DEBUG: Handling message for session {session_id}")
         
         # Extract data from message
         if isinstance(message, str):
-            # Parse JSON message
             data = json.loads(message)
             action = data.get('action')
             upload_id = data.get('upload_id')
@@ -1577,13 +1754,25 @@ def handle_upload_message(message):
                 total_parts = data.get('total_parts')
                 salt = data.get('salt')
                 
-                # Create or get upload processor
+                # Validate required parameters
+                if not all([upload_id, filename, total_size, total_parts, salt]):
+                    emit('message', json.dumps({
+                        'status': 'error',
+                        'message': 'Missing required upload parameters'
+                    }))
+                    return
+                
+                # Check if upload ID already exists
                 if not hasattr(app, 'upload_processors'):
                     app.upload_processors = {}
                 if not hasattr(app, 'upload_locks'):
                     app.upload_locks = {}
+                
+                # Create upload lock if needed
+                if upload_id not in app.upload_locks:
+                    app.upload_locks[upload_id] = threading.Lock()
                     
-                with app.upload_locks.get(upload_id, threading.Lock()):
+                with app.upload_locks[upload_id]:
                     if upload_id not in app.upload_processors:
                         app.upload_processors[upload_id] = {
                             'hasher': hashlib.sha512(salt.encode()),
@@ -1594,14 +1783,17 @@ def handle_upload_message(message):
                             'bytes_uploaded': 0,
                             'completed_parts': set(),
                             'pending_parts': set(),
-                            'upload_threads': {},
                             'total_parts': total_parts,
                             'cached_chunks': {},
                             'last_activity': time.time(),
+                            'session_id': session_id,
+                            'start_time': time.time()
                         }
-                    
-                    # Update last activity timestamp
-                    app.upload_processors[upload_id]['last_activity'] = time.time()
+                    else:
+                        # Update existing session
+                        upload_data = app.upload_processors[upload_id]
+                        upload_data['last_activity'] = time.time()
+                        upload_data['session_id'] = session_id
                 
                 # Tell client we're ready for the first chunk
                 emit('message', json.dumps({
@@ -1610,29 +1802,57 @@ def handle_upload_message(message):
                 }))
                 
             elif action == 'chunk_metadata':
-                # Handle chunk metadata
-                part_number = int(data.get('part_number'))
-                is_last_chunk = data.get('is_last_chunk', False)
-                chunk_size = data.get('chunk_size', 0)
-                
-                # Initialize upload metadata store if needed
-                if not hasattr(app, 'upload_metadata'):
-                    app.upload_metadata = {}
+                # Handle chunk metadata with validation
+                try:
+                    part_number = int(data.get('part_number'))
+                    is_last_chunk = data.get('is_last_chunk', False)
+                    chunk_size = data.get('chunk_size', 0)
                     
-                # Store metadata in global app state with session ID
-                app.upload_metadata[session_id] = {
-                    'upload_id': upload_id,
-                    'part_number': part_number,
-                    'is_last_chunk': is_last_chunk,
-                    'chunk_size': chunk_size,
-                    'pending_binary': True,
-                    'timestamp': time.time()
-                }
-                
-                print(f"DEBUG: Ready to receive binary data for part {part_number} (session {session_id})")
-                
+                    if not upload_id or part_number <= 0 or chunk_size <= 0:
+                        emit('message', json.dumps({
+                            'status': 'error',
+                            'message': 'Invalid chunk metadata'
+                        }))
+                        return
+                    
+                    # Check if upload session exists
+                    if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
+                        emit('message', json.dumps({
+                            'status': 'error',
+                            'message': 'Upload session not found'
+                        }))
+                        return
+                        
+                    # Update session activity
+                    app.upload_processors[upload_id]['last_activity'] = time.time()
+                    
+                    # Initialize upload metadata store if needed
+                    if not hasattr(app, 'upload_metadata'):
+                        app.upload_metadata = {}
+                        
+                    # Store metadata in global app state with session ID
+                    app.upload_metadata[session_id] = {
+                        'upload_id': upload_id,
+                        'part_number': part_number,
+                        'is_last_chunk': is_last_chunk,
+                        'chunk_size': chunk_size,
+                        'pending_binary': True,
+                        'timestamp': time.time()
+                    }
+                    
+                    print(f"DEBUG: Ready to receive binary data for part {part_number} (session {session_id})")
+                    
+                except (ValueError, TypeError) as e:
+                    emit('message', json.dumps({
+                        'status': 'error',
+                        'message': f'Invalid chunk metadata format: {str(e)}'
+                    }))
+                    
             elif action == 'ready_for_next_chunk':
                 # Client is ready for next chunk
+                if upload_id and hasattr(app, 'upload_processors') and upload_id in app.upload_processors:
+                    app.upload_processors[upload_id]['last_activity'] = time.time()
+                    
                 emit('message', json.dumps({
                     'status': 'ready_for_chunk',
                     'upload_id': upload_id
@@ -1642,71 +1862,229 @@ def handle_upload_message(message):
                 # Finalize the upload
                 total_parts = data.get('total_parts')
                 
-                # Process finalization in the background to not block the socket
+                if not upload_id or not total_parts:
+                    emit('message', json.dumps({
+                        'status': 'error',
+                        'message': 'Invalid finalization request'
+                    }))
+                    return
+                
+                # Check if upload session exists
+                if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
+                    emit('message', json.dumps({
+                        'status': 'error',
+                        'message': 'Upload session not found for finalization'
+                    }))
+                    return
+                
+                # Process finalization in the background
                 thread = threading.Thread(
-                    target=process_websocket_finalization,
-                    args=(upload_id, session_id)
+                    target=process_websocket_finalization_robust,
+                    args=(upload_id, session_id, total_parts),
+                    daemon=True
                 )
-                thread.daemon = True
                 thread.start()
                 
+            else:
+                emit('message', json.dumps({
+                    'status': 'error',
+                    'message': f'Unknown action: {action}'
+                }))
+        
         elif isinstance(message, bytes):
-            # This branch is kept for backward compatibility
-            # Handle binary data (file chunk)
-            if not hasattr(app, 'upload_metadata') or session_id not in app.upload_metadata:
-                print(f"ERROR: Received binary data (legacy mode) without metadata for session {session_id}")
-                emit('message', json.dumps({
-                    'status': 'error',
-                    'message': 'Binary data received without metadata'
-                }))
-                return
-                
-            metadata = app.upload_metadata[session_id]
-            if not metadata.get('pending_binary'):
-                print(f"ERROR: Received unexpected binary data for session {session_id}")
-                emit('message', json.dumps({
-                    'status': 'error',
-                    'message': 'Unexpected binary data'
-                }))
-                return
-                
-            upload_id = metadata.get('upload_id')
-            part_number = metadata.get('part_number')
-            is_last_chunk = metadata.get('is_last_chunk')
-            chunk_size = metadata.get('chunk_size')
+            # Legacy binary handling (kept for backward compatibility)
+            handle_legacy_binary_message(message, session_id)
             
-            # Process the binary data
-            print(f"DEBUG: Received binary data (legacy mode) for part {part_number}, size: {len(message)} bytes")
+        else:
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': f'Unsupported message type: {type(message)}'
+            }))
+                
+    except json.JSONDecodeError as e:
+        print(f"ERROR: Invalid JSON in WebSocket message: {str(e)}")
+        emit('message', json.dumps({
+            'status': 'error',
+            'message': 'Invalid JSON format'
+        }))
+    except Exception as e:
+        print(f"ERROR in WebSocket handler: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        emit('message', json.dumps({
+            'status': 'error',
+            'message': f'Error processing message: {str(e)}'
+        }))
+
+# Handle legacy binary messages
+def handle_legacy_binary_message(message, session_id):
+    try:
+        if not hasattr(app, 'upload_metadata') or session_id not in app.upload_metadata:
+            print(f"ERROR: Received binary data (legacy mode) without metadata for session {session_id}")
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Binary data received without metadata'
+            }))
+            return
             
-            # Get upload processor
-            if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
-                emit('message', json.dumps({
+        metadata = app.upload_metadata[session_id]
+        if not metadata.get('pending_binary'):
+            print(f"ERROR: Received unexpected binary data for session {session_id}")
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Unexpected binary data'
+            }))
+            return
+            
+        upload_id = metadata.get('upload_id')
+        part_number = metadata.get('part_number')
+        is_last_chunk = metadata.get('is_last_chunk')
+        chunk_size = metadata.get('chunk_size')
+        
+        # Process the binary data
+        print(f"DEBUG: Received binary data (legacy mode) for part {part_number}, size: {len(message)} bytes")
+        
+        # Get upload processor
+        if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
+            emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Upload session not found'
+            }))
+            return
+        
+        with app.upload_locks.get(upload_id, threading.Lock()):
+            upload_data = app.upload_processors[upload_id]
+            upload_data['hasher'].update(message)
+            upload_data['last_activity'] = time.time()
+            
+            # Process the chunk in a background thread
+            thread = threading.Thread(
+                target=process_websocket_chunk_robust,
+                args=(upload_id, part_number, message, is_last_chunk, chunk_size, session_id),
+                daemon=True
+            )
+            thread.start()
+            
+        # Clear metadata after processing
+        if session_id in app.upload_metadata:
+            app.upload_metadata[session_id]['pending_binary'] = False
+            
+    except Exception as e:
+        print(f"ERROR in legacy binary handler: {str(e)}")
+        emit('message', json.dumps({
+            'status': 'error',
+            'message': f'Error processing legacy binary data: {str(e)}'
+        }))
+
+# Improved finalization process
+def process_websocket_finalization_robust(upload_id, session_id, total_parts):
+    try:
+        print(f"DEBUG: Starting finalization for upload {upload_id}")
+        
+        # Get upload data
+        if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Upload session not found for finalization'
+            }), room=session_id, namespace='/ws/upload')
+            return
+        
+        with app.upload_locks.get(upload_id, threading.Lock()):
+            upload_data = app.upload_processors[upload_id]
+            completed_parts = upload_data.get('completed_parts', set())
+            pending_parts = upload_data.get('pending_parts', set())
+            
+            # Verify all parts were uploaded
+            expected_parts = set(range(1, total_parts + 1))
+            if completed_parts != expected_parts:
+                missing_parts = expected_parts - completed_parts
+                socketio.emit('message', json.dumps({
                     'status': 'error',
-                    'message': 'Upload session not found'
-                }))
+                    'message': f'Upload incomplete. Missing parts: {sorted(missing_parts)}'
+                }), room=session_id, namespace='/ws/upload')
                 return
             
-            with app.upload_locks.get(upload_id, threading.Lock()):
-                upload_data = app.upload_processors[upload_id]
-                
-                # Update hasher with chunk data
-                upload_data['hasher'].update(message)
-                
-                # Cache chunk for processing
-                upload_data['cached_chunks'][part_number] = message
-                upload_data['pending_parts'].add(part_number)
-                
-                # Process the chunk in a background thread
-                thread = threading.Thread(
-                    target=process_websocket_chunk,
-                    args=(upload_id, part_number, message, is_last_chunk, chunk_size, session_id)
-                )
-                thread.daemon = True
-                thread.start()
-                
-            # Clear metadata after processing
-            if session_id in app.upload_metadata:
-                app.upload_metadata[session_id]['pending_binary'] = False
+            # Wait for any pending parts to complete (with timeout)
+            timeout = time.time() + 30  # 30 second timeout
+            while pending_parts and time.time() < timeout:
+                time.sleep(0.5)
+                pending_parts = upload_data.get('pending_parts', set())
+            
+            if pending_parts:
+                socketio.emit('message', json.dumps({
+                    'status': 'error',
+                    'message': f'Timeout waiting for pending parts: {sorted(pending_parts)}'
+                }), room=session_id, namespace='/ws/upload')
+                return
+            
+            # Get file details
+            filename = upload_data.get('original_filename')
+            total_size = upload_data.get('total_size')
+            hasher = upload_data.get('hasher')
+            
+        # Generate file hash
+        file_hash = hasher.hexdigest()
+        print(f"DEBUG: Generated file hash: {file_hash[:16]}...")
+        
+        # Get user database ID
+        user_id = current_user.id
+        user_database_id = uploader.get_user_database_id(user_id)
+        if not user_database_id:
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'User database not found'
+            }), room=session_id, namespace='/ws/upload')
+            return
+        
+        # Complete the multipart upload
+        complete_response = uploader.complete_multipart_upload(upload_id)
+        if not complete_response or 'Location' not in complete_response:
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Failed to complete multipart upload'
+            }), room=session_id, namespace='/ws/upload')
+            return
+        
+        file_url = complete_response['Location']
+        print(f"DEBUG: Upload completed, file URL: {file_url}")
+        
+        # Create file record in Notion database
+        file_record = uploader.create_file_record(
+            user_database_id=user_database_id,
+            filename=filename,
+            file_size=total_size,
+            file_hash=file_hash,
+            notion_file_id=upload_id,
+            file_url=file_url
+        )
+        
+        if file_record:
+            print(f"DEBUG: File record created successfully")
+            
+            # Clean up upload session
+            cleanup_upload_session(upload_id)
+            
+            # Notify client of successful completion
+            socketio.emit('message', json.dumps({
+                'status': 'finalized',
+                'file_id': file_record.get('id'),
+                'file_hash': file_hash,
+                'upload_id': upload_id
+            }), room=session_id, namespace='/ws/upload')
+        else:
+            socketio.emit('message', json.dumps({
+                'status': 'error',
+                'message': 'Failed to create file record'
+            }), room=session_id, namespace='/ws/upload')
+            
+    except Exception as e:
+        print(f"ERROR in finalization: {str(e)}")
+        import traceback
+        traceback.print_exc()        
+        socketio.emit('message', json.dumps({
+            'status': 'error',
+            'message': f'Finalization error: {str(e)}'
+        }), room=session_id, namespace='/ws/upload')
                 
     except Exception as e:
         print(f"ERROR in WebSocket handler: {str(e)}")
