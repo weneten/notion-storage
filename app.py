@@ -466,7 +466,7 @@ def create_streaming_upload_session():
 @login_required
 def stream_file_upload(upload_id):
     """
-    Handle streaming file upload
+    Handle streaming file upload with enhanced error handling and parallel processing
     """
     try:
         print(f"DEBUG: Streaming upload called for upload_id: {upload_id}")
@@ -510,22 +510,44 @@ def stream_file_upload(upload_id):
                 print(f"Error reading request stream: {e}")
                 raise
         
-        print("DEBUG: Processing upload stream")
-        # Process the stream
-        result = streaming_upload_manager.process_upload_stream(upload_id, stream_generator())
+        print("DEBUG: Processing upload stream with parallel processing and database integration")
         
-        print(f"DEBUG: Upload processing completed: {result}")
-        return jsonify({
-            'status': 'completed',
-            'upload_id': upload_id,
-            'filename': result['filename'],
-            'file_size': result['bytes_uploaded'],
-            'file_hash': result['file_hash'],
-            'notion_file_id': result.get('notion_file_id')
-        })
+        # Process upload with enhanced error handling
+        try:
+            result = streaming_upload_manager.process_upload_stream(upload_id, stream_generator())
+            
+            print(f"DEBUG: Upload processing completed successfully: {result}")
+            
+            # Emit final progress update
+            if socketio:
+                socketio.emit('upload_progress', {
+                    'upload_id': upload_id,
+                    'status': 'completed',
+                    'progress': 100,
+                    'bytes_uploaded': result['bytes_uploaded'],
+                    'total_size': result['bytes_uploaded']
+                })
+            
+            return jsonify({
+                'status': 'completed',
+                'upload_id': upload_id,
+                'filename': result['filename'],
+                'file_size': result['bytes_uploaded'],
+                'file_hash': result['file_hash'],
+                'file_id': result['file_id']
+            })
+            
+        except MemoryError as e:
+            print(f"Memory limit exceeded during upload: {e}")
+            return jsonify({'error': f'Memory limit exceeded: {str(e)}'}), 507
+        except Exception as e:
+            print(f"Upload processing error: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': f'Upload failed: {str(e)}'}), 500
         
     except Exception as e:
-        print(f"Error in streaming upload: {e}")
+        print(f"Error in streaming upload endpoint: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
