@@ -215,23 +215,21 @@ class NotionFileUploader:
         # Always use generic file.txt for Notion's site
         notion_filename = "file.txt"
 
-        # Create an iterator that yields chunks directly from the stream
-        def stream_chunks():
-            if isinstance(file_stream, io.BytesIO):
-                # For BytesIO, read in chunks to avoid memory issues
-                while True:
-                    chunk = file_stream.read(8192)  # 8KB chunks
-                    if not chunk:
-                        break
-                    yield chunk
-            else:
-                # For iterables (like generators), use them directly
-                yield from file_stream
-
-        # Stream the file content using requests' streaming support
-        files = {
-            'file': (notion_filename, stream_chunks(), content_type)
-        }
+        # Handle different stream types properly for requests.post()
+        if isinstance(file_stream, io.BytesIO):
+            file_stream.seek(0)  # Ensure we're at the beginning
+            files = {
+                'file': (notion_filename, file_stream, content_type)
+            }
+        else:
+            # Handle other stream types by accumulating data
+            buffer = io.BytesIO()
+            for chunk in file_stream:
+                buffer.write(chunk)
+            buffer.seek(0)
+            files = {
+                'file': (notion_filename, buffer, content_type)
+            }
 
         headers = {
             'Authorization': self.headers['Authorization'],
