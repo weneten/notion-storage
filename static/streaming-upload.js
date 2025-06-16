@@ -87,14 +87,15 @@ class StreamingFileUploader {
      * @param {Function} progressCallback - Progress callback function
      * @param {Function} statusCallback - Status update callback function
      * @returns {Promise} Upload result
-     */
-    async uploadFile(file, progressCallback, statusCallback) {
+     */    async uploadFile(file, progressCallback, statusCallback) {
         const uploadId = this.generateUploadId();
 
         try {
             statusCallback('Initializing streaming upload...', 'info');
+            console.log('Starting streaming upload for file:', file.name, 'Size:', file.size);
 
             // Step 1: Create upload session on server
+            console.log('Creating upload session...');
             const sessionResponse = await fetch('/api/upload/create-session', {
                 method: 'POST',
                 headers: {
@@ -107,22 +108,30 @@ class StreamingFileUploader {
                 })
             });
 
+            console.log('Session response status:', sessionResponse.status);
             if (!sessionResponse.ok) {
+                const errorText = await sessionResponse.text();
+                console.error('Session creation failed:', errorText);
                 throw new Error(`Failed to create upload session: ${sessionResponse.statusText}`);
             }
 
             const sessionData = await sessionResponse.json();
-            uploadId = sessionData.upload_id;
+            console.log('Session created:', sessionData);
+
+            const actualUploadId = sessionData.upload_id;
 
             // Step 2: Start streaming upload
             statusCallback(`Streaming ${file.name} (${this.formatFileSize(file.size)})...`, 'info');
+            console.log('Starting file stream for upload ID:', actualUploadId);
 
-            const result = await this.streamFileToServer(uploadId, file, progressCallback, statusCallback);
+            const result = await this.streamFileToServer(actualUploadId, file, progressCallback, statusCallback);
 
+            console.log('Upload completed:', result);
             statusCallback(`Upload completed successfully!`, 'success');
             return result;
 
         } catch (error) {
+            console.error('Upload error:', error);
             statusCallback(`Upload failed: ${error.message}`, 'error');
 
             // Cleanup failed upload
@@ -132,11 +141,9 @@ class StreamingFileUploader {
 
             throw error;
         }
-    }
-
-    /**
-     * Stream file data directly to server using fetch with ReadableStream
-     * This eliminates client-side chunking delays and reduces memory usage
+    }/**
+     * Stream file data directly to server using simple fetch approach
+     * This eliminates complex ReadableStream and uses direct file upload
      */
     async streamFileToServer(uploadId, file, progressCallback, statusCallback) {
         const controller = new AbortController();
@@ -149,81 +156,102 @@ class StreamingFileUploader {
         });
 
         try {
-            // Create a ReadableStream that reads the file in small chunks
-            const fileStream = this.createFileStream(file, progressCallback);
+            // Use XMLHttpRequest for better progress tracking and streaming
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
 
-            // Stream the file directly to the server
-            const response = await fetch(`/api/upload/stream/${uploadId}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/octet-stream',
-                    'Content-Length': file.size.toString(),
-                    'X-File-Name': encodeURIComponent(file.name),
-                    'X-File-Size': file.size.toString()
-                },
-                body: fileStream,
-                signal: controller.signal,
-                // Enable streaming without buffering the entire request
-                duplex: 'half'
+                // Set up progress tracking
+                xhr.upload.onprogress = (event) => {
+                    if (event.lengthComputable) {
+                        const progress = (event.loaded / event.total) * 100;
+                        progressCallback(progress, event.loaded);
+                    }
+                };
+
+                // Handle completion
+                xhr.onload = () => {
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const result = JSON.parse(xhr.responseText);
+                            resolve(result);
+                        } catch (e) {
+                            reject(new Error('Invalid response format'));
+                        }
+                    } else {
+                        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
+                    }
+                };
+
+                // Handle errors
+                xhr.onerror = () => {
+                    reject(new Error('Upload failed: Network error'));
+                };
+
+                // Handle abort
+                xhr.onabort = () => {
+                    reject(new Error('Upload was cancelled'));
+                };
+
+                // Open connection
+                xhr.open('POST', `/api/upload/stream/${uploadId}`, true);
+
+                // Set headers
+                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+                xhr.setRequestHeader('X-File-Size', file.size.toString());
+
+                // Send the file directly
+                xhr.send(file);
             });
-
-            if (!response.ok) {
-                throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
-            }
-
-            const result = await response.json();
-
-            // Final progress update
-            progressCallback(100, file.size);
-
-            return result;
 
         } finally {
             // Cleanup
             this.activeUploads.delete(uploadId);
         }
-    }
-
-    /**
+    }/**
      * Create a ReadableStream from a File object
      * This streams the file in small chunks without loading everything into memory
      */
     createFileStream(file, progressCallback) {
         let bytesRead = 0;
-        let reader = null;
+        let offset = 0;
+        const chunkSize = 64 * 1024; // 64KB chunks for continuous reading
 
         return new ReadableStream({
-            start(controller) {
-                // Create FileReader for reading file chunks
-                reader = file.stream().getReader();
-            },
-
             async pull(controller) {
                 try {
-                    const { done, value } = await reader.read();
-
-                    if (done) {
+                    if (offset >= file.size) {
                         controller.close();
                         return;
                     }
 
+                    // Read the next chunk
+                    const end = Math.min(offset + chunkSize, file.size);
+                    const chunk = file.slice(offset, end);
+
+                    // Convert blob to array buffer
+                    const arrayBuffer = await chunk.arrayBuffer();
+                    const uint8Array = new Uint8Array(arrayBuffer);
+
                     // Update progress
-                    bytesRead += value.length;
+                    bytesRead += uint8Array.length;
                     const progress = (bytesRead / file.size) * 100;
                     progressCallback(progress, bytesRead);
 
+                    // Move to next chunk
+                    offset = end;
+
                     // Enqueue the chunk
-                    controller.enqueue(value);
+                    controller.enqueue(uint8Array);
 
                 } catch (error) {
+                    console.error('Error reading file chunk:', error);
                     controller.error(error);
                 }
             },
 
-            cancel() {
-                if (reader) {
-                    reader.cancel();
-                }
+            cancel(reason) {
+                console.log('Stream cancelled:', reason);
             }
         });
     }
@@ -297,7 +325,9 @@ let streamingUploader = null;
  * Initialize the streaming uploader (replaces the old uploadFile function)
  */
 function initializeStreamingUploader() {
+    console.log('Initializing streaming uploader...');
     streamingUploader = new StreamingFileUploader();
+    console.log('Streaming uploader initialized:', streamingUploader);
 }
 
 /**

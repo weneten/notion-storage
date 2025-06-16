@@ -100,8 +100,12 @@
         if (uploadForm) {
             uploadForm.addEventListener('submit', function (event) {
                 event.preventDefault();
+                console.log('=== STREAMING UPLOAD TRIGGERED ===');
+                console.log('Form submission intercepted, using new streaming upload');
                 uploadFile(); // This will use the new streaming upload
             });
+        } else {
+            console.error('Upload form not found!');
         }
 
         // Socket event handlers for upload progress
