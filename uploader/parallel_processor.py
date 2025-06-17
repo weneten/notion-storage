@@ -19,6 +19,14 @@ except ImportError:
     resource_manager = None
     backpressure_manager = None
 
+# Import checkpoint management
+try:
+    from .checkpoint_manager import checkpoint_manager, create_checkpoint_key
+except ImportError:
+    # Fallback if checkpoint manager not available
+    checkpoint_manager = None
+    create_checkpoint_key = None
+
 # Notion API constants
 SINGLE_PART_THRESHOLD = 20 * 1024 * 1024  # 20 MiB
 MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024    # 5 MiB for multipart uploads
@@ -76,7 +84,7 @@ class ParallelChunkProcessor:
             multipart_info = self._initialize_multipart_upload()
             
             # Create checkpoint for resume capability
-            if checkpoint_manager:
+            if checkpoint_manager and create_checkpoint_key:
                 total_parts = self.upload_session.get('total_parts', 0)
                 file_hash = self.upload_session.get('hasher', hashlib.sha512()).hexdigest()[:16]
                 checkpoint_key = create_checkpoint_key(upload_id, file_hash)
@@ -208,6 +216,28 @@ class ParallelChunkProcessor:
     def _submit_chunk_upload(self, part_number, chunk_data, multipart_info, is_final=False):
         """Legacy method - redirects to resource-aware version"""
         return self._submit_chunk_upload_resource_aware(part_number, chunk_data, multipart_info, is_final)
+    
+    def _submit_chunk_upload_with_checkpoint(self, part_number, chunk_data, multipart_info, checkpoint_key, is_final=False):
+        """Submit a chunk for parallel upload with checkpoint tracking"""
+        if self.upload_error:
+            return
+        
+        # Check resources before submitting
+        if resource_manager:
+            # Dynamically adjust worker count if needed
+            optimal_workers = resource_manager.get_optimal_worker_count()
+            if optimal_workers != self.max_workers:
+                self._adjust_worker_count(optimal_workers)
+        
+        print(f"📤 Submitting part {part_number} for upload with checkpoint ({len(chunk_data)} bytes)")
+        
+        future = self.executor.submit(
+            self._upload_chunk_with_checkpoint,
+            part_number, chunk_data, multipart_info, checkpoint_key
+        )
+        
+        with self.lock:
+            self.part_futures[part_number] = future
     
     def _check_and_apply_backpressure(self, part_number):
         """Check resources and apply backpressure if needed"""
