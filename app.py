@@ -1017,27 +1017,38 @@ def stream_file_upload(upload_id):
                             raise Exception(f"ID CORRUPTION: file_upload_id contains invalid value: {file_upload_id}")
                     
                     print(f"🔍 ID VALIDATION: Using file_upload_id: {file_upload_id}")
-                    print(f"🔍 ID SOURCE: Retrieved from result key: {'file_upload_id' if result.get('file_upload_id') else 'file_id'}")
+                    # CRITICAL FIX: More precise ID source tracking to prevent confusion
+                    if result.get('file', {}).get('id'):
+                        print(f"🔍 ID SOURCE: Retrieved from result.file.id (correct file upload ID)")
+                    elif result.get('file_upload_id'):
+                        print(f"🔍 ID SOURCE: Retrieved from result.file_upload_id (correct file upload ID)")
+                    elif result.get('file_id'):
+                        print(f"🔍 ID SOURCE: Retrieved from result.file_id (potential confusion - verify this is file upload ID, not database page ID)")
+                    else:
+                        print(f"🔍 ID SOURCE: No standard ID field found, using fallback")
                     print(f"🔍 ID LENGTH: {len(str(file_upload_id))} characters")
+                    print(f"🔍 ID TYPE VERIFICATION: This should be a file upload ID for Notion file operations, NOT a database page ID")
                 
-                # CRITICAL FIX 2: Consistent Key Usage - Always use file_upload_id
+                # CRITICAL FIX 2: Consistent Key Usage - Always use file_upload_id for file operations
                 file_page_result = uploader.add_file_to_user_database(
                     user_database_id,
                     result['filename'],
                     result['bytes_uploaded'],
                     result['file_hash'],
-                    file_upload_id,  # FIXED: Use validated file_upload_id consistently
+                    file_upload_id,  # FIXED: Use validated file_upload_id consistently for file operations
                     is_public=False,
                     salt="",
                     original_filename=result.get('original_filename', result['filename'])
                 )
                 
-                print(f"🔍 DATABASE INTEGRATION: File added to user database with page ID: {file_page_result.get('id')}")
+                database_page_id = file_page_result.get('id')  # This is the DATABASE PAGE ID - different from file upload ID
+                print(f"🔍 DATABASE INTEGRATION: File added to user database with page ID: {database_page_id}")
+                print(f"🔍 ID SEPARATION: File Upload ID: {file_upload_id} | Database Page ID: {database_page_id}")
                 
-                # Add to global index
+                # Add to global index - use DATABASE PAGE ID here, not file upload ID
                 uploader.add_file_to_index(
                     result['file_hash'],
-                    file_page_result['id'],
+                    database_page_id,  # FIXED: Use database page ID for database operations
                     user_database_id,
                     result.get('original_filename', result['filename']),
                     False
@@ -1076,12 +1087,14 @@ def stream_file_upload(upload_id):
                                     result['filename'],
                                     result['bytes_uploaded'],
                                     result['file_hash'],
-                                    alt_file_id,
+                                    alt_file_id,  # FIXED: Ensure this is still a file upload ID, not database page ID
                                     is_public=False,
                                     salt="",
                                     original_filename=result.get('original_filename', result['filename'])
                                 )
-                                print("🔄 RETRY SUCCESS: Database integration completed with alternative ID")
+                                database_page_id = file_page_result.get('id')  # FIXED: Separate database page ID
+                                print(f"🔄 RETRY SUCCESS: Database integration completed with alternative file upload ID: {alt_file_id}")
+                                print(f"🔄 RETRY SUCCESS: Generated database page ID: {database_page_id}")
                             else:
                                 raise Exception("No valid alternative ID found for retry")
                                 
@@ -1116,7 +1129,8 @@ def stream_file_upload(upload_id):
                 'filename': result['filename'],
                 'file_size': result['bytes_uploaded'],
                 'file_hash': result['file_hash'],
-                'file_id': file_page_result['id'] if 'file_page_result' in locals() else result.get('file_id'),
+                'file_id': database_page_id if 'database_page_id' in locals() else result.get('file_id'),  # FIXED: Return database page ID for frontend operations
+                'notion_file_upload_id': file_upload_id,  # FIXED: Separate field for the actual file upload ID
                 'is_public': False,
                 'name': result.get('original_filename', result['filename']),
                 'size': result['bytes_uploaded']

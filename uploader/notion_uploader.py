@@ -1440,6 +1440,7 @@ class NotionFileUploader:
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
         print(f"🔍 ADD_FILE_TO_DB: Parameter types - file_upload_id: {type(file_upload_id)}, database_id: {type(database_id)}")
+        print(f"🔍 ADD_FILE_TO_DB: IMPORTANT - This file_upload_id should be used for Notion file operations, NOT database operations")
         
         if not file_upload_id:
             error_msg = f"ID VALIDATION FAILED: file_upload_id is required but was null or empty. Received: {repr(file_upload_id)}"
@@ -1457,7 +1458,8 @@ class NotionFileUploader:
                 print(f"🚨 CRITICAL ERROR: {error_msg}")
                 raise Exception(error_msg)
 
-        print(f"🔍 ID VALIDATION PASSED: file_upload_id '{file_upload_id}' is valid")
+        print(f"🔍 ID VALIDATION PASSED: file_upload_id '{file_upload_id}' is valid for file operations")
+        print(f"🔍 ID PURPOSE: This ID will be used in the file property for Notion file attachment")
 
         # Use original_filename if provided, otherwise fall back to filename
         display_filename = original_filename if original_filename else filename
@@ -1538,8 +1540,12 @@ class NotionFileUploader:
 
         result = response.json()
         result_id = result.get('id')
-        print(f"🔍 DATABASE SUCCESS: File added with page ID: {result_id}")
+        print(f"🔍 DATABASE SUCCESS: File added with database page ID: {result_id}")
         print(f"🔍 DATABASE SUCCESS: Response keys: {list(result.keys())}")
+        print(f"🔍 ID SEPARATION COMPLETE:")
+        print(f"  - File Upload ID (for Notion file operations): {file_upload_id}")
+        print(f"  - Database Page ID (for database operations): {result_id}")
+        print(f"  - These IDs serve different purposes and should never be confused")
         
         return result
 
