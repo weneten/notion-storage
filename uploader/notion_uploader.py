@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Tuple, Union, Iterable
 from flask_socketio import SocketIO
 import uuid
 import time
+import random
 
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):

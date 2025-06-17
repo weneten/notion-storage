@@ -980,13 +980,13 @@ def stream_file_upload(upload_id):
                 if not user_database_id:
                     raise Exception("User database not found")
                 
-                # Save file metadata to user database
+                # Save file metadata to user database (fixed key: file_id instead of file_upload_id)
                 file_page_result = uploader.add_file_to_user_database(
                     user_database_id,
                     result['filename'],
                     result['bytes_uploaded'],
                     result['file_hash'],
-                    result['file_upload_id'],
+                    result['file_id'],  # Fixed: changed from file_upload_id to file_id
                     is_public=False,
                     salt="",
                     original_filename=result.get('original_filename', result['filename'])
