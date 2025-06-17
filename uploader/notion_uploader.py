@@ -689,8 +689,8 @@ class NotionFileUploader:
                 if timeout_diagnostics:
                     timeout_diagnostics.log_request_start(request_id, upload_url, part_number)
                 
-                # Multi-tier timeout strategy: (connect_timeout, read_timeout, total_timeout)
-                timeout_config = (30, 300, 450)  # 30s connect, 5min read, 7.5min total max
+                # Multi-tier timeout strategy: (connect_timeout, read_timeout)
+                timeout_config = (30, 300)  # 30s connect, 5min read
                 
                 response = requests.post(
                     upload_url,
