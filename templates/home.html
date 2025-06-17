@@ -43,7 +43,10 @@
                 <tbody>
                     {% for file in files %}
                     <tr data-file-id="{{ file.id }}" data-file-hash="{{ file.file_hash }}">
-                        <td><strong>{{ file.name }}</strong></td>
+                        <td>
+                            <span class="file-type-icon" data-filename="{{ file.name }}"></span>
+                            <strong>{{ file.name }}</strong>
+                        </td>
                         <td class="filesize-cell">{{ file.size | format_bytes }}</td>
                         <td>
                             {% if file.file_hash %}
@@ -58,11 +61,14 @@
                         </td>
                         <td>
                             <label class="switch">
-                                <input type="checkbox" class="public-toggle" {% if file.is_public %}checked{% endif %}>
+                                <input type="checkbox" class="public-toggle" data-file-id="{{ file.id }}" data-file-hash="{{ file.file_hash }}" {% if file.is_public %}checked{% endif %}>
                                 <span class="slider round"></span>
                             </label>
                         </td>
                         <td class="action-buttons">
+                            {% if file.file_hash %}
+                            <span class="view-button-container" data-filename="{{ file.name }}" data-hash="{{ file.file_hash }}"></span>
+                            {% endif %}
                             <a href="{{ url_for('download_by_hash', salted_sha512_hash=file.file_hash) }}"
                                 class="btn btn-primary btn-sm">
                                 <i class="fas fa-download mr-1"></i>Download
@@ -263,6 +269,106 @@
             }
         }
     }
+
+    // File type detection and view button functionality
+    function getFileTypeInfo(filename) {
+        const ext = filename.split('.').pop().toLowerCase();
+        
+        // Define supported media types
+        const mediaTypes = {
+            video: ['mp4', 'webm', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'm4v'],
+            audio: ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'],
+            image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff'],
+            pdf: ['pdf']
+        };
+
+        // Check if file is viewable
+        for (const [type, extensions] of Object.entries(mediaTypes)) {
+            if (extensions.includes(ext)) {
+                return {
+                    type: type,
+                    icon: getFileTypeIcon(type),
+                    isViewable: true,
+                    extension: ext
+                };
+            }
+        }
+
+        // Default for non-viewable files
+        return {
+            type: 'file',
+            icon: '📄',
+            isViewable: false,
+            extension: ext
+        };
+    }
+
+    function getFileTypeIcon(type) {
+        const icons = {
+            video: '🎥',
+            audio: '🎵',
+            image: '🖼️',
+            pdf: '📄',
+            file: '📄'
+        };
+        return icons[type] || icons.file;
+    }
+
+    function createViewButton(fileHash, fileType) {
+        const viewUrl = `/v/${fileHash}`;
+        let buttonClass = 'btn-success';
+        let icon = 'fas fa-eye';
+        
+        // Customize button based on file type
+        switch(fileType) {
+            case 'video':
+                icon = 'fas fa-play';
+                buttonClass = 'btn-success';
+                break;
+            case 'audio':
+                icon = 'fas fa-volume-up';
+                buttonClass = 'btn-success';
+                break;
+            case 'image':
+                icon = 'fas fa-image';
+                buttonClass = 'btn-success';
+                break;
+            case 'pdf':
+                icon = 'fas fa-file-pdf';
+                buttonClass = 'btn-success';
+                break;
+        }
+
+        return `<a href="${viewUrl}" target="_blank" rel="noopener" class="btn ${buttonClass} btn-sm">
+                    <i class="${icon} mr-1"></i>View
+                </a>`;
+    }
+
+    function initializeFileTypeIcons() {
+        // Set file type icons for server-rendered files
+        document.querySelectorAll('.file-type-icon').forEach(iconElement => {
+            const filename = iconElement.dataset.filename;
+            const fileInfo = getFileTypeInfo(filename);
+            iconElement.textContent = fileInfo.icon;
+            iconElement.style.marginRight = '8px';
+        });
+
+        // Generate view buttons for server-rendered files
+        document.querySelectorAll('.view-button-container').forEach(container => {
+            const filename = container.dataset.filename;
+            const fileHash = container.dataset.hash;
+            const fileInfo = getFileTypeInfo(filename);
+            
+            if (fileInfo.isViewable) {
+                container.innerHTML = createViewButton(fileHash, fileInfo.type);
+            }
+        });
+    }
+
+    // Initialize file type icons when DOM is loaded
+    document.addEventListener('DOMContentLoaded', function() {
+        initializeFileTypeIcons();
+    });
 </script>
 
 <style>

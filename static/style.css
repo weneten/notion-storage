@@ -265,6 +265,53 @@ button:hover,
     background-color: #9d6fe7;
 }
 
+.table td .btn-success {
+    background-color: #03dac6;
+    color: #121212;
+    font-weight: 600;
+}
+
+.table td .btn-success:hover {
+    background-color: #02c4b5;
+    color: #121212;
+}
+
+/* File type icons styling */
+.file-type-icon {
+    font-size: 1.1em;
+    margin-right: 8px;
+    display: inline-block;
+}
+
+/* Action buttons container improvements */
+.action-buttons {
+    white-space: nowrap;
+    min-width: 200px;
+}
+
+.action-buttons .btn {
+    margin-right: 5px;
+    margin-bottom: 2px;
+}
+
+/* Responsive adjustments for action buttons */
+@media (max-width: 768px) {
+    .action-buttons {
+        min-width: auto;
+    }
+    
+    .action-buttons .btn {
+        margin-right: 3px;
+        margin-bottom: 3px;
+        padding: 4px 6px;
+        font-size: 0.75em;
+    }
+    
+    .action-buttons .btn i {
+        margin-right: 2px;
+    }
+}
+
 .filesize-cell {
     white-space: nowrap;
     text-align: right;

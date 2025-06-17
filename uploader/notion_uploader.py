@@ -1444,6 +1444,87 @@ class NotionFileUploader:
             print(f"Error streaming file from Notion: {e}")
             raise Exception(f"Failed to stream file from Notion: {e}")
 
+    def stream_file_from_notion_range(self, notion_download_url: str, start: int, end: int) -> Iterable[bytes]:
+        """
+        Streams a specific byte range of file content from a Notion signed download URL.
+        
+        Args:
+            notion_download_url: The Notion signed download URL
+            start: Starting byte position (inclusive)
+            end: Ending byte position (inclusive)
+            
+        Returns:
+            Iterator yielding file content chunks for the requested range
+        """
+        try:
+            # Set the Range header for partial content request
+            headers = {
+                'Range': f'bytes={start}-{end}'
+            }
+            
+            print(f"Requesting bytes {start}-{end} from Notion download URL")
+            
+            with requests.get(notion_download_url, headers=headers, stream=True) as r:
+                # Handle both 200 (full content) and 206 (partial content) responses
+                if r.status_code == 206:
+                    # Partial content - exactly what we want
+                    print(f"Received partial content response (206) for range {start}-{end}")
+                elif r.status_code == 200:
+                    # Full content - server doesn't support range requests
+                    # We'll need to skip to the start position and limit the content
+                    print(f"Server doesn't support range requests, streaming full content and extracting range {start}-{end}")
+                else:
+                    r.raise_for_status()
+                
+                bytes_read = 0
+                target_bytes = end - start + 1
+                
+                # If we got a 200 response, we need to skip bytes until we reach the start position
+                if r.status_code == 200:
+                    skip_bytes = start
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if skip_bytes > 0:
+                            if len(chunk) <= skip_bytes:
+                                skip_bytes -= len(chunk)
+                                continue
+                            else:
+                                # Partial chunk - take only the part we need
+                                chunk = chunk[skip_bytes:]
+                                skip_bytes = 0
+                        
+                        # Now we're at the desired range
+                        if bytes_read + len(chunk) > target_bytes:
+                            # This chunk would exceed our target, truncate it
+                            remaining = target_bytes - bytes_read
+                            yield chunk[:remaining]
+                            break
+                        else:
+                            yield chunk
+                            bytes_read += len(chunk)
+                            
+                        if bytes_read >= target_bytes:
+                            break
+                else:
+                    # Server supports range requests (206 response)
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if bytes_read + len(chunk) > target_bytes:
+                            # This chunk would exceed our target, truncate it
+                            remaining = target_bytes - bytes_read
+                            yield chunk[:remaining]
+                            break
+                        else:
+                            yield chunk
+                            bytes_read += len(chunk)
+                            
+                        if bytes_read >= target_bytes:
+                            break
+                            
+                print(f"Successfully streamed {bytes_read} bytes for range {start}-{end}")
+                
+        except requests.exceptions.RequestException as e:
+            print(f"Error streaming file range from Notion: {e}")
+            raise Exception(f"Failed to stream file range from Notion: {e}")
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit handler"""
         pass

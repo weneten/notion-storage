@@ -481,10 +481,20 @@ async function loadFiles() {
             const fileId = file.id || '';
             const fileHash = file.file_hash || '';
             const isPublic = file.is_public || false;
+            const fileInfo = getFileTypeInfo(file.name);
 
-            console.log(`✅ DIAGNOSTIC: Processing ${file.name} - Now includes toggle and delete button!`); tableHTML += `
+            console.log(`✅ DIAGNOSTIC: Processing ${file.name} - Now includes toggle, delete, and view buttons!`);
+            
+            // Generate view button HTML if file is viewable
+            const viewButtonHTML = fileInfo.isViewable && fileHash ?
+                createViewButton(fileHash, fileInfo.type) : '';
+
+            tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
-                    <td><strong>${file.name}</strong></td>
+                    <td>
+                        <span style="margin-right: 8px;">${fileInfo.icon}</span>
+                        <strong>${file.name}</strong>
+                    </td>
                     <td class="filesize-cell">${formatFileSize(file.size)}</td>
                     <td>
                         ${fileHash ?
@@ -501,6 +511,7 @@ async function loadFiles() {
                         </label>
                     </td>
                     <td class="action-buttons">
+                        ${viewButtonHTML}
                         <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
@@ -542,6 +553,80 @@ function formatFileSize(bytes, decimals = 2) {
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+// File type detection functions for dynamic file list
+function getFileTypeInfo(filename) {
+    const ext = filename.split('.').pop().toLowerCase();
+    
+    // Define supported media types
+    const mediaTypes = {
+        video: ['mp4', 'webm', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'm4v'],
+        audio: ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'],
+        image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff'],
+        pdf: ['pdf']
+    };
+
+    // Check if file is viewable
+    for (const [type, extensions] of Object.entries(mediaTypes)) {
+        if (extensions.includes(ext)) {
+            return {
+                type: type,
+                icon: getFileTypeIcon(type),
+                isViewable: true,
+                extension: ext
+            };
+        }
+    }
+
+    // Default for non-viewable files
+    return {
+        type: 'file',
+        icon: '📄',
+        isViewable: false,
+        extension: ext
+    };
+}
+
+function getFileTypeIcon(type) {
+    const icons = {
+        video: '🎥',
+        audio: '🎵',
+        image: '🖼️',
+        pdf: '📄',
+        file: '📄'
+    };
+    return icons[type] || icons.file;
+}
+
+function createViewButton(fileHash, fileType) {
+    const viewUrl = `/v/${fileHash}`;
+    let buttonClass = 'btn-success';
+    let icon = 'fas fa-eye';
+    
+    // Customize button based on file type
+    switch(fileType) {
+        case 'video':
+            icon = 'fas fa-play';
+            buttonClass = 'btn-success';
+            break;
+        case 'audio':
+            icon = 'fas fa-volume-up';
+            buttonClass = 'btn-success';
+            break;
+        case 'image':
+            icon = 'fas fa-image';
+            buttonClass = 'btn-success';
+            break;
+        case 'pdf':
+            icon = 'fas fa-file-pdf';
+            buttonClass = 'btn-success';
+            break;
+    }
+
+    return `<a href="${viewUrl}" target="_blank" rel="noopener" class="btn ${buttonClass} btn-sm">
+                <i class="${icon} mr-1"></i>View
+            </a>`;
 }
 
 // Set up event handlers for file actions (delete, public toggle)

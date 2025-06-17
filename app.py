@@ -445,6 +445,181 @@ def download_by_hash(salted_sha512_hash):
         return "An error occurred during download.", 500
 
 
+@app.route('/v/<salted_sha512_hash>')
+def stream_by_hash(salted_sha512_hash):
+    """
+    Stream file by hash with HTTP Range Request support for inline media viewing
+    """
+    try:
+        # Find the file in the global file index using the hash
+        index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
+
+        if not index_entry:
+            return "File not found", 404
+
+        properties = index_entry.get('properties', {})
+        
+        # Extract properties from the index_entry
+        is_public = properties.get('Is Public', {}).get('checkbox', False)
+        file_page_id = properties.get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        file_user_db_id = properties.get('User Database ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        original_filename = properties.get('Original Filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'video')
+
+        # Now fetch the actual file details from the user's specific database using file_page_id
+        file_details = uploader.get_user_by_id(file_page_id)
+        if not file_details:
+            return "File details not found in user database.", 404
+
+        # Check access control (same logic as download route)
+        if not is_public:
+            if not current_user.is_authenticated:
+                return redirect(url_for('login', next=request.url))
+
+            current_user_db_id = uploader.get_user_database_id(current_user.id)
+
+            if file_user_db_id != current_user_db_id:
+                return "Access Denied: You do not have permission to view this file.", 403
+
+        # Get the file size from the file details
+        file_properties = file_details.get('properties', {})
+        file_size = file_properties.get('filesize', {}).get('number', 0)
+
+        # Explicitly retrieve a new signed download URL from Notion
+        notion_download_link = uploader.get_notion_file_url_from_page_property(file_page_id, original_filename)
+
+        if not notion_download_link:
+            return "Stream link not available for this file", 500
+
+        # Enhanced MIME type detection for media files
+        def get_enhanced_mimetype(filename):
+            """Enhanced MIME type detection for common media formats"""
+            import mimetypes
+            
+            # Get MIME type from filename
+            mimetype, _ = mimetypes.guess_type(filename)
+            
+            if mimetype:
+                return mimetype
+            
+            # Fallback based on file extension for common media types
+            extension = filename.lower().split('.')[-1] if '.' in filename else ''
+            
+            media_types = {
+                # Video formats
+                'mp4': 'video/mp4',
+                'webm': 'video/webm',
+                'avi': 'video/x-msvideo',
+                'mov': 'video/quicktime',
+                'mkv': 'video/x-matroska',
+                'wmv': 'video/x-ms-wmv',
+                'flv': 'video/x-flv',
+                'm4v': 'video/x-m4v',
+                
+                # Audio formats
+                'mp3': 'audio/mpeg',
+                'wav': 'audio/wav',
+                'ogg': 'audio/ogg',
+                'aac': 'audio/aac',
+                'flac': 'audio/flac',
+                'm4a': 'audio/mp4',
+                'wma': 'audio/x-ms-wma',
+                
+                # Image formats
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'webp': 'image/webp',
+                'svg': 'image/svg+xml',
+                'bmp': 'image/bmp',
+                'tiff': 'image/tiff',
+                
+                # Document formats
+                'pdf': 'application/pdf',
+                'txt': 'text/plain',
+                'html': 'text/html',
+                'css': 'text/css',
+                'js': 'application/javascript'
+            }
+            
+            return media_types.get(extension, 'application/octet-stream')
+
+        mimetype = get_enhanced_mimetype(original_filename)
+
+        # Parse Range header for partial content requests
+        range_header = request.headers.get('Range', '').strip()
+        
+        if range_header:
+            # Parse Range header (e.g., "bytes=0-1023", "bytes=1024-", "bytes=-500")
+            if not range_header.startswith('bytes='):
+                return "Invalid range header", 416
+            
+            try:
+                range_spec = range_header[6:]  # Remove "bytes="
+                
+                if '-' not in range_spec:
+                    return "Invalid range format", 416
+                
+                range_start, range_end = range_spec.split('-', 1)
+                
+                # Handle different range formats
+                if range_start and range_end:
+                    # bytes=start-end
+                    start = int(range_start)
+                    end = int(range_end)
+                elif range_start and not range_end:
+                    # bytes=start-
+                    start = int(range_start)
+                    end = file_size - 1
+                elif not range_start and range_end:
+                    # bytes=-suffix (last N bytes)
+                    suffix_length = int(range_end)
+                    start = max(0, file_size - suffix_length)
+                    end = file_size - 1
+                else:
+                    return "Invalid range format", 416
+                
+                # Validate range
+                if start < 0 or end >= file_size or start > end:
+                    response = Response(status=416)
+                    response.headers['Content-Range'] = f'bytes */{file_size}'
+                    return response
+                
+                # Stream the requested range
+                def stream_range():
+                    for chunk in uploader.stream_file_from_notion_range(notion_download_link, start, end):
+                        yield chunk
+                
+                # Create partial content response
+                response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+                response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+                response.headers['Content-Length'] = str(end - start + 1)
+                response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+                response.headers['Accept-Ranges'] = 'bytes'
+                response.headers['Cache-Control'] = 'public, max-age=3600'
+                
+                return response
+                
+            except (ValueError, TypeError) as e:
+                return "Invalid range values", 416
+        
+        else:
+            # Full content request
+            response = Response(stream_with_context(uploader.stream_file_from_notion(notion_download_link)), mimetype=mimetype)
+            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+            response.headers['Content-Length'] = str(file_size)
+            response.headers['Accept-Ranges'] = 'bytes'
+            response.headers['Cache-Control'] = 'public, max-age=3600'
+            
+            return response
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"DEBUG: Error in /v/<hash> route: {str(e)}\n{error_trace}")
+        return "An error occurred during streaming.", 500
+
+
 @app.route('/api/files')
 @login_required
 def get_files_api():
