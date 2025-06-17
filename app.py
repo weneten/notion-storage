@@ -997,7 +997,10 @@ def stream_file_upload(upload_id):
                     print(f"🔒 ID VALIDATION: Acquired ID validation lock for upload {upload_id}")
                     
                     # CRITICAL FIX 1: Enhanced ID Validation and Logging
-                    file_upload_id = result.get('file_upload_id') or result.get('file_id')
+                    # First try to extract the actual file ID from completion response
+                    file_upload_id = (result.get('file', {}).get('id') or
+                                     result.get('file_upload_id') or
+                                     result.get('file_id'))
                     if not file_upload_id:
                         error_msg = f"ID CORRUPTION DETECTED: No valid file ID found in result. Available keys: {list(result.keys())}"
                         print(f"🚨 CRITICAL ERROR: {error_msg}")

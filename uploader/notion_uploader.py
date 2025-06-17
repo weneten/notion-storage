@@ -579,6 +579,14 @@ class NotionFileUploader:
             # Step 3: Complete multipart upload
             complete_result = self.complete_multipart_upload(file_upload_id)
 
+            # CRITICAL FIX: Extract the actual file ID from completion response
+            actual_file_id = complete_result.get('file', {}).get('id')
+            if actual_file_id:
+                print(f"🔍 MULTIPART_COMPLETE: Got actual file ID from completion: {actual_file_id}")
+                file_upload_id = actual_file_id  # Use the correct ID from completion response
+            else:
+                print(f"🔍 MULTIPART_COMPLETE: No file ID in completion response, using upload ID: {file_upload_id}")
+
             # Return the download URL and other info
             download_url = complete_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}")
             

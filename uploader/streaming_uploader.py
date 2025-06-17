@@ -92,7 +92,10 @@ class NotionStreamingUploader:
             print(f"DEBUG: Salted hash: {salted_hash[:16]}...")
             
             # CRITICAL FIX 1 & 2: ID Validation and Consistent Key Usage
-            file_upload_id = notion_result.get('file_upload_id') or notion_result.get('file_id')
+            # First try to extract the actual file ID from completion response
+            file_upload_id = (notion_result.get('file', {}).get('id') or
+                             notion_result.get('file_upload_id') or
+                             notion_result.get('file_id'))
             print(f"🔍 STREAMING_UPLOADER: Database integration starting")
             print(f"🔍 STREAMING_UPLOADER: notion_result keys: {list(notion_result.keys())}")
             print(f"🔍 STREAMING_UPLOADER: Extracted file_upload_id: {file_upload_id}")
