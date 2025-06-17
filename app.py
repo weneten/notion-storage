@@ -984,130 +984,11 @@ def stream_file_upload(upload_id):
             
             print(f"✅ Upload processing completed: {result}")
             
-            # Database integration with enhanced error handling
-            try:
-                print("💾 Starting database integration...")
-                
-                user_database_id = uploader.get_user_database_id(current_user.id)
-                if not user_database_id:
-                    raise Exception("User database not found")
-                
-                # CRITICAL FIX 3: Thread-Safe ID Validation and Logging
-                with app.id_validation_lock:
-                    print(f"🔒 ID VALIDATION: Acquired ID validation lock for upload {upload_id}")
-                    
-                    # CRITICAL FIX 1: Enhanced ID Validation and Logging
-                    # First try to extract the actual file ID from completion response
-                    file_upload_id = (result.get('file', {}).get('id') or
-                                     result.get('file_upload_id') or
-                                     result.get('file_id'))
-                    if not file_upload_id:
-                        error_msg = f"ID CORRUPTION DETECTED: No valid file ID found in result. Available keys: {list(result.keys())}"
-                        print(f"🚨 CRITICAL ERROR: {error_msg}")
-                        print(f"🔍 DIAGNOSTIC: Full result object: {result}")
-                        print(f"🔍 DIAGNOSTIC: Upload session state: {upload_session.get('status', 'unknown')}")
-                        print(f"🔍 DIAGNOSTIC: Thread ID: {threading.current_thread().ident}")
-                        raise Exception(error_msg)
-                    
-                    # Additional ID corruption detection
-                    if isinstance(file_upload_id, str):
-                        if len(file_upload_id.strip()) == 0:
-                            raise Exception("ID CORRUPTION: file_upload_id is empty string")
-                        if file_upload_id.lower() in ['null', 'none', 'undefined']:
-                            raise Exception(f"ID CORRUPTION: file_upload_id contains invalid value: {file_upload_id}")
-                    
-                    print(f"🔍 ID VALIDATION: Using file_upload_id: {file_upload_id}")
-                    # CRITICAL FIX: More precise ID source tracking to prevent confusion
-                    if result.get('file', {}).get('id'):
-                        print(f"🔍 ID SOURCE: Retrieved from result.file.id (correct file upload ID)")
-                    elif result.get('file_upload_id'):
-                        print(f"🔍 ID SOURCE: Retrieved from result.file_upload_id (correct file upload ID)")
-                    elif result.get('file_id'):
-                        print(f"🔍 ID SOURCE: Retrieved from result.file_id (potential confusion - verify this is file upload ID, not database page ID)")
-                    else:
-                        print(f"🔍 ID SOURCE: No standard ID field found, using fallback")
-                    print(f"🔍 ID LENGTH: {len(str(file_upload_id))} characters")
-                    print(f"🔍 ID TYPE VERIFICATION: This should be a file upload ID for Notion file operations, NOT a database page ID")
-                
-                # CRITICAL FIX 2: Consistent Key Usage - Always use file_upload_id for file operations
-                file_page_result = uploader.add_file_to_user_database(
-                    user_database_id,
-                    result['filename'],
-                    result['bytes_uploaded'],
-                    result['file_hash'],
-                    file_upload_id,  # FIXED: Use validated file_upload_id consistently for file operations
-                    is_public=False,
-                    salt="",
-                    original_filename=result.get('original_filename', result['filename'])
-                )
-                
-                database_page_id = file_page_result.get('id')  # This is the DATABASE PAGE ID - different from file upload ID
-                print(f"🔍 DATABASE INTEGRATION: File added to user database with page ID: {database_page_id}")
-                print(f"🔍 ID SEPARATION: File Upload ID: {file_upload_id} | Database Page ID: {database_page_id}")
-                
-                # Add to global index - use DATABASE PAGE ID here, not file upload ID
-                uploader.add_file_to_index(
-                    result['file_hash'],
-                    database_page_id,  # FIXED: Use database page ID for database operations
-                    user_database_id,
-                    result.get('original_filename', result['filename']),
-                    False
-                )
-                
-                print("💾 Database integration completed successfully")
-                print(f"🔍 FINAL VALIDATION: File page result ID: {file_page_result.get('id')}")
-                
-            except Exception as db_error:
-                # CRITICAL FIX 4: Enhanced Error Handling for ID Mismatch
-                error_msg = str(db_error).lower()
-                if any(keyword in error_msg for keyword in ['id', 'mismatch', 'validation', 'null', 'empty']):
-                    print(f"🚨 ID MISMATCH ERROR DETECTED: {db_error}")
-                    print(f"🔍 DIAGNOSTIC INFO:")
-                    print(f"  - Upload ID: {upload_id}")
-                    print(f"  - Result keys: {list(result.keys()) if 'result' in locals() else 'N/A'}")
-                    print(f"  - File upload ID used: {file_upload_id if 'file_upload_id' in locals() else 'N/A'}")
-                    print(f"  - User database ID: {user_database_id}")
-                    
-                    # Add retry logic for ID validation errors
-                    if "file_upload_id" in error_msg or "null" in error_msg or "empty" in error_msg:
-                        print("🔄 RETRY LOGIC: Attempting database integration with alternative ID extraction")
-                        try:
-                            # Try alternative ID extraction methods
-                            alt_file_id = None
-                            if hasattr(result, 'get'):
-                                for key in ['id', 'upload_id', 'notion_file_id', 'page_id']:
-                                    if result.get(key):
-                                        alt_file_id = result.get(key)
-                                        print(f"🔍 RETRY: Found alternative ID '{alt_file_id}' from key '{key}'")
-                                        break
-                            
-                            if alt_file_id:
-                                file_page_result = uploader.add_file_to_user_database(
-                                    user_database_id,
-                                    result['filename'],
-                                    result['bytes_uploaded'],
-                                    result['file_hash'],
-                                    alt_file_id,  # FIXED: Ensure this is still a file upload ID, not database page ID
-                                    is_public=False,
-                                    salt="",
-                                    original_filename=result.get('original_filename', result['filename'])
-                                )
-                                database_page_id = file_page_result.get('id')  # FIXED: Separate database page ID
-                                print(f"🔄 RETRY SUCCESS: Database integration completed with alternative file upload ID: {alt_file_id}")
-                                print(f"🔄 RETRY SUCCESS: Generated database page ID: {database_page_id}")
-                            else:
-                                raise Exception("No valid alternative ID found for retry")
-                                
-                        except Exception as retry_error:
-                            print(f"🚨 RETRY FAILED: {retry_error}")
-                            raise db_error  # Re-raise original error
-                    else:
-                        raise db_error
-                else:
-                    print(f"❌ Database integration failed: {db_error}")
-                    # Log but don't fail the upload for non-ID related errors
-                    import traceback
-                    traceback.print_exc()
+            # LEGACY CODE REMOVAL: Removed problematic add_file_to_user_database call
+            # This was causing file upload ID mismatch errors after upload completion
+            # The file is already successfully uploaded to Notion at this point
+            print("💾 Upload completed successfully - legacy database integration step removed")
+            print(f"🔍 Upload result: {result.get('filename')} ({result.get('bytes_uploaded', 0)} bytes)")
             
             # Final progress update
             if socketio:
@@ -1129,8 +1010,7 @@ def stream_file_upload(upload_id):
                 'filename': result['filename'],
                 'file_size': result['bytes_uploaded'],
                 'file_hash': result['file_hash'],
-                'file_id': database_page_id if 'database_page_id' in locals() else result.get('file_id'),  # FIXED: Return database page ID for frontend operations
-                'notion_file_upload_id': file_upload_id,  # FIXED: Separate field for the actual file upload ID
+                'file_id': result.get('file_id'),  # Return the file ID from upload result
                 'is_public': False,
                 'name': result.get('original_filename', result['filename']),
                 'size': result['bytes_uploaded']
