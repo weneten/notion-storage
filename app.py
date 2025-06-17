@@ -869,69 +869,116 @@ def create_streaming_upload_session():
 @login_required
 def stream_file_upload(upload_id):
     """
-    Handle streaming file upload with enhanced error handling and parallel processing
+    Handle streaming file upload with enhanced resilience, resource management, and circuit breaker protection
     """
+    # Import resource management
     try:
-        print(f"DEBUG: Streaming upload called for upload_id: {upload_id}")
-        print(f"DEBUG: Request headers: {dict(request.headers)}")
+        from uploader.resource_manager import resource_manager, backpressure_manager, log_resource_usage
+        from uploader.circuit_breaker import upload_circuit_breaker, CircuitBreakerOpenError
+    except ImportError:
+        resource_manager = None
+        backpressure_manager = None
+        upload_circuit_breaker = None
+        log_resource_usage = lambda: None
+    
+    try:
+        print(f"🚀 Resilient streaming upload initiated for upload_id: {upload_id}")
+        log_resource_usage()
+        
+        # Check resource constraints before proceeding
+        if resource_manager:
+            should_throttle, delay = backpressure_manager.should_throttle_request()
+            if should_throttle:
+                print(f"⏳ Applying backpressure: {delay}s delay")
+                time.sleep(delay)
         
         # Get upload session
         upload_session = streaming_upload_manager.get_upload_status(upload_id)
         if not upload_session:
-            print(f"DEBUG: Upload session {upload_id} not found")
+            print(f"❌ Upload session {upload_id} not found")
             return jsonify({'error': 'Upload session not found'}), 404
         
-        print(f"DEBUG: Found upload session: {upload_session['filename']}, size: {upload_session['file_size']}")
+        print(f"📁 Processing upload: {upload_session['filename']} ({upload_session['file_size'] / 1024 / 1024:.1f}MB)")
+        
+        # Resource-aware upload acceptance check
+        if resource_manager:
+            should_accept, reason = resource_manager.should_accept_upload(upload_session['file_size'])
+            if not should_accept:
+                print(f"🚫 Upload rejected: {reason}")
+                return jsonify({'error': f'Upload rejected due to resource constraints: {reason}'}), 507
         
         # Verify file size matches headers
         content_length = request.headers.get('Content-Length')
         expected_size = upload_session['file_size']
         
-        print(f"DEBUG: Content-Length: {content_length}, Expected: {expected_size}")
-        
         if content_length and int(content_length) != expected_size:
-            print(f"DEBUG: Content-Length mismatch: {content_length} vs {expected_size}")
+            print(f"❌ Content-Length mismatch: {content_length} vs {expected_size}")
             return jsonify({'error': 'Content-Length mismatch'}), 400
         
-        # Create a generator that yields chunks from the request stream
-        def stream_generator():
-            try:
-                print("DEBUG: Starting to read request stream")
-                # Read in small chunks to avoid memory issues
-                chunk_size = 64 * 1024  # 64KB chunks
-                total_read = 0
-                while True:
-                    chunk = request.stream.read(chunk_size)
-                    if not chunk:
-                        print(f"DEBUG: Stream ended, total read: {total_read}")
-                        break
-                    total_read += len(chunk)
-                    if total_read % (1024 * 1024) == 0:  # Log every MB
-                        print(f"DEBUG: Read {total_read / (1024*1024):.1f} MB")
-                    yield chunk
-            except Exception as e:
-                print(f"Error reading request stream: {e}")
-                raise
+        # Enter upload queue for backpressure management
+        if backpressure_manager:
+            backpressure_manager.enter_queue()
         
-        print("DEBUG: Processing upload stream with parallel processing and database integration")
-        
-        # Process upload with enhanced error handling
         try:
-            result = streaming_upload_manager.process_upload_stream(upload_id, stream_generator())
+            # Create a resource-aware stream generator
+            def resilient_stream_generator():
+                try:
+                    print("📡 Starting resilient stream reading...")
+                    chunk_size = 64 * 1024  # 64KB chunks for memory efficiency
+                    total_read = 0
+                    last_log_mb = 0
+                    
+                    while True:
+                        # Check memory pressure before reading more data
+                        if resource_manager and total_read > 0:
+                            stats = resource_manager.get_resource_stats()
+                            if stats['memory_usage_mb'] > 400:  # 80% of 512MB
+                                print(f"⚠️  Memory pressure detected: {stats['memory_usage_mb']:.1f}MB")
+                                time.sleep(0.1)  # Brief pause to let system recover
+                        
+                        chunk = request.stream.read(chunk_size)
+                        if not chunk:
+                            print(f"📡 Stream completed, total read: {total_read / 1024 / 1024:.1f}MB")
+                            break
+                        
+                        total_read += len(chunk)
+                        
+                        # Log progress every 10MB
+                        current_mb = total_read // (10 * 1024 * 1024)
+                        if current_mb > last_log_mb:
+                            print(f"📡 Read {total_read / (1024*1024):.1f}MB...")
+                            last_log_mb = current_mb
+                        
+                        yield chunk
+                        
+                except Exception as e:
+                    print(f"❌ Error reading request stream: {e}")
+                    raise
             
-            print(f"DEBUG: Upload processing completed successfully: {result}")
+            print("🔄 Processing upload with enhanced resilience...")
             
-            # **ISSUE 2 FIX**: Add database integration after successful Notion upload
+            # Process upload with circuit breaker protection
+            def upload_with_circuit_breaker():
+                return streaming_upload_manager.process_upload_stream(upload_id, resilient_stream_generator())
+            
+            if upload_circuit_breaker:
+                try:
+                    result = upload_circuit_breaker.call(upload_with_circuit_breaker)
+                except CircuitBreakerOpenError as e:
+                    print(f"🚨 Circuit breaker open: {e}")
+                    return jsonify({'error': 'Upload service temporarily unavailable. Please try again later.'}), 503
+            else:
+                result = upload_with_circuit_breaker()
+            
+            print(f"✅ Upload processing completed: {result}")
+            
+            # Database integration with enhanced error handling
             try:
-                print("DEBUG: Starting database integration after successful upload")
+                print("💾 Starting database integration...")
                 
-                # Get user database ID
                 user_database_id = uploader.get_user_database_id(current_user.id)
                 if not user_database_id:
-                    print("ERROR: User database not found for database integration")
                     raise Exception("User database not found")
-                
-                print(f"DEBUG: User database ID: {user_database_id}")
                 
                 # Save file metadata to user database
                 file_page_result = uploader.add_file_to_user_database(
@@ -940,12 +987,10 @@ def stream_file_upload(upload_id):
                     result['bytes_uploaded'],
                     result['file_hash'],
                     result['file_upload_id'],
-                    is_public=False,  # Default to private
-                    salt="",  # Add salt if needed
+                    is_public=False,
+                    salt="",
                     original_filename=result.get('original_filename', result['filename'])
                 )
-                
-                print(f"DEBUG: File added to user database: {file_page_result['id']}")
                 
                 # Add to global index
                 uploader.add_file_to_index(
@@ -953,19 +998,18 @@ def stream_file_upload(upload_id):
                     file_page_result['id'],
                     user_database_id,
                     result.get('original_filename', result['filename']),
-                    False  # is_public = False by default
+                    False
                 )
                 
-                print("DEBUG: File added to global index successfully")
+                print("💾 Database integration completed successfully")
                 
             except Exception as db_error:
-                print(f"ERROR: Database integration failed: {db_error}")
-                # Don't fail the entire upload, but log the error
-                # The file is already uploaded to Notion successfully
+                print(f"❌ Database integration failed: {db_error}")
+                # Log but don't fail the upload
                 import traceback
                 traceback.print_exc()
             
-            # Emit final progress update
+            # Final progress update
             if socketio:
                 socketio.emit('upload_progress', {
                     'upload_id': upload_id,
@@ -975,30 +1019,37 @@ def stream_file_upload(upload_id):
                     'total_size': result['bytes_uploaded']
                 })
             
-            # **ISSUE 3 FIX**: Enhanced response to include all data needed for UI buttons
+            # Log final resource usage
+            if resource_manager:
+                log_resource_usage()
+            
             return jsonify({
                 'status': 'completed',
                 'upload_id': upload_id,
                 'filename': result['filename'],
                 'file_size': result['bytes_uploaded'],
                 'file_hash': result['file_hash'],
-                'file_id': file_page_result['id'] if 'file_page_result' in locals() else result['file_id'],
-                'is_public': False,  # Default to private
-                'name': result.get('original_filename', result['filename']),  # For UI display
-                'size': result['bytes_uploaded']  # For UI consistency
+                'file_id': file_page_result['id'] if 'file_page_result' in locals() else result.get('file_id'),
+                'is_public': False,
+                'name': result.get('original_filename', result['filename']),
+                'size': result['bytes_uploaded']
             })
             
         except MemoryError as e:
-            print(f"Memory limit exceeded during upload: {e}")
+            print(f"💥 Memory limit exceeded: {e}")
             return jsonify({'error': f'Memory limit exceeded: {str(e)}'}), 507
         except Exception as e:
-            print(f"Upload processing error: {e}")
+            print(f"💥 Upload processing error: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({'error': f'Upload failed: {str(e)}'}), 500
+        finally:
+            # Always exit queue
+            if backpressure_manager:
+                backpressure_manager.exit_queue()
         
     except Exception as e:
-        print(f"Error in streaming upload endpoint: {e}")
+        print(f"💥 Critical error in streaming upload endpoint: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -1008,15 +1059,24 @@ def stream_file_upload(upload_id):
 @login_required
 def get_upload_status(upload_id):
     """
-    Get the status of an upload session
+    Get the status of an upload session with enhanced monitoring
     """
     try:
         upload_session = streaming_upload_manager.get_upload_status(upload_id)
         if not upload_session:
             return jsonify({'error': 'Upload session not found'}), 404
         
-        # Return safe status information
-        return jsonify({
+        # Import resource management for enhanced status
+        try:
+            from uploader.resource_manager import resource_manager
+            from uploader.circuit_breaker import upload_circuit_breaker, notion_api_circuit_breaker
+        except ImportError:
+            resource_manager = None
+            upload_circuit_breaker = None
+            notion_api_circuit_breaker = None
+        
+        # Enhanced status with resource information
+        status_response = {
             'upload_id': upload_id,
             'status': upload_session['status'],
             'filename': upload_session['filename'],
@@ -1024,11 +1084,134 @@ def get_upload_status(upload_id):
             'bytes_uploaded': upload_session['bytes_uploaded'],
             'is_multipart': upload_session['is_multipart'],
             'created_at': upload_session['created_at']
-        })
+        }
+        
+        # Add resource information if available
+        if resource_manager:
+            resource_stats = resource_manager.get_resource_stats()
+            status_response['system_resources'] = {
+                'memory_usage_mb': resource_stats['memory_usage_mb'],
+                'memory_usage_percent': resource_stats['memory_usage_percent'],
+                'optimal_workers': resource_stats['optimal_workers'],
+                'resource_state': resource_stats['resource_state']
+            }
+        
+        # Add circuit breaker status if available
+        if upload_circuit_breaker:
+            cb_stats = upload_circuit_breaker.get_stats()
+            status_response['circuit_breaker'] = {
+                'state': cb_stats['state'],
+                'success_rate': cb_stats['success_rate_percent']
+            }
+        
+        return jsonify(status_response)
         
     except Exception as e:
         print(f"Error getting upload status: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/system/health', methods=['GET'])
+@login_required
+def get_system_health():
+    """
+    Get comprehensive system health and resilience status
+    """
+    try:
+        # Import all monitoring components
+        try:
+            from uploader.resource_manager import resource_manager, backpressure_manager, log_resource_usage
+            from uploader.circuit_breaker import upload_circuit_breaker, notion_api_circuit_breaker, log_all_circuit_breaker_stats
+            from uploader.checkpoint_manager import checkpoint_manager, log_checkpoint_stats
+        except ImportError as e:
+            return jsonify({'error': f'Monitoring components not available: {e}'}), 500
+        
+        health_status = {
+            'timestamp': time.time(),
+            'status': 'healthy',
+            'components': {}
+        }
+        
+        # Resource manager health
+        if resource_manager:
+            resource_stats = resource_manager.get_resource_stats()
+            health_status['components']['resource_manager'] = {
+                'status': 'healthy' if resource_stats['memory_usage_percent'] < 80 else 'warning',
+                'memory_usage_mb': resource_stats['memory_usage_mb'],
+                'memory_usage_percent': resource_stats['memory_usage_percent'],
+                'cpu_usage_percent': resource_stats['cpu_usage_percent'],
+                'active_uploads': resource_stats['active_uploads'],
+                'optimal_workers': resource_stats['optimal_workers'],
+                'resource_state': resource_stats['resource_state']
+            }
+        
+        # Backpressure manager health
+        if backpressure_manager:
+            queue_stats = backpressure_manager.get_queue_stats()
+            health_status['components']['backpressure_manager'] = {
+                'status': 'healthy' if queue_stats['queue_utilization'] < 80 else 'warning',
+                'queue_size': queue_stats['queue_size'],
+                'queue_limit': queue_stats['queue_limit'],
+                'queue_utilization': queue_stats['queue_utilization']
+            }
+        
+        # Circuit breaker health
+        circuit_breakers = []
+        if upload_circuit_breaker:
+            cb_stats = upload_circuit_breaker.get_stats()
+            circuit_breakers.append({
+                'name': cb_stats['name'],
+                'state': cb_stats['state'],
+                'success_rate': cb_stats['success_rate_percent'],
+                'total_calls': cb_stats['total_calls'],
+                'failure_count': cb_stats['failure_count']
+            })
+        
+        if notion_api_circuit_breaker:
+            cb_stats = notion_api_circuit_breaker.get_stats()
+            circuit_breakers.append({
+                'name': cb_stats['name'],
+                'state': cb_stats['state'],
+                'success_rate': cb_stats['success_rate_percent'],
+                'total_calls': cb_stats['total_calls'],
+                'failure_count': cb_stats['failure_count']
+            })
+        
+        health_status['components']['circuit_breakers'] = {
+            'status': 'healthy' if all(cb['state'] != 'OPEN' for cb in circuit_breakers) else 'critical',
+            'breakers': circuit_breakers
+        }
+        
+        # Checkpoint manager health
+        if checkpoint_manager:
+            checkpoint_stats = checkpoint_manager.get_checkpoint_stats()
+            health_status['components']['checkpoint_manager'] = {
+                'status': 'healthy' if checkpoint_stats['storage_available'] else 'warning',
+                'storage_type': checkpoint_stats['storage_type'],
+                'checkpoint_interval': checkpoint_stats['checkpoint_interval']
+            }
+        
+        # Overall system status
+        component_statuses = [comp.get('status', 'unknown') for comp in health_status['components'].values()]
+        if 'critical' in component_statuses:
+            health_status['status'] = 'critical'
+        elif 'warning' in component_statuses:
+            health_status['status'] = 'warning'
+        
+        # Performance metrics
+        health_status['performance'] = {
+            'active_upload_sessions': len(streaming_upload_manager.active_uploads) if hasattr(streaming_upload_manager, 'active_uploads') else 0,
+            'total_memory_limit_mb': 512,
+            'total_cpu_limit': 0.2
+        }
+        
+        return jsonify(health_status)
+        
+    except Exception as e:
+        print(f"Error getting system health: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'status': 'error'}), 500
 
 
 @app.route('/api/upload/abort/<upload_id>', methods=['POST'])

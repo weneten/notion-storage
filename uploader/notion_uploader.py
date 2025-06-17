@@ -8,6 +8,8 @@ import concurrent.futures
 import queue
 from typing import Dict, Any, List, Optional, Tuple, Union, Iterable
 from flask_socketio import SocketIO
+import uuid
+import time
 
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):
@@ -602,18 +604,63 @@ class NotionFileUploader:
         return result
 
     def send_file_part(self, file_upload_id: str, part_number: int, chunk_data: bytes, filename: str, content_type: str, bytes_uploaded_so_far: int, total_bytes: int, total_parts: int, session_id: str) -> Dict[str, Any]:
-        """Send a chunk/part of a multipart upload"""
-        upload_url = None
+        """Send a chunk/part of a multipart upload with enhanced resilience and circuit breaker protection"""
+        # Import circuit breaker
+        try:
+            from .circuit_breaker import notion_api_circuit_breaker
+        except ImportError:
+            # Fallback if circuit breaker not available
+            notion_api_circuit_breaker = None
         
+        if notion_api_circuit_breaker:
+            # Use circuit breaker protection
+            return notion_api_circuit_breaker.call(
+                self._send_file_part_with_retry,
+                file_upload_id, part_number, chunk_data, filename, content_type,
+                bytes_uploaded_so_far, total_bytes, total_parts, session_id
+            )
+        else:
+            # Direct call without circuit breaker
+            return self._send_file_part_with_retry(
+                file_upload_id, part_number, chunk_data, filename, content_type,
+                bytes_uploaded_so_far, total_bytes, total_parts, session_id
+            )
+    
+    def _send_file_part_with_retry(self, file_upload_id: str, part_number: int, chunk_data: bytes, filename: str, content_type: str, bytes_uploaded_so_far: int, total_bytes: int, total_parts: int, session_id: str, max_retries: int = 5) -> Dict[str, Any]:
+        """Enhanced send_file_part with comprehensive retry logic and resilience"""
+        import random
+        import time
+        
+        # Import diagnostics
+        try:
+            from diagnostic_logs import timeout_diagnostics
+        except ImportError:
+            timeout_diagnostics = None
+            
+        request_id = f"part_{part_number}_{uuid.uuid4().hex[:8]}"
+        
+        # Retry configuration
+        retry_config = {
+            'max_retries': max_retries,
+            'initial_delay': 1.0,
+            'max_delay': 120.0,
+            'exponential_base': 2.0,
+            'jitter_percent': 25,
+            'retryable_status_codes': [502, 503, 504],
+            'retryable_exceptions': [
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError
+            ]
+        }
+        
+        upload_url = None
         if file_upload_id.startswith('http'):
-            # If file_upload_id is a full URL, use it directly
             upload_url = f"{file_upload_id}/send"
         else:
-            # Otherwise construct the URL from base
             upload_url = f"{self.base_url}/file_uploads/{file_upload_id}/send"
             
         headers = self.headers.copy()
-        # Do not include Content-Type in headers for multipart/form-data requests
         if "Content-Type" in headers:
             del headers["Content-Type"]
             
@@ -622,71 +669,127 @@ class NotionFileUploader:
         if total_bytes > 0:
             progress_percentage = (bytes_uploaded_so_far + len(chunk_data)) / total_bytes * 100
             
-        # Show upload progress
         print(f"Uploading part {part_number} of {total_parts} ({len(chunk_data)/(1024*1024):.3f} MiB)")
         
+        # Log memory snapshot for high part numbers
+        if timeout_diagnostics and part_number % 50 == 0:
+            timeout_diagnostics.log_memory_snapshot(f"before_part_upload", part_number)
+            
         # Prepare the multipart/form-data request
         files = {
-            'file': ('file.txt', chunk_data, 'text/plain'),  # Always use text/plain for Notion compatibility
+            'file': ('file.txt', chunk_data, 'text/plain'),
             'part_number': (None, str(part_number))
         }
-            
-        try:
-            response = requests.post(upload_url, headers=headers, files=files)
-            response_text = response.text
-            
-            if response.status_code != 200:
-                print(f"ERROR uploading part {part_number}: {response_text}")
-                raise Exception(f"Failed to upload part {part_number}: {response_text}")
-                
-            # Extract ETag from response
+        
+        last_exception = None
+        
+        for attempt in range(retry_config['max_retries']):
             try:
-                response_data = response.json()
-                print(f"Response for part {part_number}: {response_data}")
+                # Log request start
+                if timeout_diagnostics:
+                    timeout_diagnostics.log_request_start(request_id, upload_url, part_number)
                 
-                # Notion's API might include ETag in different ways
-                etag = None
-                if 'etag' in response_data:
-                    etag = response_data['etag']
-                    print(f"Found ETag for part {part_number}: {etag}")
-                elif 'part' in response_data and 'etag' in response_data['part']:
-                    etag = response_data['part']['etag']
-                    print(f"Found ETag in 'part' for part {part_number}: {etag}")
+                # Multi-tier timeout strategy: (connect_timeout, read_timeout, total_timeout)
+                timeout_config = (30, 300, 450)  # 30s connect, 5min read, 7.5min total max
+                
+                response = requests.post(
+                    upload_url,
+                    headers=headers,
+                    files=files,
+                    timeout=timeout_config
+                )
+                
+                # Log successful request
+                if timeout_diagnostics:
+                    timeout_diagnostics.log_request_end(request_id, response.status_code)
+                
+                # Check for retryable status codes
+                if response.status_code in retry_config['retryable_status_codes']:
+                    if attempt < retry_config['max_retries'] - 1:
+                        delay = self._calculate_retry_delay(attempt, retry_config)
+                        print(f"Part {part_number} got {response.status_code}, retrying in {delay:.2f}s (attempt {attempt + 1}/{retry_config['max_retries']})")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        raise Exception(f"Part {part_number} failed with {response.status_code} after {retry_config['max_retries']} attempts: {response.text}")
+                
+                if response.status_code != 200:
+                    print(f"ERROR uploading part {part_number}: {response.text}")
+                    raise Exception(f"Failed to upload part {part_number}: {response.text}")
+                    
+                # Parse response
+                try:
+                    response_data = response.json()
+                    print(f"Response for part {part_number}: {response_data}")
+                    
+                    # Handle ETag extraction
+                    etag = None
+                    if 'etag' in response_data:
+                        etag = response_data['etag']
+                        print(f"Found ETag for part {part_number}: {etag}")
+                    elif 'part' in response_data and 'etag' in response_data['part']:
+                        etag = response_data['part']['etag']
+                        print(f"Found ETag in 'part' for part {part_number}: {etag}")
+                    else:
+                        print(f"No ETag found in response for part {part_number}")
+                    
+                    if etag:
+                        response_data['etag'] = etag
+                    
+                    print(f"Successfully uploaded part {part_number} of {total_parts}")
+                    return response_data
+                    
+                except ValueError as e:
+                    print(f"WARNING: Could not parse JSON response for part {part_number}: {e}")
+                    response_text = response.text
+                    return {
+                        "part_number": part_number,
+                        "success": True,
+                        "response_text": response_text[:100] + "..." if len(response_text) > 100 else response_text
+                    }
+                    
+            except tuple(retry_config['retryable_exceptions']) as e:
+                last_exception = e
+                
+                # Enhanced error logging for timeout-related issues
+                error_msg = str(e).lower()
+                if any(keyword in error_msg for keyword in ['timeout', '504', 'gateway', 'connection', 'reset']):
+                    print(f"🚨 TIMEOUT_ERROR_DETECTED: Part {part_number} failed with timeout-related error: {e}")
+                    if timeout_diagnostics:
+                        timeout_diagnostics.log_memory_snapshot(f"timeout_error", part_number)
+                
+                if attempt < retry_config['max_retries'] - 1:
+                    delay = self._calculate_retry_delay(attempt, retry_config)
+                    print(f"Part {part_number} failed ({type(e).__name__}), retrying in {delay:.2f}s (attempt {attempt + 1}/{retry_config['max_retries']})")
+                    time.sleep(delay)
+                    continue
                 else:
-                    # Some responses may not include an explicit ETag
-                    # According to Notion docs, parts are tracked internally
-                    print(f"No ETag found in response for part {part_number}")
-                
-                # Ensure etag is added to the response data for tracking
-                if etag:
-                    response_data['etag'] = etag
-                
-                # Emit a progress event if socketio is available
-                # Commented out to prevent server-to-Notion progress updates from being shown to the user
-                # if self.socketio:
-                #     self.socketio.emit('upload_progress', {
-                #         'percentage': progress_percentage,
-                #         'bytes_uploaded': bytes_uploaded_so_far + len(chunk_data),
-                #         'total_bytes': total_bytes,
-                #         'session_id': session_id
-                #     })
-                
-                print(f"Successfully uploaded part {part_number} of {total_parts}")
-                return response_data
-                
-            except ValueError as e:
-                print(f"WARNING: Could not parse JSON response for part {part_number}: {e}")
-                print(f"Response text: {response_text}")
-                # Return a basic dict with part info but no ETag
-                return {
-                    "part_number": part_number,
-                    "success": True,
-                    "response_text": response_text[:100] + "..." if len(response_text) > 100 else response_text
-                }
-                
-        except Exception as e:
-            print(f"ERROR in send_file_part for part {part_number}: {str(e)}")
-            raise
+                    # Log failed request
+                    if timeout_diagnostics:
+                        timeout_diagnostics.log_request_end(request_id, error=str(e))
+                    raise Exception(f"Part {part_number} failed permanently after {retry_config['max_retries']} attempts: {str(e)}")
+                    
+            except Exception as e:
+                last_exception = e
+                # Log failed request
+                if timeout_diagnostics:
+                    timeout_diagnostics.log_request_end(request_id, error=str(e))
+                print(f"ERROR in send_file_part for part {part_number}: {str(e)}")
+                raise
+        
+        # Should never reach here, but just in case
+        raise Exception(f"Part {part_number} failed after all retry attempts: {str(last_exception)}")
+    
+    def _calculate_retry_delay(self, attempt: int, retry_config: dict) -> float:
+        """Calculate exponential backoff delay with jitter"""
+        base_delay = retry_config['initial_delay'] * (retry_config['exponential_base'] ** attempt)
+        max_delay = min(base_delay, retry_config['max_delay'])
+        
+        # Add jitter to prevent thundering herd
+        jitter_range = max_delay * (retry_config['jitter_percent'] / 100)
+        jitter = random.uniform(-jitter_range, jitter_range)
+        
+        return max(0.1, max_delay + jitter)  # Minimum 0.1 second delay
 
     def complete_multipart_upload(self, file_upload_id: str, parts: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
