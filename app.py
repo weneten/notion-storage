@@ -137,12 +137,16 @@ def is_memory_usage_high():
         print(f"ERROR checking memory usage: {e}")
         return False  # Assume it's safe if we can't check
 
-# Initialize global upload state containers
+# Initialize global upload state containers with thread synchronization
 app.upload_locks = {}
 app.upload_processors = {}
 
 # Add global metadata store
 app.upload_metadata = {}
+
+# CRITICAL FIX 3: Thread Synchronization - Global locks for upload session management
+app.upload_session_lock = threading.Lock()  # Master lock for upload session operations
+app.id_validation_lock = threading.Lock()   # Lock for ID validation operations
 
 def format_bytes(bytes, decimals=2):
     if bytes == 0:
@@ -882,21 +886,29 @@ def stream_file_upload(upload_id):
         log_resource_usage = lambda: None
     
     try:
-        print(f"🚀 Resilient streaming upload initiated for upload_id: {upload_id}")
-        log_resource_usage()
-        
-        # Check resource constraints before proceeding
-        if resource_manager:
-            should_throttle, delay = backpressure_manager.should_throttle_request()
-            if should_throttle:
-                print(f"⏳ Applying backpressure: {delay}s delay")
-                time.sleep(delay)
-        
-        # Get upload session
-        upload_session = streaming_upload_manager.get_upload_status(upload_id)
-        if not upload_session:
-            print(f"❌ Upload session {upload_id} not found")
-            return jsonify({'error': 'Upload session not found'}), 404
+        # CRITICAL FIX 3: Thread Synchronization - Protect upload session access
+        with app.upload_session_lock:
+            print(f"🚀 Resilient streaming upload initiated for upload_id: {upload_id}")
+            print(f"🔒 THREAD SAFETY: Acquired upload session lock for {upload_id}")
+            log_resource_usage()
+            
+            # Check resource constraints before proceeding
+            if resource_manager:
+                should_throttle, delay = backpressure_manager.should_throttle_request()
+                if should_throttle:
+                    print(f"⏳ Applying backpressure: {delay}s delay")
+                    time.sleep(delay)
+            
+            # Get upload session with thread safety
+            upload_session = streaming_upload_manager.get_upload_status(upload_id)
+            if not upload_session:
+                print(f"❌ Upload session {upload_id} not found")
+                return jsonify({'error': 'Upload session not found'}), 404
+            
+            # Mark session as being processed to prevent concurrent access
+            upload_session['processing_thread'] = threading.current_thread().ident
+            upload_session['last_activity'] = time.time()
+            print(f"🔒 THREAD SAFETY: Session {upload_id} locked to thread {threading.current_thread().ident}")
         
         print(f"📁 Processing upload: {upload_session['filename']} ({upload_session['file_size'] / 1024 / 1024:.1f}MB)")
         
@@ -980,17 +992,44 @@ def stream_file_upload(upload_id):
                 if not user_database_id:
                     raise Exception("User database not found")
                 
-                # Save file metadata to user database (fixed key: file_id instead of file_upload_id)
+                # CRITICAL FIX 3: Thread-Safe ID Validation and Logging
+                with app.id_validation_lock:
+                    print(f"🔒 ID VALIDATION: Acquired ID validation lock for upload {upload_id}")
+                    
+                    # CRITICAL FIX 1: Enhanced ID Validation and Logging
+                    file_upload_id = result.get('file_upload_id') or result.get('file_id')
+                    if not file_upload_id:
+                        error_msg = f"ID CORRUPTION DETECTED: No valid file ID found in result. Available keys: {list(result.keys())}"
+                        print(f"🚨 CRITICAL ERROR: {error_msg}")
+                        print(f"🔍 DIAGNOSTIC: Full result object: {result}")
+                        print(f"🔍 DIAGNOSTIC: Upload session state: {upload_session.get('status', 'unknown')}")
+                        print(f"🔍 DIAGNOSTIC: Thread ID: {threading.current_thread().ident}")
+                        raise Exception(error_msg)
+                    
+                    # Additional ID corruption detection
+                    if isinstance(file_upload_id, str):
+                        if len(file_upload_id.strip()) == 0:
+                            raise Exception("ID CORRUPTION: file_upload_id is empty string")
+                        if file_upload_id.lower() in ['null', 'none', 'undefined']:
+                            raise Exception(f"ID CORRUPTION: file_upload_id contains invalid value: {file_upload_id}")
+                    
+                    print(f"🔍 ID VALIDATION: Using file_upload_id: {file_upload_id}")
+                    print(f"🔍 ID SOURCE: Retrieved from result key: {'file_upload_id' if result.get('file_upload_id') else 'file_id'}")
+                    print(f"🔍 ID LENGTH: {len(str(file_upload_id))} characters")
+                
+                # CRITICAL FIX 2: Consistent Key Usage - Always use file_upload_id
                 file_page_result = uploader.add_file_to_user_database(
                     user_database_id,
                     result['filename'],
                     result['bytes_uploaded'],
                     result['file_hash'],
-                    result['file_id'],  # Fixed: changed from file_upload_id to file_id
+                    file_upload_id,  # FIXED: Use validated file_upload_id consistently
                     is_public=False,
                     salt="",
                     original_filename=result.get('original_filename', result['filename'])
                 )
+                
+                print(f"🔍 DATABASE INTEGRATION: File added to user database with page ID: {file_page_result.get('id')}")
                 
                 # Add to global index
                 uploader.add_file_to_index(
@@ -1002,12 +1041,57 @@ def stream_file_upload(upload_id):
                 )
                 
                 print("💾 Database integration completed successfully")
+                print(f"🔍 FINAL VALIDATION: File page result ID: {file_page_result.get('id')}")
                 
             except Exception as db_error:
-                print(f"❌ Database integration failed: {db_error}")
-                # Log but don't fail the upload
-                import traceback
-                traceback.print_exc()
+                # CRITICAL FIX 4: Enhanced Error Handling for ID Mismatch
+                error_msg = str(db_error).lower()
+                if any(keyword in error_msg for keyword in ['id', 'mismatch', 'validation', 'null', 'empty']):
+                    print(f"🚨 ID MISMATCH ERROR DETECTED: {db_error}")
+                    print(f"🔍 DIAGNOSTIC INFO:")
+                    print(f"  - Upload ID: {upload_id}")
+                    print(f"  - Result keys: {list(result.keys()) if 'result' in locals() else 'N/A'}")
+                    print(f"  - File upload ID used: {file_upload_id if 'file_upload_id' in locals() else 'N/A'}")
+                    print(f"  - User database ID: {user_database_id}")
+                    
+                    # Add retry logic for ID validation errors
+                    if "file_upload_id" in error_msg or "null" in error_msg or "empty" in error_msg:
+                        print("🔄 RETRY LOGIC: Attempting database integration with alternative ID extraction")
+                        try:
+                            # Try alternative ID extraction methods
+                            alt_file_id = None
+                            if hasattr(result, 'get'):
+                                for key in ['id', 'upload_id', 'notion_file_id', 'page_id']:
+                                    if result.get(key):
+                                        alt_file_id = result.get(key)
+                                        print(f"🔍 RETRY: Found alternative ID '{alt_file_id}' from key '{key}'")
+                                        break
+                            
+                            if alt_file_id:
+                                file_page_result = uploader.add_file_to_user_database(
+                                    user_database_id,
+                                    result['filename'],
+                                    result['bytes_uploaded'],
+                                    result['file_hash'],
+                                    alt_file_id,
+                                    is_public=False,
+                                    salt="",
+                                    original_filename=result.get('original_filename', result['filename'])
+                                )
+                                print("🔄 RETRY SUCCESS: Database integration completed with alternative ID")
+                            else:
+                                raise Exception("No valid alternative ID found for retry")
+                                
+                        except Exception as retry_error:
+                            print(f"🚨 RETRY FAILED: {retry_error}")
+                            raise db_error  # Re-raise original error
+                    else:
+                        raise db_error
+                else:
+                    print(f"❌ Database integration failed: {db_error}")
+                    # Log but don't fail the upload for non-ID related errors
+                    import traceback
+                    traceback.print_exc()
             
             # Final progress update
             if socketio:

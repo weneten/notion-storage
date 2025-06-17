@@ -204,10 +204,32 @@ class NotionFileUploader:
                 raise Exception(f"Failed to create file upload: {response.text}")
                 
             result = response.json()
-            print(f"File upload created with ID: {result.get('id', 'unknown')}")
+            
+            # CRITICAL FIX 1: ID Validation on Upload Creation
+            upload_id = result.get('id')
+            if not upload_id:
+                error_msg = f"ID CORRUPTION: File upload creation succeeded but no ID returned. Response: {result}"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            
+            print(f"🔍 CREATE_UPLOAD: File upload created with ID: {upload_id}")
+            print(f"🔍 CREATE_UPLOAD: Response keys: {list(result.keys())}")
+            
+            # Additional validation
+            if isinstance(upload_id, str) and len(upload_id.strip()) == 0:
+                error_msg = f"ID CORRUPTION: Upload ID is empty string"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            
             return result
             
         except Exception as e:
+            # CRITICAL FIX 4: Enhanced Error Handling
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['id', 'creation', 'null']):
+                print(f"🚨 ID-RELATED ERROR in create_file_upload: {e}")
+                print(f"🔍 ERROR CONTEXT: payload={payload}")
+            
             print(f"ERROR in create_file_upload: {str(e)}")
             raise
 
@@ -246,7 +268,16 @@ class NotionFileUploader:
             raise Exception(f"File content upload failed with status {response.status_code}: {response.text}")
 
         result = response.json()
-        print(f"File content uploaded successfully. Status: {result.get('status')}")
+        
+        # CRITICAL FIX 1: ID Validation on File Content Upload
+        print(f"🔍 SEND_CONTENT: File content uploaded successfully. Status: {result.get('status')}")
+        print(f"🔍 SEND_CONTENT: Response keys: {list(result.keys())}")
+        
+        # Validate that the file upload ID is preserved in the response
+        response_file_info = result.get('file', {})
+        if response_file_info:
+            print(f"🔍 SEND_CONTENT: File info in response: {list(response_file_info.keys())}")
+        
         return result
 
     def create_file_block(self, page_id: str, file_upload_id: str, filename: str) -> Dict[str, Any]:
@@ -453,15 +484,34 @@ class NotionFileUploader:
             # Get the download URL
             download_url = upload_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}")
 
-            return {
+            # CRITICAL FIX 1: ID Validation on Upload Success
+            print(f"🔍 SINGLE_UPLOAD: Success with file_upload_id: {file_upload_id}")
+            print(f"🔍 SINGLE_UPLOAD: Download URL: {download_url[:50]}..." if download_url else "No download URL")
+            
+            result = {
                 "message": "File uploaded successfully",
                 "download_link": download_url,
                 "original_filename": original_filename,
                 "database_id": database_id,
                 "file_upload_id": file_upload_id
             }
+            
+            # Validate result before returning
+            if not result.get('file_upload_id'):
+                error_msg = f"ID CORRUPTION: Result missing file_upload_id after successful upload"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            
+            return result
 
         except Exception as e:
+            # CRITICAL FIX 4: Enhanced Error Handling
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['id', 'upload_id', 'null', 'empty']):
+                print(f"🚨 ID-RELATED ERROR in single file upload: {e}")
+                print(f"🔍 ERROR CONTEXT: filename={filename}, file_size={file_size}")
+                print(f"🔍 ERROR CONTEXT: file_upload_id={file_upload_id if 'file_upload_id' in locals() else 'N/A'}")
+            
             raise Exception(f"Error uploading single file: {e}")
 
     def upload_large_file_multipart_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str, chunk_size: int = 5 * 1024 * 1024, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -531,15 +581,36 @@ class NotionFileUploader:
 
             # Return the download URL and other info
             download_url = complete_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}")
-            return {
+            
+            # CRITICAL FIX 1: ID Validation on Multipart Upload Success
+            print(f"🔍 MULTIPART_UPLOAD: Success with file_upload_id: {file_upload_id}")
+            print(f"🔍 MULTIPART_UPLOAD: Download URL: {download_url[:50]}..." if download_url else "No download URL")
+            
+            result = {
                 "message": "File uploaded successfully",
                 "download_link": download_url,
                 "original_filename": original_filename,
                 "database_id": database_id,
                 "file_upload_id": file_upload_id
             }
+            
+            # Validate result before returning
+            if not result.get('file_upload_id'):
+                error_msg = f"ID CORRUPTION: Multipart result missing file_upload_id after successful upload"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            
+            return result
 
         except Exception as e:
+            # CRITICAL FIX 4: Enhanced Error Handling for Multipart Uploads
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['id', 'upload_id', 'null', 'empty', 'part']):
+                print(f"🚨 ID-RELATED ERROR in multipart upload: {e}")
+                print(f"🔍 ERROR CONTEXT: filename={filename}, file_size={file_size}")
+                print(f"🔍 ERROR CONTEXT: file_upload_id={file_upload_id if 'file_upload_id' in locals() else 'N/A'}")
+                print(f"🔍 ERROR CONTEXT: multipart_upload_info={multipart_upload_info if 'multipart_upload_info' in locals() else 'N/A'}")
+            
             raise Exception(f"Error uploading large file multipart: {e}")
 
     def upload_part_thread(self, upload_id: str, part_number: int, upload_url: str, chunk: bytes, filename: str, total_size: int, initial_uploaded_bytes: int, lock: threading.Lock, content_type: str, total_parts: int, session_id: str = None):
@@ -1355,11 +1426,30 @@ class NotionFileUploader:
             raise
 
     def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None) -> Dict[str, Any]:
-        """Add a file entry to a user's Notion database"""
+        """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
+        # CRITICAL FIX 1: Enhanced ID Validation and Logging
+        print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
+        print(f"🔍 ADD_FILE_TO_DB: Parameter types - file_upload_id: {type(file_upload_id)}, database_id: {type(database_id)}")
+        
         if not file_upload_id:
-            raise Exception("file_upload_id is required but was null or empty")
+            error_msg = f"ID VALIDATION FAILED: file_upload_id is required but was null or empty. Received: {repr(file_upload_id)}"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+
+        # Additional validation for string content
+        if isinstance(file_upload_id, str):
+            if len(file_upload_id.strip()) == 0:
+                error_msg = f"ID VALIDATION FAILED: file_upload_id is empty string. Length: {len(file_upload_id)}"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            if file_upload_id.lower() in ['null', 'none', 'undefined', 'nan']:
+                error_msg = f"ID VALIDATION FAILED: file_upload_id contains invalid value: {file_upload_id}"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+
+        print(f"🔍 ID VALIDATION PASSED: file_upload_id '{file_upload_id}' is valid")
 
         # Use original_filename if provided, otherwise fall back to filename
         display_filename = original_filename if original_filename else filename
@@ -1417,15 +1507,33 @@ class NotionFileUploader:
 
         headers = {**self.headers, "Content-Type": "application/json"}
 
-        print(f"Adding file to user database with upload ID: {file_upload_id}")
-        print(f"  Original filename: {display_filename}")
-        print(f"  Stored as: file.txt")
+        print(f"🔍 DATABASE OPERATION: Adding file to user database with upload ID: {file_upload_id}")
+        print(f"🔍 DATABASE OPERATION: Original filename: {display_filename}")
+        print(f"🔍 DATABASE OPERATION: Stored as: file.txt")
+        print(f"🔍 DATABASE OPERATION: Database ID: {database_id}")
+        print(f"🔍 DATABASE OPERATION: Payload file_upload_id: {payload['properties']['file']['files'][0]['file_upload']['id']}")
+        
+        # Verify payload integrity before sending
+        payload_file_id = payload['properties']['file']['files'][0]['file_upload']['id']
+        if payload_file_id != file_upload_id:
+            error_msg = f"ID CORRUPTION: Payload file_upload_id '{payload_file_id}' does not match parameter '{file_upload_id}'"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+        
         response = requests.post(url, json=payload, headers=headers)
 
         if response.status_code != 200:
-            raise Exception(f"Failed to add file to user database: {response.text}")
+            error_msg = f"Failed to add file to user database: {response.text}"
+            print(f"🚨 DATABASE ERROR: {error_msg}")
+            print(f"🔍 DATABASE ERROR: Request payload: {payload}")
+            raise Exception(error_msg)
 
-        return response.json()
+        result = response.json()
+        result_id = result.get('id')
+        print(f"🔍 DATABASE SUCCESS: File added with page ID: {result_id}")
+        print(f"🔍 DATABASE SUCCESS: Response keys: {list(result.keys())}")
+        
+        return result
 
     def get_file_by_salted_sha512_hash(self, salted_sha512_hash: str) -> Optional[Dict[str, Any]]:
         """

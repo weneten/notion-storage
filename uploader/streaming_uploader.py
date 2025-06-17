@@ -91,13 +91,24 @@ class NotionStreamingUploader:
             print(f"DEBUG: File hash calculated: {file_hash[:16]}...")
             print(f"DEBUG: Salted hash: {salted_hash[:16]}...")
             
-            # Add to user database
+            # CRITICAL FIX 1 & 2: ID Validation and Consistent Key Usage
+            file_upload_id = notion_result.get('file_upload_id') or notion_result.get('file_id')
+            print(f"🔍 STREAMING_UPLOADER: Database integration starting")
+            print(f"🔍 STREAMING_UPLOADER: notion_result keys: {list(notion_result.keys())}")
+            print(f"🔍 STREAMING_UPLOADER: Extracted file_upload_id: {file_upload_id}")
+            
+            if not file_upload_id:
+                error_msg = f"ID EXTRACTION FAILED: No valid file_upload_id found in notion_result. Available keys: {list(notion_result.keys())}"
+                print(f"🚨 STREAMING_UPLOADER ERROR: {error_msg}")
+                raise Exception(error_msg)
+            
+            # Add to user database with validated ID
             user_db_result = self.notion_uploader.add_file_to_user_database(
                 database_id=upload_session['user_database_id'],
                 filename=upload_session['filename'],
                 file_size=upload_session['file_size'],
                 file_hash=salted_hash,
-                file_upload_id=notion_result.get('file_upload_id'),
+                file_upload_id=file_upload_id,  # Use validated ID
                 original_filename=upload_session['filename'],
                 salt=salt
             )
@@ -332,8 +343,22 @@ class NotionStreamingUploader:
                     original_filename=filename  # Keep original filename for database
                 )
                 
+                # CRITICAL FIX 1: ID Validation for single-part uploads
+                file_upload_id = result.get('file_upload_id')
+                if not file_upload_id:
+                    # Try alternative keys if file_upload_id is missing
+                    file_upload_id = result.get('id') or result.get('upload_id')
+                    print(f"🔍 SINGLE_PART: file_upload_id missing, using alternative: {file_upload_id}")
+                
+                if not file_upload_id:
+                    print(f"🚨 SINGLE_PART ERROR: No valid ID found in result: {result}")
+                    file_upload_id = str(uuid.uuid4())  # Generate fallback ID
+                    print(f"🔍 SINGLE_PART: Generated fallback ID: {file_upload_id}")
+                
+                print(f"🔍 SINGLE_PART: Final file_upload_id: {file_upload_id}")
+                
                 return {
-                    'file_upload_id': result.get('file_upload_id', str(uuid.uuid4())),
+                    'file_upload_id': file_upload_id,
                     'status': 'success',
                     'size': file_size,
                     'result': result
@@ -359,7 +384,13 @@ class StreamingUploadManager:
     def __init__(self, api_token: str, socketio: Optional[SocketIO] = None, notion_uploader: Optional[NotionFileUploader] = None):
         self.uploader = NotionStreamingUploader(api_token, socketio, notion_uploader)
         self.active_uploads: Dict[str, Dict[str, Any]] = {}
-        self.upload_lock = threading.Lock()
+        
+        # CRITICAL FIX 3: Enhanced Thread Synchronization
+        self.upload_lock = threading.Lock()          # Master lock for upload operations
+        self.session_locks: Dict[str, threading.Lock] = {}  # Per-session locks
+        self.id_tracking_lock = threading.Lock()     # Lock for ID tracking operations
+        
+        print("🔒 THREAD SAFETY: StreamingUploadManager initialized with enhanced synchronization")
     
     def create_upload_session(self, filename: str, file_size: int, user_database_id: str,
                             progress_callback: Optional[Callable] = None) -> str:
@@ -379,25 +410,56 @@ class StreamingUploadManager:
     
     def process_upload_stream(self, upload_id: str, stream_generator) -> Dict[str, Any]:
         """
-        Process an upload stream for the given upload ID
+        Process an upload stream for the given upload ID with enhanced thread safety
         """
+        # CRITICAL FIX 3: Thread-Safe Session Management
+        print(f"🔒 THREAD SAFETY: Starting process_upload_stream for {upload_id}")
+        
+        # Get or create session-specific lock
         with self.upload_lock:
             if upload_id not in self.active_uploads:
                 raise ValueError(f"Upload session {upload_id} not found")
             
+            # Create per-session lock if it doesn't exist
+            if upload_id not in self.session_locks:
+                self.session_locks[upload_id] = threading.Lock()
+                print(f"🔒 THREAD SAFETY: Created session lock for {upload_id}")
+            
             upload_session = self.active_uploads[upload_id]
+            session_lock = self.session_locks[upload_id]
         
-        try:
-            result = self.uploader.process_stream(upload_session, stream_generator)
-            return result
-        finally:
-            # Clean up completed/failed uploads
-            with self.upload_lock:
-                if upload_id in self.active_uploads:
-                    session_status = self.active_uploads[upload_id]['status']
-                    if session_status in ['completed', 'failed']:
-                        # Keep for a short time for status queries, but could be cleaned up
-                        pass
+        # Process with session-specific lock to prevent concurrent processing of same upload
+        with session_lock:
+            print(f"🔒 THREAD SAFETY: Acquired session lock for {upload_id}")
+            
+            # Additional check to prevent race conditions
+            if upload_session.get('status') == 'processing':
+                raise ValueError(f"Upload session {upload_id} is already being processed")
+            
+            upload_session['status'] = 'processing'
+            upload_session['processing_thread'] = threading.current_thread().ident
+            
+            try:
+                result = self.uploader.process_stream(upload_session, stream_generator)
+                print(f"🔒 THREAD SAFETY: Processing completed successfully for {upload_id}")
+                return result
+            except Exception as e:
+                print(f"🔒 THREAD SAFETY: Processing failed for {upload_id}: {e}")
+                upload_session['status'] = 'failed'
+                raise
+            finally:
+                # Clean up completed/failed uploads
+                with self.upload_lock:
+                    if upload_id in self.active_uploads:
+                        session_status = self.active_uploads[upload_id]['status']
+                        if session_status in ['completed', 'failed']:
+                            # Keep for a short time for status queries, but could be cleaned up
+                            print(f"🔒 THREAD SAFETY: Session {upload_id} marked as {session_status}")
+                            
+                        # Clean up session lock for completed uploads
+                        if session_status == 'completed' and upload_id in self.session_locks:
+                            del self.session_locks[upload_id]
+                            print(f"🔒 THREAD SAFETY: Cleaned up session lock for {upload_id}")
     
     def get_upload_status(self, upload_id: str) -> Optional[Dict[str, Any]]:
         """
