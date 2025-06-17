@@ -113,81 +113,6 @@ class MemoryCheckpointStorage(CheckpointStorage):
             return expired_keys
 
 
-class RedisCheckpointStorage(CheckpointStorage):
-    """Redis-based checkpoint storage (recommended for production)"""
-    
-    def __init__(self, redis_url: Optional[str] = None):
-        try:
-            import redis
-            if redis_url:
-                self.redis = redis.from_url(redis_url)
-            else:
-                # Try to connect to local Redis
-                self.redis = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-            
-            # Test connection
-            self.redis.ping()
-            self.available = True
-            print("✅ Redis checkpoint storage initialized")
-            
-        except Exception as e:
-            print(f"⚠️  Redis not available, falling back to memory storage: {e}")
-            self.available = False
-            self.memory_storage = MemoryCheckpointStorage()
-    
-    def save(self, key: str, checkpoint: UploadCheckpoint) -> None:
-        if not self.available:
-            return self.memory_storage.save(key, checkpoint)
-        
-        try:
-            # Calculate expiration time
-            ttl_seconds = int(checkpoint.expires_at - time.time())
-            if ttl_seconds > 0:
-                self.redis.setex(
-                    f"checkpoint:{key}",
-                    ttl_seconds,
-                    json.dumps(checkpoint.to_dict())
-                )
-        except Exception as e:
-            print(f"Error saving checkpoint to Redis: {e}")
-            if hasattr(self, 'memory_storage'):
-                self.memory_storage.save(key, checkpoint)
-    
-    def load(self, key: str) -> Optional[UploadCheckpoint]:
-        if not self.available:
-            return self.memory_storage.load(key)
-        
-        try:
-            data_json = self.redis.get(f"checkpoint:{key}")
-            if data_json:
-                data = json.loads(data_json)
-                return UploadCheckpoint.from_dict(data)
-            return None
-        except Exception as e:
-            print(f"Error loading checkpoint from Redis: {e}")
-            if hasattr(self, 'memory_storage'):
-                return self.memory_storage.load(key)
-            return None
-    
-    def delete(self, key: str) -> None:
-        if not self.available:
-            return self.memory_storage.delete(key)
-        
-        try:
-            self.redis.delete(f"checkpoint:{key}")
-        except Exception as e:
-            print(f"Error deleting checkpoint from Redis: {e}")
-    
-    def list_expired(self) -> List[str]:
-        if not self.available:
-            return self.memory_storage.list_expired()
-        
-        try:
-            # Redis automatically expires keys, so we don't need to track expired ones
-            return []
-        except Exception as e:
-            print(f"Error listing expired checkpoints from Redis: {e}")
-            return []
 
 
 class CheckpointManager:
@@ -200,14 +125,11 @@ class CheckpointManager:
         self.checkpoint_interval = checkpoint_interval  # Save every N parts
         self.lock = threading.Lock()
         
-        # Initialize storage backend
-        if storage_backend == 'redis':
-            self.storage = RedisCheckpointStorage()
-        else:
-            self.storage = MemoryCheckpointStorage()
+        # Initialize memory storage (Redis dependency removed)
+        self.storage = MemoryCheckpointStorage()
             
         print(f"📋 CheckpointManager initialized:")
-        print(f"   Storage: {storage_backend}")
+        print(f"   Storage: memory")
         print(f"   Interval: {checkpoint_interval} parts")
     
     def create_checkpoint(self, upload_session: Dict, multipart_upload_id: str, 
@@ -390,8 +312,8 @@ class CheckpointManager:
 
 # Global checkpoint manager instance
 checkpoint_manager = CheckpointManager(
-    storage_backend='redis',  # Try Redis first, fallback to memory
-    checkpoint_interval=50    # Save every 50 parts (250MB for 5MB chunks)
+    storage_backend='memory',  # Use memory storage (Redis dependency removed)
+    checkpoint_interval=50     # Save every 50 parts (250MB for 5MB chunks)
 )
 
 

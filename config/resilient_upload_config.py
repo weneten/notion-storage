@@ -95,10 +95,9 @@ class ResilientUploadConfig:
         self.checkpoint_config = {
             'enabled': os.getenv('CHECKPOINT_ENABLED', 'true').lower() == 'true',
             'interval_parts': int(os.getenv('CHECKPOINT_INTERVAL_PARTS', '50')),  # Every 250MB
-            'storage_backend': os.getenv('CHECKPOINT_STORAGE_BACKEND', 'redis'),
+            'storage_backend': os.getenv('CHECKPOINT_STORAGE_BACKEND', 'memory'),
             'expiration_hours': int(os.getenv('CHECKPOINT_EXPIRATION_HOURS', '24')),
-            'cleanup_interval': int(os.getenv('CHECKPOINT_CLEANUP_INTERVAL', '3600')),  # 1 hour
-            'redis_url': os.getenv('REDIS_URL', None)
+            'cleanup_interval': int(os.getenv('CHECKPOINT_CLEANUP_INTERVAL', '3600'))  # 1 hour
         }
         
         # Backpressure Configuration
