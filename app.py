@@ -939,7 +939,7 @@ def stream_file_upload(upload_id):
                     result['filename'],
                     result['bytes_uploaded'],
                     result['file_hash'],
-                    result['file_id'],
+                    result['file_upload_id'],
                     is_public=False,  # Default to private
                     salt="",  # Add salt if needed
                     original_filename=result.get('original_filename', result['filename'])
