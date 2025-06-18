@@ -11,13 +11,9 @@ import time
 import hashlib
 import secrets
 
-# Import resource management
-try:
-    from .resource_manager import resource_manager, backpressure_manager
-except ImportError:
-    # Fallback if resource manager not available
-    resource_manager = None
-    backpressure_manager = None
+# Simple configuration for upload limits
+MAX_WORKERS = 4
+CHUNK_SIZE = 5 * 1024 * 1024  # 5MB chunks for Notion API
 
 # Import checkpoint management
 try:
@@ -35,20 +31,13 @@ class ParallelChunkProcessor:
     """Handles parallel upload of file chunks to Notion API with resource awareness"""
     
     def __init__(self, max_workers=4, notion_uploader=None, upload_session=None, socketio=None):
-        # Get optimal worker count from resource manager
-        if resource_manager:
-            optimal_workers = resource_manager.get_optimal_worker_count()
-            self.max_workers = min(max_workers, optimal_workers)
-            print(f"🎯 Adaptive workers: requested {max_workers}, using {self.max_workers} based on resources")
-        else:
-            self.max_workers = max_workers
-            
+        self.max_workers = min(max_workers, MAX_WORKERS)
         self.notion_uploader = notion_uploader
         self.upload_session = upload_session
         self.socketio = socketio
-        self.chunk_size = 5 * 1024 * 1024  # 5MB chunks for Notion API
+        self.chunk_size = CHUNK_SIZE
         
-        # Create executor with adaptive worker count
+        # Create executor with fixed worker count
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.semaphore = threading.Semaphore(self.max_workers)
         self.part_futures = {}
@@ -56,29 +45,15 @@ class ParallelChunkProcessor:
         self.upload_error = None
         self.lock = threading.Lock()
         
-        # Resource tracking
-        self.memory_usage_tracker = {}
-        self.last_resource_check = 0
-        self.resource_check_interval = 10  # Check every 10 seconds
+        print(f"🎯 Parallel processor initialized with {self.max_workers} workers")
         
     def process_stream(self, stream_generator):
-        """Process incoming stream with resource-aware parallel chunk uploads and checkpointing"""
+        """Process incoming stream with parallel chunk uploads and checkpointing"""
         upload_id = self.upload_session.get('upload_id', 'unknown')
         checkpoint_key = None
         
-        # Register upload start with resource manager
-        if resource_manager:
-            resource_manager.register_upload_start(upload_id)
-        
         try:
-            print(f"🚀 Starting resilient parallel processing for upload {upload_id}")
-            
-            # Check if we should proceed with this upload
-            if resource_manager:
-                file_size = self.upload_session.get('file_size', 0)
-                should_accept, reason = resource_manager.should_accept_upload(file_size)
-                if not should_accept:
-                    raise Exception(f"Upload rejected due to resource constraints: {reason}")
+            print(f"🚀 Starting parallel processing for upload {upload_id}")
             
             # Initialize multipart upload
             multipart_info = self._initialize_multipart_upload()
@@ -100,10 +75,6 @@ class ParallelChunkProcessor:
                 if not chunk:
                     break
                 
-                # Check resources periodically and apply backpressure if needed
-                if resource_manager and part_number % 10 == 0:  # Every 10 chunks (50MB)
-                    self._check_and_apply_backpressure(part_number)
-                
                 buffer.write(chunk)
                 buffer_size += len(chunk)
                 bytes_received += len(chunk)
@@ -121,7 +92,7 @@ class ParallelChunkProcessor:
                     buffer.write(remaining_data)
                     buffer_size = len(remaining_data)
                     
-                    # Submit chunk for parallel upload with resource awareness
+                    # Submit chunk for parallel upload
                     self._submit_chunk_upload_with_checkpoint(part_number, part_data, multipart_info, checkpoint_key)
                     part_number += 1
                     
@@ -166,9 +137,7 @@ class ParallelChunkProcessor:
             self._abort_multipart_upload(multipart_info if 'multipart_info' in locals() else None)
             raise
         finally:
-            # Always unregister upload and cleanup
-            if resource_manager:
-                resource_manager.register_upload_end(upload_id)
+            # Cleanup executor
             self.executor.shutdown(wait=False)
     
     def _initialize_multipart_upload(self):
@@ -191,43 +160,10 @@ class ParallelChunkProcessor:
         
         return multipart_info
     
-    def _submit_chunk_upload_resource_aware(self, part_number, chunk_data, multipart_info, is_final=False):
-        """Submit a chunk for parallel upload with resource awareness"""
-        if self.upload_error:
-            return
-        
-        # Check resources before submitting
-        if resource_manager:
-            # Dynamically adjust worker count if needed
-            optimal_workers = resource_manager.get_optimal_worker_count()
-            if optimal_workers != self.max_workers:
-                self._adjust_worker_count(optimal_workers)
-        
-        print(f"📤 Submitting part {part_number} for upload ({len(chunk_data)} bytes)")
-        
-        future = self.executor.submit(
-            self._upload_chunk_with_semaphore,
-            part_number, chunk_data, multipart_info
-        )
-        
-        with self.lock:
-            self.part_futures[part_number] = future
-            
-    def _submit_chunk_upload(self, part_number, chunk_data, multipart_info, is_final=False):
-        """Legacy method - redirects to resource-aware version"""
-        return self._submit_chunk_upload_resource_aware(part_number, chunk_data, multipart_info, is_final)
-    
     def _submit_chunk_upload_with_checkpoint(self, part_number, chunk_data, multipart_info, checkpoint_key, is_final=False):
         """Submit a chunk for parallel upload with checkpoint tracking"""
         if self.upload_error:
             return
-        
-        # Check resources before submitting
-        if resource_manager:
-            # Dynamically adjust worker count if needed
-            optimal_workers = resource_manager.get_optimal_worker_count()
-            if optimal_workers != self.max_workers:
-                self._adjust_worker_count(optimal_workers)
         
         print(f"📤 Submitting part {part_number} for upload with checkpoint ({len(chunk_data)} bytes)")
         
@@ -239,55 +175,6 @@ class ParallelChunkProcessor:
         with self.lock:
             self.part_futures[part_number] = future
     
-    def _check_and_apply_backpressure(self, part_number):
-        """Check resources and apply backpressure if needed"""
-        if not resource_manager:
-            return
-            
-        current_time = time.time()
-        if current_time - self.last_resource_check < self.resource_check_interval:
-            return
-            
-        self.last_resource_check = current_time
-        
-        # Get resource stats
-        stats = resource_manager.get_resource_stats()
-        
-        # Log resource usage for critical parts
-        if part_number >= 200:  # Around 1GB mark where issues typically occur
-            print(f"🎯 CRITICAL_PART_RESOURCES: Part {part_number}")
-            print(f"   Memory: {stats['memory_usage_mb']:.1f}MB ({stats['memory_usage_percent']:.1f}%)")
-            print(f"   CPU: {stats['cpu_usage_percent']:.1f}%")
-            print(f"   Active uploads: {stats['active_uploads']}")
-            print(f"   Workers: {stats['optimal_workers']}")
-        
-        # Apply backpressure if needed
-        delay = resource_manager.apply_backpressure_delay()
-        if delay > 0:
-            print(f"⏳ Applying backpressure: {delay}s delay at part {part_number}")
-            time.sleep(delay)
-            
-    def _adjust_worker_count(self, new_worker_count):
-        """Dynamically adjust worker count based on resource availability"""
-        if new_worker_count == self.max_workers:
-            return
-            
-        print(f"🔄 Adjusting worker count: {self.max_workers} → {new_worker_count}")
-        
-        # Update semaphore capacity
-        if new_worker_count > self.max_workers:
-            # Increase capacity
-            for _ in range(new_worker_count - self.max_workers):
-                self.semaphore.release()
-        else:
-            # Decrease capacity by acquiring permits
-            for _ in range(self.max_workers - new_worker_count):
-                try:
-                    self.semaphore.acquire(blocking=False)
-                except:
-                    pass  # If can't acquire, that's fine
-        
-        self.max_workers = new_worker_count
     
     def _upload_chunk_with_checkpoint(self, part_number, chunk_data, multipart_info, checkpoint_key):
         """Upload single chunk with checkpoint tracking and enhanced resilience"""
@@ -353,10 +240,6 @@ class ParallelChunkProcessor:
                     self.upload_error = e
                 raise
     
-    def _upload_chunk_with_semaphore(self, part_number, chunk_data, multipart_info):
-        """Legacy method - redirects to checkpoint-aware version"""
-        return self._upload_chunk_with_checkpoint(part_number, chunk_data, multipart_info, None)
-    
     def _wait_for_all_uploads(self):
         """Wait for all parallel uploads to complete"""
         try:
@@ -420,41 +303,6 @@ class ParallelChunkProcessor:
                 pass
         except Exception as e:
             print(f"Warning: Failed to abort multipart upload: {e}")
-
-
-class MemoryManager:
-    """Manages memory usage during file uploads"""
-    
-    def __init__(self, max_memory_mb=150):
-        self.max_memory_bytes = max_memory_mb * 1024 * 1024
-        self.current_memory_usage = 0
-        self.memory_lock = threading.Lock()
-        self.chunk_registry = {}  # Track active chunks
-        
-    def allocate_chunk_memory(self, chunk_id, chunk_size):
-        """Allocate memory for a chunk and check limits"""
-        with self.memory_lock:
-            if self.current_memory_usage + chunk_size > self.max_memory_bytes:
-                raise MemoryError(f"Memory limit exceeded: {self.current_memory_usage + chunk_size} bytes")
-            
-            self.chunk_registry[chunk_id] = chunk_size
-            self.current_memory_usage += chunk_size
-            
-    def free_chunk_memory(self, chunk_id):
-        """Free memory for a completed chunk"""
-        with self.memory_lock:
-            if chunk_id in self.chunk_registry:
-                chunk_size = self.chunk_registry.pop(chunk_id)
-                self.current_memory_usage = max(0, self.current_memory_usage - chunk_size)
-                
-    def get_memory_stats(self):
-        """Get current memory usage statistics"""
-        with self.memory_lock:
-            return {
-                'tracked_usage': self.current_memory_usage,
-                'active_chunks': len(self.chunk_registry),
-                'max_allowed': self.max_memory_bytes
-            }
 
 
 def generate_salt(length=32):

@@ -20,29 +20,13 @@ import time
 import uuid
 import random
 import string
-import psutil  # Add psutil for memory monitoring
 import json
 from flask_socketio import emit
 
-# Function to get current memory usage
-def get_memory_usage():
-    """Get current memory usage of the process in MB"""
+# Function to clean up old upload sessions periodically
+def cleanup_old_sessions():
+    """Clean up old upload sessions every minute"""
     try:
-        process = psutil.Process(os.getpid())
-        memory_info = process.memory_info()
-        memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
-        return memory_mb
-    except Exception as e:
-        print(f"Error getting memory usage: {e}")
-        return 0
-
-# Function to log memory usage periodically and clean up old sessions
-def log_memory_usage():
-    """Log memory usage every minute and clean up old upload sessions"""
-    try:
-        memory_mb = get_memory_usage()
-        cached_chunks_count = 0
-        cached_chunks_size = 0
         current_time = time.time()
         
         if hasattr(app, 'upload_processors'):
@@ -52,11 +36,6 @@ def log_memory_usage():
                 last_activity = upload_data.get('last_activity', 0)
                 if current_time - last_activity > 1800:  # 30 minutes
                     expired_sessions.append(upload_id)
-                else:
-                    # Count active sessions
-                    cached_chunks = upload_data.get('cached_chunks', {})
-                    cached_chunks_count += len(cached_chunks)
-                    cached_chunks_size += sum(len(chunk) for chunk in cached_chunks.values())
             
             # Clean up expired sessions
             for upload_id in expired_sessions:
@@ -74,37 +53,14 @@ def log_memory_usage():
                 del app.upload_metadata[session_id]
                 print(f"Cleaned up expired metadata for session: {session_id}")
         
-        cached_chunks_mb = cached_chunks_size / (1024 * 1024)
         active_sessions = len(app.upload_processors) if hasattr(app, 'upload_processors') else 0
-        print(f"MEMORY: Process using {memory_mb:.2f} MB | Active sessions: {active_sessions} | Cached chunks: {cached_chunks_count} ({cached_chunks_mb:.2f} MB)")
+        print(f"SESSION_CLEANUP: Active sessions: {active_sessions}")
         
     except Exception as e:
-        print(f"Error in memory logging: {e}")
+        print(f"Error in session cleanup: {e}")
         
     # Schedule next check
-    threading.Timer(60, log_memory_usage).start()
-    
-# Function to log memory usage periodically
-def log_memory_usage_old():
-    """Log memory usage every minute"""
-    try:
-        memory_mb = get_memory_usage()
-        cached_chunks_count = 0
-        cached_chunks_size = 0
-        
-        if hasattr(app, 'upload_processors'):
-            for upload_id, upload_data in app.upload_processors.items():
-                cached_chunks = upload_data.get('cached_chunks', {})
-                cached_chunks_count += len(cached_chunks)
-                cached_chunks_size += sum(len(chunk) for chunk in cached_chunks.values())
-        
-        cached_chunks_mb = cached_chunks_size / (1024 * 1024)
-        print(f"MEMORY: Process using {memory_mb:.2f} MB | Cached chunks: {cached_chunks_count} ({cached_chunks_mb:.2f} MB)")
-    except Exception as e:
-        print(f"Error in memory logging: {e}")
-        
-    # Schedule next check
-    threading.Timer(60, log_memory_usage_old).start()
+    threading.Timer(60, cleanup_old_sessions).start()
     
 # Load environment variables from .env file
 load_dotenv()
@@ -122,20 +78,6 @@ socketio = SocketIO(
     ping_interval=25
 )
 
-# Add memory limit protection
-MAX_MEMORY_PERCENT = 80  # Max memory usage percentage before rejecting uploads
-
-# Function to check if memory usage is too high
-def is_memory_usage_high():
-    try:
-        process = psutil.Process(os.getpid())
-        memory_info = process.memory_info()
-        memory_percent = process.memory_percent()
-        print(f"DEBUG: Current memory usage: {memory_percent:.2f}% ({memory_info.rss / (1024 * 1024):.2f} MB)")
-        return memory_percent > MAX_MEMORY_PERCENT
-    except Exception as e:
-        print(f"ERROR checking memory usage: {e}")
-        return False  # Assume it's safe if we can't check
 
 # Initialize global upload state containers with thread synchronization
 app.upload_locks = {}
@@ -875,29 +817,17 @@ def stream_file_upload(upload_id):
     """
     Handle streaming file upload with enhanced resilience, resource management, and circuit breaker protection
     """
-    # Import resource management
+    # Import circuit breaker for reliability
     try:
-        from uploader.resource_manager import resource_manager, backpressure_manager, log_resource_usage
         from uploader.circuit_breaker import upload_circuit_breaker, CircuitBreakerOpenError
     except ImportError:
-        resource_manager = None
-        backpressure_manager = None
         upload_circuit_breaker = None
-        log_resource_usage = lambda: None
     
     try:
         # CRITICAL FIX 3: Thread Synchronization - Protect upload session access
         with app.upload_session_lock:
-            print(f"🚀 Resilient streaming upload initiated for upload_id: {upload_id}")
+            print(f"🚀 Streaming upload initiated for upload_id: {upload_id}")
             print(f"🔒 THREAD SAFETY: Acquired upload session lock for {upload_id}")
-            log_resource_usage()
-            
-            # Check resource constraints before proceeding
-            if resource_manager:
-                should_throttle, delay = backpressure_manager.should_throttle_request()
-                if should_throttle:
-                    print(f"⏳ Applying backpressure: {delay}s delay")
-                    time.sleep(delay)
             
             # Get upload session with thread safety
             upload_session = streaming_upload_manager.get_upload_status(upload_id)
@@ -912,13 +842,6 @@ def stream_file_upload(upload_id):
         
         print(f"📁 Processing upload: {upload_session['filename']} ({upload_session['file_size'] / 1024 / 1024:.1f}MB)")
         
-        # Resource-aware upload acceptance check
-        if resource_manager:
-            should_accept, reason = resource_manager.should_accept_upload(upload_session['file_size'])
-            if not should_accept:
-                print(f"🚫 Upload rejected: {reason}")
-                return jsonify({'error': f'Upload rejected due to resource constraints: {reason}'}), 507
-        
         # Verify file size matches headers
         content_length = request.headers.get('Content-Length')
         expected_size = upload_session['file_size']
@@ -927,27 +850,16 @@ def stream_file_upload(upload_id):
             print(f"❌ Content-Length mismatch: {content_length} vs {expected_size}")
             return jsonify({'error': 'Content-Length mismatch'}), 400
         
-        # Enter upload queue for backpressure management
-        if backpressure_manager:
-            backpressure_manager.enter_queue()
-        
         try:
             # Create a resource-aware stream generator
-            def resilient_stream_generator():
+            def stream_generator():
                 try:
-                    print("📡 Starting resilient stream reading...")
+                    print("📡 Starting stream reading...")
                     chunk_size = 64 * 1024  # 64KB chunks for memory efficiency
                     total_read = 0
                     last_log_mb = 0
                     
                     while True:
-                        # Check memory pressure before reading more data
-                        if resource_manager and total_read > 0:
-                            stats = resource_manager.get_resource_stats()
-                            if stats['memory_usage_mb'] > 400:  # 80% of 512MB
-                                print(f"⚠️  Memory pressure detected: {stats['memory_usage_mb']:.1f}MB")
-                                time.sleep(0.1)  # Brief pause to let system recover
-                        
                         chunk = request.stream.read(chunk_size)
                         if not chunk:
                             print(f"📡 Stream completed, total read: {total_read / 1024 / 1024:.1f}MB")
@@ -967,11 +879,11 @@ def stream_file_upload(upload_id):
                     print(f"❌ Error reading request stream: {e}")
                     raise
             
-            print("🔄 Processing upload with enhanced resilience...")
+            print("🔄 Processing upload...")
             
             # Process upload with circuit breaker protection
             def upload_with_circuit_breaker():
-                return streaming_upload_manager.process_upload_stream(upload_id, resilient_stream_generator())
+                return streaming_upload_manager.process_upload_stream(upload_id, stream_generator())
             
             if upload_circuit_breaker:
                 try:
@@ -1000,10 +912,6 @@ def stream_file_upload(upload_id):
                     'total_size': result['bytes_uploaded']
                 })
             
-            # Log final resource usage
-            if resource_manager:
-                log_resource_usage()
-            
             return jsonify({
                 'status': 'completed',
                 'upload_id': upload_id,
@@ -1024,10 +932,6 @@ def stream_file_upload(upload_id):
             import traceback
             traceback.print_exc()
             return jsonify({'error': f'Upload failed: {str(e)}'}), 500
-        finally:
-            # Always exit queue
-            if backpressure_manager:
-                backpressure_manager.exit_queue()
         
     except Exception as e:
         print(f"💥 Critical error in streaming upload endpoint: {e}")
@@ -1047,16 +951,14 @@ def get_upload_status(upload_id):
         if not upload_session:
             return jsonify({'error': 'Upload session not found'}), 404
         
-        # Import resource management for enhanced status
+        # Import circuit breaker for status monitoring
         try:
-            from uploader.resource_manager import resource_manager
             from uploader.circuit_breaker import upload_circuit_breaker, notion_api_circuit_breaker
         except ImportError:
-            resource_manager = None
             upload_circuit_breaker = None
             notion_api_circuit_breaker = None
         
-        # Enhanced status with resource information
+        # Basic status response
         status_response = {
             'upload_id': upload_id,
             'status': upload_session['status'],
@@ -1066,16 +968,6 @@ def get_upload_status(upload_id):
             'is_multipart': upload_session['is_multipart'],
             'created_at': upload_session['created_at']
         }
-        
-        # Add resource information if available
-        if resource_manager:
-            resource_stats = resource_manager.get_resource_stats()
-            status_response['system_resources'] = {
-                'memory_usage_mb': resource_stats['memory_usage_mb'],
-                'memory_usage_percent': resource_stats['memory_usage_percent'],
-                'optimal_workers': resource_stats['optimal_workers'],
-                'resource_state': resource_stats['resource_state']
-            }
         
         # Add circuit breaker status if available
         if upload_circuit_breaker:
@@ -1099,9 +991,8 @@ def get_system_health():
     Get comprehensive system health and resilience status
     """
     try:
-        # Import all monitoring components
+        # Import monitoring components
         try:
-            from uploader.resource_manager import resource_manager, backpressure_manager, log_resource_usage
             from uploader.circuit_breaker import upload_circuit_breaker, notion_api_circuit_breaker, log_all_circuit_breaker_stats
             from uploader.checkpoint_manager import checkpoint_manager, log_checkpoint_stats
         except ImportError as e:
@@ -1112,29 +1003,6 @@ def get_system_health():
             'status': 'healthy',
             'components': {}
         }
-        
-        # Resource manager health
-        if resource_manager:
-            resource_stats = resource_manager.get_resource_stats()
-            health_status['components']['resource_manager'] = {
-                'status': 'healthy' if resource_stats['memory_usage_percent'] < 80 else 'warning',
-                'memory_usage_mb': resource_stats['memory_usage_mb'],
-                'memory_usage_percent': resource_stats['memory_usage_percent'],
-                'cpu_usage_percent': resource_stats['cpu_usage_percent'],
-                'active_uploads': resource_stats['active_uploads'],
-                'optimal_workers': resource_stats['optimal_workers'],
-                'resource_state': resource_stats['resource_state']
-            }
-        
-        # Backpressure manager health
-        if backpressure_manager:
-            queue_stats = backpressure_manager.get_queue_stats()
-            health_status['components']['backpressure_manager'] = {
-                'status': 'healthy' if queue_stats['queue_utilization'] < 80 else 'warning',
-                'queue_size': queue_stats['queue_size'],
-                'queue_limit': queue_stats['queue_limit'],
-                'queue_utilization': queue_stats['queue_utilization']
-            }
         
         # Circuit breaker health
         circuit_breakers = []
@@ -1181,9 +1049,7 @@ def get_system_health():
         
         # Performance metrics
         health_status['performance'] = {
-            'active_upload_sessions': len(streaming_upload_manager.active_uploads) if hasattr(streaming_upload_manager, 'active_uploads') else 0,
-            'total_memory_limit_mb': 512,
-            'total_cpu_limit': 0.2
+            'active_upload_sessions': len(streaming_upload_manager.active_uploads) if hasattr(streaming_upload_manager, 'active_uploads') else 0
         }
         
         return jsonify(health_status)
@@ -1255,22 +1121,8 @@ def process_websocket_chunk_robust(upload_id, part_number, chunk_data, is_last_c
 # END HELPER FUNCTIONS
 # ============================================================================
 
-# Background task to clean up old upload sessions
-def cleanup_upload_sessions():
-    """
-    Clean up old upload sessions periodically
-    """
-    try:
-        streaming_upload_manager.cleanup_old_sessions(max_age_seconds=3600)
-    except Exception as e:
-        print(f"Error cleaning up upload sessions: {e}")
-    
-    # Schedule next cleanup
-    threading.Timer(300, cleanup_upload_sessions).start()  # Every 5 minutes
-
-
 # Start the cleanup task
-cleanup_upload_sessions()
+cleanup_old_sessions()
 
 # ============================================================================
 # END OF STREAMING UPLOAD API

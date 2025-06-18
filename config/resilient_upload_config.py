@@ -20,27 +20,10 @@ class ResilientUploadConfig:
         self.total_memory_mb = int(os.getenv('TOTAL_MEMORY_MB', '512'))
         self.total_cpu_cores = float(os.getenv('TOTAL_CPU_CORES', '0.2'))
         
-        # Memory Management (Conservative for 512MB)
-        self.memory_limits = {
-            'max_upload_memory_mb': int(os.getenv('MAX_UPLOAD_MEMORY_MB', '100')),  # 20% of total
-            'memory_check_interval': int(os.getenv('MEMORY_CHECK_INTERVAL', '5')),  # seconds
-            'gc_threshold_mb': int(os.getenv('GC_THRESHOLD_MB', '80')),  # Force GC
-            'memory_pressure_thresholds': {
-                'low': int(os.getenv('MEMORY_LOW_THRESHOLD', '200')),     # MB
-                'medium': int(os.getenv('MEMORY_MEDIUM_THRESHOLD', '350')),  # MB
-                'high': int(os.getenv('MEMORY_HIGH_THRESHOLD', '450')),   # MB
-                'critical': int(os.getenv('MEMORY_CRITICAL_THRESHOLD', '500'))  # MB
-            }
-        }
-        
-        # Worker Management (Adaptive for 0.2 vCPU)
+        # Simple Worker Configuration (Fixed limits)
         self.worker_config = {
-            'min_workers': int(os.getenv('MIN_WORKERS', '1')),
-            'max_workers': int(os.getenv('MAX_WORKERS', '3')),
-            'default_workers': int(os.getenv('DEFAULT_WORKERS', '2')),
-            'scale_down_memory_mb': int(os.getenv('SCALE_DOWN_MEMORY', '80')),
-            'scale_down_cpu_percent': float(os.getenv('SCALE_DOWN_CPU', '70')),
-            'worker_adjustment_interval': int(os.getenv('WORKER_ADJUSTMENT_INTERVAL', '10'))  # seconds
+            'max_workers': int(os.getenv('MAX_WORKERS', '4')),
+            'default_workers': int(os.getenv('DEFAULT_WORKERS', '4'))
         }
         
         # Timeout Configuration (Enhanced for reliability)
@@ -100,20 +83,11 @@ class ResilientUploadConfig:
             'cleanup_interval': int(os.getenv('CHECKPOINT_CLEANUP_INTERVAL', '3600'))  # 1 hour
         }
         
-        # Backpressure Configuration
-        self.backpressure_config = {
-            'queue_size_limit': int(os.getenv('QUEUE_SIZE_LIMIT', '10')),
+        # Simple Upload Limits (keeping basic queue controls)
+        self.upload_limits = {
             'max_concurrent_uploads': int(os.getenv('MAX_CONCURRENT_UPLOADS', '10')),
-            'backpressure_delays': {
-                'light': float(os.getenv('BACKPRESSURE_LIGHT_DELAY', '0.5')),
-                'medium': float(os.getenv('BACKPRESSURE_MEDIUM_DELAY', '1.0')),
-                'heavy': float(os.getenv('BACKPRESSURE_HEAVY_DELAY', '2.0'))
-            },
-            'throttle_thresholds': {
-                'memory_percent': float(os.getenv('THROTTLE_MEMORY_PERCENT', '70')),
-                'cpu_percent': float(os.getenv('THROTTLE_CPU_PERCENT', '80')),
-                'queue_percent': float(os.getenv('THROTTLE_QUEUE_PERCENT', '80'))
-            }
+            'queue_size_limit': int(os.getenv('QUEUE_SIZE_LIMIT', '10')),
+            'max_workers': int(os.getenv('MAX_WORKERS', '4'))
         }
         
         # Monitoring Configuration
@@ -122,7 +96,6 @@ class ResilientUploadConfig:
             'log_level': os.getenv('LOG_LEVEL', 'INFO'),
             'enable_detailed_logging': os.getenv('ENABLE_DETAILED_LOGGING', 'true').lower() == 'true',
             'alert_thresholds': {
-                'memory_usage_percent': float(os.getenv('ALERT_MEMORY_THRESHOLD', '80')),
                 'success_rate_percent': float(os.getenv('ALERT_SUCCESS_RATE_THRESHOLD', '90')),
                 'circuit_breaker_failures': int(os.getenv('ALERT_CB_FAILURES', '3'))
             }
@@ -156,8 +129,7 @@ class ResilientUploadConfig:
         else:
             # Development settings
             config = self.to_dict()
-            config['memory_limits']['max_upload_memory_mb'] = 150  # More lenient for dev
-            config['worker_config']['max_workers'] = 4  # Allow more workers in dev
+            config['worker_config']['max_workers'] = 6  # Allow more workers in dev
             config['monitoring_config']['enable_detailed_logging'] = True
             return config
     
@@ -165,14 +137,13 @@ class ResilientUploadConfig:
         """Convert configuration to dictionary"""
         return {
             'environment': self.environment,
-            'memory_limits': self.memory_limits,
             'worker_config': self.worker_config,
             'timeout_config': self.timeout_config,
             'retry_config': self.retry_config,
             'circuit_breaker_config': self.circuit_breaker_config,
             'connection_config': self.connection_config,
             'checkpoint_config': self.checkpoint_config,
-            'backpressure_config': self.backpressure_config,
+            'upload_limits': self.upload_limits,
             'monitoring_config': self.monitoring_config,
             'file_limits': self.file_limits,
             'security_config': self.security_config
@@ -181,13 +152,9 @@ class ResilientUploadConfig:
     def validate_config(self) -> bool:
         """Validate configuration values"""
         try:
-            # Memory validation
-            if self.memory_limits['max_upload_memory_mb'] > self.total_memory_mb * 0.5:
-                print("⚠️  Warning: Upload memory limit exceeds 50% of total memory")
-            
             # Worker validation
-            if self.worker_config['max_workers'] > 5:
-                print("⚠️  Warning: High worker count may overwhelm 0.2 vCPU")
+            if self.worker_config['max_workers'] > 10:
+                print("⚠️  Warning: High worker count may impact performance")
             
             # Timeout validation
             if self.timeout_config['total_timeout'] < self.timeout_config['read_timeout']:
@@ -209,15 +176,14 @@ class ResilientUploadConfig:
     
     def print_summary(self):
         """Print configuration summary"""
-        print("🔧 RESILIENT_UPLOAD_CONFIGURATION:")
+        print("🔧 SIMPLIFIED_UPLOAD_CONFIGURATION:")
         print(f"   Environment: {self.environment}")
-        print(f"   Memory Limit: {self.memory_limits['max_upload_memory_mb']}MB / {self.total_memory_mb}MB")
-        print(f"   Workers: {self.worker_config['min_workers']}-{self.worker_config['max_workers']}")
+        print(f"   Workers: {self.worker_config['max_workers']}")
         print(f"   Timeouts: {self.timeout_config['connection_timeout']}s connect, {self.timeout_config['read_timeout']}s read")
         print(f"   Retries: {self.retry_config['max_retries']} attempts")
         print(f"   Checkpoints: {'Enabled' if self.checkpoint_config['enabled'] else 'Disabled'} every {self.checkpoint_config['interval_parts']} parts")
         print(f"   Max File Size: {self.file_limits['max_file_size_gb']}GB")
-        print(f"   Max Concurrent: {self.backpressure_config['max_concurrent_uploads']} uploads")
+        print(f"   Max Concurrent: {self.upload_limits['max_concurrent_uploads']} uploads")
 
 
 # Global configuration instance
@@ -228,8 +194,8 @@ if not resilient_config.validate_config():
     print("❌ Configuration validation failed - check settings")
 
 # Export commonly used values
-MEMORY_LIMIT_MB = resilient_config.memory_limits['max_upload_memory_mb']
 MAX_WORKERS = resilient_config.worker_config['max_workers']
+MAX_CONCURRENT_UPLOADS = resilient_config.upload_limits['max_concurrent_uploads']
 TIMEOUT_CONFIG = resilient_config.timeout_config
 RETRY_CONFIG = resilient_config.retry_config
 CHECKPOINT_ENABLED = resilient_config.checkpoint_config['enabled']
