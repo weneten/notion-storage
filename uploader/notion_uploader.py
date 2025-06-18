@@ -146,6 +146,11 @@ class NotionFileUploader:
             "accept": "application/json"
         }
         self.global_file_index_db_id = global_file_index_db_id
+        
+        # URL caching for performance optimization
+        self.url_cache = {}  # file_page_id -> {url, expires_at, generated_at}
+        self.url_cache_lock = threading.Lock()
+        self.url_cache_duration = 3600  # 1 hour default cache duration
 
     def ensure_txt_filename(self, filename: str) -> str:
         """Ensure filename has .txt extension but do not replace spaces"""
@@ -364,12 +369,72 @@ class NotionFileUploader:
             print(f"Error verifying page ID: {e}")
             return False
 
-    def get_notion_file_url_from_page_property(self, page_id: str, original_filename: str) -> str:
+    def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
         """
-        Retrieves a Notion-style download link for a file attached to a database page's 'file' property.
+        Get download URL for a file with caching optimization.
+        This replaces get_notion_file_url_from_page_property with caching logic.
+        """
+        with self.url_cache_lock:
+            # Check if we have a cached URL that's still valid
+            cached_entry = self.url_cache.get(page_id)
+            current_time = time.time()
+            
+            if cached_entry:
+                expires_at = cached_entry.get('expires_at', 0)
+                cached_url = cached_entry.get('url', '')
+                
+                # Check if cached URL is still valid (not expired)
+                if current_time < expires_at and cached_url:
+                    print(f"🚀 CACHE HIT: Using cached URL for {page_id} (expires in {int(expires_at - current_time)}s)")
+                    
+                    # Validate cached URL is still working
+                    if self._validate_cached_url(cached_url):
+                        return cached_url
+                    else:
+                        print(f"🔄 CACHE INVALID: Cached URL failed validation, fetching new one")
+                        # Remove invalid cached entry
+                        del self.url_cache[page_id]
+                else:
+                    print(f"🕐 CACHE EXPIRED: Cached URL expired {int(current_time - expires_at)}s ago")
+                    # Remove expired entry
+                    del self.url_cache[page_id]
+            
+            # Cache miss or invalid - fetch new URL
+            print(f"🔄 CACHE MISS: Fetching new URL from Notion API for {page_id}")
+            new_url = self._fetch_fresh_download_url(page_id, original_filename)
+            
+            if new_url:
+                # Cache the new URL
+                cache_entry = {
+                    'url': new_url,
+                    'expires_at': current_time + self.url_cache_duration,
+                    'generated_at': current_time
+                }
+                self.url_cache[page_id] = cache_entry
+                print(f"💾 CACHED: New URL cached for {page_id} (expires at {cache_entry['expires_at']})")
+            
+            return new_url
+
+    def _validate_cached_url(self, url: str) -> bool:
+        """
+        Validate that a cached URL is still working by making a HEAD request.
         """
         try:
-            print(f"Getting download URL for file page ID: {page_id}, original filename: {original_filename}")
+            response = requests.head(url, timeout=5, allow_redirects=True)
+            is_valid = response.status_code == 200
+            if not is_valid:
+                print(f"🚨 URL VALIDATION FAILED: Status {response.status_code}")
+            return is_valid
+        except Exception as e:
+            print(f"🚨 URL VALIDATION ERROR: {e}")
+            return False
+
+    def _fetch_fresh_download_url(self, page_id: str, original_filename: str) -> str:
+        """
+        Fetch a fresh download URL from Notion API (original implementation).
+        """
+        try:
+            print(f"Getting fresh download URL for file page ID: {page_id}, original filename: {original_filename}")
             
             # Get page information to extract file details
             page_info = self.get_user_by_id(page_id) # Reusing get_user_by_id as it fetches a page
@@ -395,7 +460,7 @@ class NotionFileUploader:
                 print(f"File info: {file_info}")
                 return ""
 
-            print(f"Successfully retrieved download URL for file: {original_filename}")
+            print(f"Successfully retrieved fresh download URL for file: {original_filename}")
             return file_url
             
         except Exception as e:
@@ -404,6 +469,67 @@ class NotionFileUploader:
             traceback.print_exc()
             return ""
 
+    def get_notion_file_url_from_page_property(self, page_id: str, original_filename: str) -> str:
+        """
+        Legacy method - now uses caching optimization.
+        """
+        return self.get_download_url_for_file(page_id, original_filename)
+
+    def clear_url_cache(self, page_id: str = None):
+        """
+        Clear URL cache entries. If page_id is provided, clear only that entry.
+        Otherwise, clear all cached URLs.
+        """
+        with self.url_cache_lock:
+            if page_id:
+                if page_id in self.url_cache:
+                    del self.url_cache[page_id]
+                    print(f"🗑️ CACHE CLEARED: Removed cached URL for {page_id}")
+            else:
+                cleared_count = len(self.url_cache)
+                self.url_cache.clear()
+                print(f"🗑️ CACHE CLEARED: Removed {cleared_count} cached URLs")
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the URL cache.
+        """
+        with self.url_cache_lock:
+            current_time = time.time()
+            valid_entries = 0
+            expired_entries = 0
+            
+            for page_id, entry in self.url_cache.items():
+                if current_time < entry.get('expires_at', 0):
+                    valid_entries += 1
+                else:
+                    expired_entries += 1
+            
+            return {
+                'total_entries': len(self.url_cache),
+                'valid_entries': valid_entries,
+                'expired_entries': expired_entries,
+                'cache_duration': self.url_cache_duration,
+                'current_time': current_time
+            }
+
+    def cleanup_expired_cache_entries(self):
+        """
+        Remove expired entries from the URL cache.
+        """
+        with self.url_cache_lock:
+            current_time = time.time()
+            expired_keys = []
+            
+            for page_id, entry in self.url_cache.items():
+                if current_time >= entry.get('expires_at', 0):
+                    expired_keys.append(page_id)
+            
+            for key in expired_keys:
+                del self.url_cache[key]
+            
+            if expired_keys:
+                print(f"🧹 CACHE CLEANUP: Removed {len(expired_keys)} expired entries")
     def upload_file_stream(self, file_stream: Iterable[bytes], filename: str, user_id: str, total_size: int, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Uploads a file to Notion from a stream to the specified database.

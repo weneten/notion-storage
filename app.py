@@ -358,8 +358,8 @@ def download_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
 
-        # Explicitly retrieve a new signed download URL from Notion
-        notion_download_link = uploader.get_notion_file_url_from_page_property(file_page_id, original_filename)
+        # Get download URL with caching optimization
+        notion_download_link = uploader.get_download_url_for_file(file_page_id, original_filename)
 
         # Check access control
         if not is_public:
@@ -430,8 +430,8 @@ def stream_by_hash(salted_sha512_hash):
         file_properties = file_details.get('properties', {})
         file_size = file_properties.get('filesize', {}).get('number', 0)
 
-        # Explicitly retrieve a new signed download URL from Notion
-        notion_download_link = uploader.get_notion_file_url_from_page_property(file_page_id, original_filename)
+        # Get download URL with caching optimization
+        notion_download_link = uploader.get_download_url_for_file(file_page_id, original_filename)
 
         if not notion_download_link:
             return "Stream link not available for this file", 500
@@ -1077,6 +1077,45 @@ def get_system_health():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e), 'status': 'error'}), 500
+
+
+@app.route('/api/system/cache', methods=['GET', 'POST', 'DELETE'])
+@login_required
+def manage_url_cache():
+    """
+    Manage the download URL cache for performance optimization
+    """
+    try:
+        if request.method == 'GET':
+            # Get cache statistics
+            cache_stats = uploader.get_cache_stats()
+            return jsonify({
+                'status': 'success',
+                'cache_stats': cache_stats,
+                'message': f"Cache contains {cache_stats['total_entries']} entries, {cache_stats['valid_entries']} valid"
+            })
+        
+        elif request.method == 'POST':
+            # Cleanup expired entries
+            uploader.cleanup_expired_cache_entries()
+            cache_stats = uploader.get_cache_stats()
+            return jsonify({
+                'status': 'success',
+                'cache_stats': cache_stats,
+                'message': 'Expired cache entries cleaned up'
+            })
+        
+        elif request.method == 'DELETE':
+            # Clear all cache entries
+            uploader.clear_url_cache()
+            return jsonify({
+                'status': 'success',
+                'message': 'All cache entries cleared'
+            })
+    
+    except Exception as e:
+        print(f"Error managing URL cache: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/upload/abort/<upload_id>', methods=['POST'])
