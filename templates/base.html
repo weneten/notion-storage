@@ -28,6 +28,83 @@
             timeout: 20000,
             autoConnect: true
         };
+
+        // iOS Safari detection and mobile video enhancements
+        window.deviceInfo = {
+            isIOS: /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream,
+            isSafari: /^((?!chrome|android).)*safari/i.test(navigator.userAgent),
+            isIOSSafari: false,
+            isMobile: /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+        };
+        
+        // More specific iOS Safari detection
+        window.deviceInfo.isIOSSafari = window.deviceInfo.isIOS && window.deviceInfo.isSafari;
+        
+        // Enhanced video loading for mobile devices
+        window.enhanceVideoElements = function() {
+            const videos = document.querySelectorAll('video');
+            videos.forEach(video => {
+                // iOS-specific optimizations
+                if (window.deviceInfo.isIOSSafari) {
+                    video.setAttribute('playsinline', 'true');
+                    video.setAttribute('webkit-playsinline', 'true');
+                    video.setAttribute('preload', 'metadata');
+                    
+                    // Progressive loading strategy for iOS
+                    video.addEventListener('loadstart', function() {
+                        console.log('Video loading started on iOS Safari');
+                    });
+                    
+                    video.addEventListener('error', function(e) {
+                        console.error('Video error on iOS Safari:', e);
+                        // Retry mechanism for iOS
+                        if (this.retryCount === undefined) this.retryCount = 0;
+                        if (this.retryCount < 3) {
+                            this.retryCount++;
+                            console.log(`Retrying video load (attempt ${this.retryCount})`);
+                            setTimeout(() => {
+                                this.load();
+                            }, 1000 * this.retryCount);
+                        }
+                    });
+                }
+                
+                // General mobile optimizations
+                if (window.deviceInfo.isMobile) {
+                    video.addEventListener('canplay', function() {
+                        console.log('Video ready to play on mobile device');
+                    });
+                    
+                    // Optimize for slower connections
+                    video.setAttribute('preload', 'metadata');
+                }
+            });
+        };
+        
+        // Auto-enhance video elements when DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            window.enhanceVideoElements();
+            
+            // Re-enhance when new content is added dynamically
+            const observer = new MutationObserver(function(mutations) {
+                mutations.forEach(function(mutation) {
+                    if (mutation.type === 'childList') {
+                        mutation.addedNodes.forEach(function(node) {
+                            if (node.nodeType === 1) { // Element node
+                                if (node.tagName === 'VIDEO' || node.querySelector('video')) {
+                                    window.enhanceVideoElements();
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+            
+            observer.observe(document.body, {
+                childList: true,
+                subtree: true
+            });
+        });
     </script>
 </head>
 <body>

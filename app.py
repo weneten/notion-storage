@@ -542,7 +542,16 @@ def stream_by_hash(salted_sha512_hash):
                 response.headers['Content-Length'] = str(end - start + 1)
                 response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
                 response.headers['Accept-Ranges'] = 'bytes'
-                response.headers['Cache-Control'] = 'public, max-age=3600'
+                
+                # iOS Safari optimized headers for partial content
+                response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
+                response.headers['X-Content-Type-Options'] = 'nosniff'
+                response.headers['Vary'] = 'Range, Accept-Encoding'
+                
+                # Additional iOS streaming optimizations for partial content
+                if mimetype.startswith('video/'):
+                    response.headers['Connection'] = 'keep-alive'
+                    response.headers['Content-Transfer-Encoding'] = 'binary'
                 
                 return response
                 
@@ -555,7 +564,16 @@ def stream_by_hash(salted_sha512_hash):
             response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
             response.headers['Content-Length'] = str(file_size)
             response.headers['Accept-Ranges'] = 'bytes'
-            response.headers['Cache-Control'] = 'public, max-age=3600'
+            
+            # iOS Safari optimized headers
+            response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Vary'] = 'Range, Accept-Encoding'
+            
+            # Additional iOS streaming optimizations
+            if mimetype.startswith('video/'):
+                response.headers['Connection'] = 'keep-alive'
+                response.headers['Content-Transfer-Encoding'] = 'binary'
             
             return response
 
