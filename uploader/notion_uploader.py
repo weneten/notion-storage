@@ -11,6 +11,7 @@ from flask_socketio import SocketIO
 import uuid
 import time
 import random
+import mimetypes
 
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):
@@ -395,11 +396,13 @@ class NotionFileUploader:
                 expires_at = cached_entry.get('expires_at', 0)
                 cached_url = cached_entry.get('url', '')
                 generated_at = cached_entry.get('generated_at', current_time)
+                cached_file_size = cached_entry.get('file_size', 0)
+                cached_content_type = cached_entry.get('content_type', 'application/octet-stream')
                 
                 # Check if cached URL is still valid (not expired)
                 if current_time < expires_at and cached_url:
                     time_until_expiry = expires_at - current_time
-                    print(f"🚀 CACHE HIT: Using cached URL for {page_id} (expires in {int(time_until_expiry)}s)")
+                    print(f"🚀 CACHE HIT: Using cached URL for {page_id} (expires in {int(time_until_expiry)}s, size: {cached_file_size} bytes)")
                     
                     # Smart validation timing based on configuration
                     should_validate = False
@@ -437,19 +440,21 @@ class NotionFileUploader:
                     # Remove expired entry
                     del self.url_cache[page_id]
             
-            # Cache miss or invalid - fetch new URL
+            # Cache miss or invalid - fetch new URL with file size
             print(f"🔄 CACHE MISS: Fetching new URL from Notion API for {page_id}")
-            new_url = self._fetch_fresh_download_url(page_id, original_filename)
+            new_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
             
             if new_url:
-                # Cache the new URL
+                # Cache the new URL with file metadata
                 cache_entry = {
                     'url': new_url,
                     'expires_at': current_time + self.url_cache_duration,
-                    'generated_at': current_time
+                    'generated_at': current_time,
+                    'file_size': file_size,
+                    'content_type': content_type
                 }
                 self.url_cache[page_id] = cache_entry
-                print(f"💾 CACHED: New URL cached for {page_id} (expires at {cache_entry['expires_at']})")
+                print(f"💾 CACHED: New URL cached for {page_id} with size {file_size} bytes (expires at {cache_entry['expires_at']})")
             
             return new_url
 
@@ -522,16 +527,26 @@ class NotionFileUploader:
 
     def _fetch_fresh_download_url(self, page_id: str, original_filename: str) -> str:
         """
-        Fetch a fresh download URL from Notion API (original implementation).
+        Fetch a fresh download URL from Notion API (legacy method for backward compatibility).
+        """
+        url, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+        return url
+
+    def _fetch_fresh_download_url_with_metadata(self, page_id: str, original_filename: str) -> tuple:
+        """
+        Fetch a fresh download URL from Notion API with file size and content type detection.
+        
+        Returns:
+            tuple: (download_url, file_size, content_type)
         """
         try:
-            print(f"Getting fresh download URL for file page ID: {page_id}, original filename: {original_filename}")
+            print(f"Getting fresh download URL with metadata for file page ID: {page_id}, original filename: {original_filename}")
             
             # Get page information to extract file details
             page_info = self.get_user_by_id(page_id) # Reusing get_user_by_id as it fetches a page
             if not page_info:
                 print(f"No page found with ID: {page_id}")
-                return ""
+                return "", 0, "application/octet-stream"
 
             # Extract file information from the 'file' property
             # Assuming 'file' is the name of the file property in the database
@@ -540,7 +555,7 @@ class NotionFileUploader:
 
             if not files_array:
                 print(f"No files found in 'file' property for page ID: {page_id}")
-                return ""
+                return "", 0, "application/octet-stream"
 
             # Get the first file in the array
             file_info = files_array[0]
@@ -549,16 +564,237 @@ class NotionFileUploader:
             if not file_url:
                 print(f"No valid URL found in file property for page ID: {page_id}")
                 print(f"File info: {file_info}")
-                return ""
+                return "", 0, "application/octet-stream"
 
             print(f"Successfully retrieved fresh download URL for file: {original_filename}")
-            return file_url
+            
+            # Get file size from Notion file properties if available
+            file_size = self.get_file_size_from_notion(page_info, original_filename)
+            
+            # If not available from Notion, try to get it from the download URL
+            if file_size == 0:
+                file_size = self.get_file_size_from_url(file_url)
+            
+            # Determine content type
+            content_type = self.get_content_type_from_filename(original_filename)
+            
+            print(f"📊 File metadata: size={file_size} bytes, content_type={content_type}")
+            return file_url, file_size, content_type
             
         except Exception as e:
             print(f"Error constructing download URL from page property: {e}")
             import traceback
             traceback.print_exc()
-            return ""
+            return "", 0, "application/octet-stream"
+
+    def get_file_size_from_notion(self, page_info: Dict[str, Any], original_filename: str) -> int:
+        """
+        Extract file size from Notion page properties if available.
+        
+        Args:
+            page_info: Notion page information containing file properties
+            original_filename: Original filename for logging
+            
+        Returns:
+            int: File size in bytes, or 0 if not available
+        """
+        try:
+            # Check if there's a filesize property in the page
+            file_size = page_info.get('properties', {}).get('filesize', {}).get('number', 0)
+            if file_size > 0:
+                print(f"📊 Got file size from Notion properties: {file_size} bytes for {original_filename}")
+                return file_size
+            
+            print(f"📊 No file size found in Notion properties for {original_filename}")
+            return 0
+            
+        except Exception as e:
+            print(f"Error getting file size from Notion properties: {e}")
+            return 0
+
+    def get_file_size_from_url(self, download_url: str) -> int:
+        """
+        Get file size by making a HEAD request to the download URL.
+        
+        Args:
+            download_url: The Notion download URL
+            
+        Returns:
+            int: File size in bytes, or 0 if not available
+        """
+        try:
+            print(f"📊 Attempting to get file size from URL via HEAD request")
+            
+            # Make HEAD request to get Content-Length without downloading the file
+            response = requests.head(
+                download_url,
+                timeout=10,
+                allow_redirects=True,
+                headers={'User-Agent': 'NotionUploader/1.0'}
+            )
+            
+            if response.status_code == 200:
+                content_length = response.headers.get('Content-Length')
+                if content_length:
+                    file_size = int(content_length)
+                    print(f"📊 Got file size from HEAD request: {file_size} bytes")
+                    return file_size
+                else:
+                    print(f"📊 No Content-Length header in HEAD response")
+            else:
+                print(f"📊 HEAD request failed with status {response.status_code}")
+                
+        except requests.exceptions.RequestException as e:
+            print(f"📊 HEAD request failed: {e}")
+        except Exception as e:
+            print(f"📊 Error getting file size from URL: {e}")
+            
+        return 0
+
+    def get_content_type_from_filename(self, filename: str) -> str:
+        """
+        Determine content type from filename extension.
+        
+        Args:
+            filename: Original filename
+            
+        Returns:
+            str: MIME type string
+        """
+        try:
+            content_type, _ = mimetypes.guess_type(filename)
+            if content_type:
+                return content_type
+            
+            # Fallback for common file types
+            extension = filename.lower().split('.')[-1] if '.' in filename else ''
+            content_types = {
+                'txt': 'text/plain',
+                'pdf': 'application/pdf',
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'mp4': 'video/mp4',
+                'avi': 'video/x-msvideo',
+                'mov': 'video/quicktime',
+                'mp3': 'audio/mpeg',
+                'wav': 'audio/wav',
+                'zip': 'application/x-zip-compressed',
+                'doc': 'application/msword',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xls': 'application/vnd.ms-excel',
+                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            }
+            
+            return content_types.get(extension, 'application/octet-stream')
+            
+        except Exception as e:
+            print(f"Error determining content type: {e}")
+            return 'application/octet-stream'
+
+    def cache_file_metadata(self, page_id: str, url: str, file_size: int, content_type: str):
+        """
+        Cache file metadata including size and content type.
+        
+        Args:
+            page_id: Notion page ID
+            url: Download URL
+            file_size: File size in bytes
+            content_type: MIME type
+        """
+        with self.url_cache_lock:
+            current_time = time.time()
+            cache_entry = {
+                'url': url,
+                'expires_at': current_time + self.url_cache_duration,
+                'generated_at': current_time,
+                'file_size': file_size,
+                'content_type': content_type
+            }
+            self.url_cache[page_id] = cache_entry
+            print(f"💾 CACHED: Metadata cached for {page_id} - size: {file_size} bytes, type: {content_type}")
+
+    def get_cached_file_metadata(self, page_id: str) -> tuple:
+        """
+        Get cached file metadata including size and content type.
+        
+        Args:
+            page_id: Notion page ID
+            
+        Returns:
+            tuple: (url, file_size, content_type) or (None, 0, None) if not cached or expired
+        """
+        with self.url_cache_lock:
+            cached_entry = self.url_cache.get(page_id)
+            if cached_entry:
+                current_time = time.time()
+                expires_at = cached_entry.get('expires_at', 0)
+                
+                if current_time < expires_at:
+                    url = cached_entry.get('url', '')
+                    file_size = cached_entry.get('file_size', 0)
+                    content_type = cached_entry.get('content_type', 'application/octet-stream')
+                    print(f"📊 Retrieved cached metadata for {page_id}: size={file_size}, type={content_type}")
+                    return url, file_size, content_type
+                else:
+                    print(f"📊 Cached metadata expired for {page_id}")
+                    
+            return None, 0, None
+
+    def get_file_download_metadata(self, page_id: str, original_filename: str) -> Dict[str, Any]:
+        """
+        Get comprehensive file metadata for download including URL, size, and content type.
+        
+        Args:
+            page_id: Notion page ID containing the file
+            original_filename: Original filename for content type detection
+            
+        Returns:
+            Dict containing url, file_size, content_type, and cached status
+        """
+        try:
+            # First try to get from cache
+            cached_url, cached_file_size, cached_content_type = self.get_cached_file_metadata(page_id)
+            
+            if cached_url:
+                return {
+                    'url': cached_url,
+                    'file_size': cached_file_size,
+                    'content_type': cached_content_type,
+                    'cached': True
+                }
+            
+            # Cache miss - fetch fresh data with metadata
+            fresh_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+            
+            if fresh_url:
+                # Cache the fresh metadata
+                self.cache_file_metadata(page_id, fresh_url, file_size, content_type)
+                
+                return {
+                    'url': fresh_url,
+                    'file_size': file_size,
+                    'content_type': content_type,
+                    'cached': False
+                }
+            
+            # Fallback
+            return {
+                'url': '',
+                'file_size': 0,
+                'content_type': 'application/octet-stream',
+                'cached': False
+            }
+            
+        except Exception as e:
+            print(f"Error getting file download metadata: {e}")
+            return {
+                'url': '',
+                'file_size': 0,
+                'content_type': 'application/octet-stream',
+                'cached': False
+            }
 
     def get_notion_file_url_from_page_property(self, page_id: str, original_filename: str) -> str:
         """

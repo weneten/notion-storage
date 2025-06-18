@@ -358,9 +358,6 @@ def download_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
 
-        # Get download URL with caching optimization
-        notion_download_link = uploader.get_download_url_for_file(file_page_id, original_filename)
-
         # Check access control
         if not is_public:
             if not current_user.is_authenticated:
@@ -371,17 +368,30 @@ def download_by_hash(salted_sha512_hash):
             if file_user_db_id != current_user_db_id:
                 return "Access Denied: You do not have permission to download this file.", 403
 
-        if not notion_download_link:
+        # Get comprehensive file metadata including URL, size, and content type
+        file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
+        
+        if not file_metadata['url']:
             return "Download link not available for this file", 500
 
-        # Import necessary modules for streaming
-        import mimetypes
-        mimetype, _ = mimetypes.guess_type(original_filename)
-        if not mimetype:
-            mimetype = 'application/octet-stream'
+        # Use detected content type or fallback to mimetypes
+        mimetype = file_metadata['content_type']
+        if mimetype == 'application/octet-stream':
+            import mimetypes
+            detected_type, _ = mimetypes.guess_type(original_filename)
+            if detected_type:
+                mimetype = detected_type
 
-        response = Response(stream_with_context(uploader.stream_file_from_notion(notion_download_link)), mimetype=mimetype)
+        response = Response(stream_with_context(uploader.stream_file_from_notion(file_metadata['url'])), mimetype=mimetype)
         response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
+        
+        # Add Content-Length header if file size is available
+        if file_metadata['file_size'] > 0:
+            response.headers['Content-Length'] = str(file_metadata['file_size'])
+            print(f"📊 Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
+        else:
+            print(f"⚠️ No file size available for Content-Length header for {original_filename}")
+            
         return response
 
     except Exception as e:
@@ -426,15 +436,17 @@ def stream_by_hash(salted_sha512_hash):
             if file_user_db_id != current_user_db_id:
                 return "Access Denied: You do not have permission to view this file.", 403
 
-        # Get the file size from the file details
-        file_properties = file_details.get('properties', {})
-        file_size = file_properties.get('filesize', {}).get('number', 0)
-
-        # Get download URL with caching optimization
-        notion_download_link = uploader.get_download_url_for_file(file_page_id, original_filename)
-
-        if not notion_download_link:
+        # Get comprehensive file metadata including URL, size, and content type
+        file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
+        
+        if not file_metadata['url']:
             return "Stream link not available for this file", 500
+            
+        file_size = file_metadata['file_size']
+        notion_download_link = file_metadata['url']
+        detected_content_type = file_metadata['content_type']
+            
+        print(f"📊 Streaming file: {original_filename}, size: {file_size} bytes, type: {detected_content_type}")
 
         # Enhanced MIME type detection for media files
         def get_enhanced_mimetype(filename):
@@ -490,7 +502,10 @@ def stream_by_hash(salted_sha512_hash):
             
             return media_types.get(extension, 'application/octet-stream')
 
-        mimetype = get_enhanced_mimetype(original_filename)
+        # Use detected content type from metadata, with enhanced fallback
+        mimetype = detected_content_type
+        if mimetype == 'application/octet-stream':
+            mimetype = get_enhanced_mimetype(original_filename)
 
         # Parse Range header for partial content requests
         range_header = request.headers.get('Range', '').strip()
@@ -525,11 +540,16 @@ def stream_by_hash(salted_sha512_hash):
                 else:
                     return "Invalid range format", 416
                 
-                # Validate range
-                if start < 0 or end >= file_size or start > end:
-                    response = Response(status=416)
-                    response.headers['Content-Range'] = f'bytes */{file_size}'
-                    return response
+                # Validate range - handle cases where file_size might be 0
+                if file_size > 0:
+                    if start < 0 or end >= file_size or start > end:
+                        response = Response(status=416)
+                        response.headers['Content-Range'] = f'bytes */{file_size}'
+                        return response
+                else:
+                    # If file size is unknown, we can't validate the range properly
+                    # But we can still try to serve the requested range
+                    print(f"⚠️ File size unknown, attempting to serve range {start}-{end} anyway")
                 
                 # Stream the requested range
                 def stream_range():
@@ -540,7 +560,15 @@ def stream_by_hash(salted_sha512_hash):
                 response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
                 response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
                 response.headers['Content-Length'] = str(end - start + 1)
-                response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+                
+                # Include total file size in Content-Range if known
+                if file_size > 0:
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+                    print(f"📊 Range response: bytes {start}-{end}/{file_size}")
+                else:
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/*'
+                    print(f"📊 Range response: bytes {start}-{end}/* (size unknown)")
+                    
                 response.headers['Accept-Ranges'] = 'bytes'
                 
                 # iOS Safari optimized headers for partial content
@@ -562,7 +590,14 @@ def stream_by_hash(salted_sha512_hash):
             # Full content request
             response = Response(stream_with_context(uploader.stream_file_from_notion(notion_download_link)), mimetype=mimetype)
             response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
-            response.headers['Content-Length'] = str(file_size)
+            
+            # Add Content-Length header if file size is available
+            if file_size > 0:
+                response.headers['Content-Length'] = str(file_size)
+                print(f"📊 Full content response includes Content-Length: {file_size} bytes for {original_filename}")
+            else:
+                print(f"⚠️ No file size available for Content-Length header for {original_filename}")
+                
             response.headers['Accept-Ranges'] = 'bytes'
             
             # iOS Safari optimized headers
