@@ -538,6 +538,9 @@ async function loadFiles() {
         // Set up event handlers for the new elements
         setupFileActionEventHandlers();
 
+        // Trigger content update event for modal system
+        document.dispatchEvent(new CustomEvent('contentUpdated'));
+
         console.log('🔍 DIAGNOSTIC: File list refresh completed (WITH ALL BUTTONS WORKING)');
     } catch (error) {
         console.error('🚨 DIAGNOSTIC: Error loading files:', error);
@@ -604,7 +607,7 @@ function createViewButton(fileHash, fileType, filename) {
     let buttonClass = 'btn-success';
     let icon = 'fas fa-eye';
     
-    // For video files, create an inline video player instead of just a button
+    // For video files, create both inline player and modal view button
     if (fileType === 'video') {
         const videoId = `video-${fileHash}`;
         return `<div class="video-player-container" style="margin-bottom: 10px;">
@@ -627,10 +630,10 @@ function createViewButton(fileHash, fileType, filename) {
                         <source src="${viewUrl}" type="video/webm">
                         <source src="${viewUrl}" type="video/quicktime">
                         Your browser does not support the video tag.
-                        <a href="${viewUrl}" target="_blank" rel="noopener">View Video</a>
+                        <a href="${viewUrl}" class="modal-view-link">View Video</a>
                     </video>
                     <div style="margin-top: 5px;">
-                        <a href="${viewUrl}" target="_blank" rel="noopener" class="btn btn-success btn-sm">
+                        <a href="${viewUrl}" class="btn btn-success btn-sm modal-view-btn" data-filename="${filename}" data-filetype="video">
                             <i class="fas fa-expand mr-1"></i>Fullscreen
                         </a>
                         <button onclick="toggleMute('${videoId}')" class="btn btn-secondary btn-sm">
@@ -640,7 +643,7 @@ function createViewButton(fileHash, fileType, filename) {
                 </div>`;
     }
     
-    // For audio files, create an inline audio player
+    // For audio files, create both inline player and modal view button
     if (fileType === 'audio') {
         return `<div class="audio-player-container" style="margin-bottom: 10px;">
                     <audio
@@ -653,10 +656,10 @@ function createViewButton(fileHash, fileType, filename) {
                         <source src="${viewUrl}" type="audio/wav">
                         <source src="${viewUrl}" type="audio/ogg">
                         Your browser does not support the audio tag.
-                        <a href="${viewUrl}" target="_blank" rel="noopener">Play Audio</a>
+                        <a href="${viewUrl}" class="modal-view-link">Play Audio</a>
                     </audio>
                     <div style="margin-top: 5px;">
-                        <a href="${viewUrl}" target="_blank" rel="noopener" class="btn btn-success btn-sm">
+                        <a href="${viewUrl}" class="btn btn-success btn-sm modal-view-btn" data-filename="${filename}" data-filetype="audio">
                             <i class="fas fa-external-link-alt mr-1"></i>Open
                         </a>
                     </div>
@@ -675,7 +678,7 @@ function createViewButton(fileHash, fileType, filename) {
             break;
     }
 
-    return `<a href="${viewUrl}" target="_blank" rel="noopener" class="btn ${buttonClass} btn-sm">
+    return `<a href="${viewUrl}" class="btn ${buttonClass} btn-sm modal-view-btn" data-filename="${filename}" data-filetype="${fileType}">
                 <i class="${icon} mr-1"></i>View
             </a>`;
 }

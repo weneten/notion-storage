@@ -1,0 +1,762 @@
+/**
+ * Modal Lightbox System for Media Viewing
+ * Provides a complete lightbox experience for videos, images, and audio
+ * with iOS Safari optimization and accessibility features
+ */
+
+class MediaModalLightbox {
+    constructor() {
+        this.modal = null;
+        this.modalContainer = null;
+        this.modalClose = null;
+        this.modalTitle = null;
+        this.modalContent = null;
+        this.modalLoading = null;
+        this.modalMediaContainer = null;
+        this.modalFilename = null;
+        this.modalFilesize = null;
+        this.modalFiletype = null;
+        this.modalNavigation = null;
+        this.modalPrev = null;
+        this.modalNext = null;
+        
+        this.currentMediaList = [];
+        this.currentMediaIndex = -1;
+        this.isZoomed = false;
+        
+        this.init();
+    }
+    
+    init() {
+        this.modal = document.getElementById('mediaModal');
+        this.modalContainer = this.modal?.querySelector('.modal-container');
+        this.modalClose = document.getElementById('modalClose');
+        this.modalTitle = document.getElementById('modalTitle');
+        this.modalContent = document.getElementById('modalContent');
+        this.modalLoading = document.getElementById('modalLoading');
+        this.modalMediaContainer = document.getElementById('modalMediaContainer');
+        this.modalFilename = document.getElementById('modalFilename');
+        this.modalFilesize = document.getElementById('modalFilesize');
+        this.modalFiletype = document.getElementById('modalFiletype');
+        this.modalNavigation = document.getElementById('modalNavigation');
+        this.modalPrev = document.getElementById('modalPrev');
+        this.modalNext = document.getElementById('modalNext');
+        
+        this.setupEventListeners();
+        this.setupKeyboardNavigation();
+        this.setupTouchGestures();
+    }
+    
+    setupEventListeners() {
+        // Close modal events
+        if (this.modalClose) {
+            this.modalClose.addEventListener('click', () => this.closeModal());
+        }
+        
+        // Click outside to close
+        if (this.modal) {
+            this.modal.addEventListener('click', (e) => {
+                if (e.target === this.modal) {
+                    this.closeModal();
+                }
+            });
+        }
+        
+        // Navigation events
+        if (this.modalPrev) {
+            this.modalPrev.addEventListener('click', () => this.showPrevious());
+        }
+        
+        if (this.modalNext) {
+            this.modalNext.addEventListener('click', () => this.showNext());
+        }
+        
+        // Prevent modal container clicks from closing modal
+        if (this.modalContainer) {
+            this.modalContainer.addEventListener('click', (e) => {
+                e.stopPropagation();
+            });
+        }
+    }
+    
+    setupKeyboardNavigation() {
+        document.addEventListener('keydown', (e) => {
+            if (!this.isModalOpen()) return;
+            
+            switch (e.key) {
+                case 'Escape':
+                    e.preventDefault();
+                    this.closeModal();
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    this.showPrevious();
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    this.showNext();
+                    break;
+                case ' ':
+                    e.preventDefault();
+                    this.togglePlayPause();
+                    break;
+                case 'f':
+                case 'F':
+                    e.preventDefault();
+                    this.toggleFullscreen();
+                    break;
+            }
+        });
+    }
+    
+    setupTouchGestures() {
+        let startX = 0;
+        let startY = 0;
+        let isSwipeGesture = false;
+        
+        if (this.modalContainer) {
+            this.modalContainer.addEventListener('touchstart', (e) => {
+                if (e.touches.length === 1) {
+                    startX = e.touches[0].clientX;
+                    startY = e.touches[0].clientY;
+                    isSwipeGesture = true;
+                }
+            }, { passive: true });
+            
+            this.modalContainer.addEventListener('touchmove', (e) => {
+                if (!isSwipeGesture || e.touches.length !== 1) return;
+                
+                const deltaX = Math.abs(e.touches[0].clientX - startX);
+                const deltaY = Math.abs(e.touches[0].clientY - startY);
+                
+                // If vertical movement is greater than horizontal, not a swipe
+                if (deltaY > deltaX) {
+                    isSwipeGesture = false;
+                }
+            }, { passive: true });
+            
+            this.modalContainer.addEventListener('touchend', (e) => {
+                if (!isSwipeGesture) return;
+                
+                const endX = e.changedTouches[0].clientX;
+                const deltaX = endX - startX;
+                const threshold = 50; // minimum swipe distance
+                
+                if (Math.abs(deltaX) > threshold) {
+                    if (deltaX > 0) {
+                        this.showPrevious(); // Swipe right = previous
+                    } else {
+                        this.showNext(); // Swipe left = next
+                    }
+                }
+                
+                isSwipeGesture = false;
+            }, { passive: true });
+        }
+    }
+    
+    /**
+     * Open modal with media content
+     */
+    async openModal(mediaUrl, filename, filesize = '', filetype = '', mediaList = [], currentIndex = 0) {
+        if (!this.modal) return;
+        
+        // Store media list for navigation
+        this.currentMediaList = mediaList;
+        this.currentMediaIndex = currentIndex;
+        
+        // Prevent body scrolling
+        document.body.style.overflow = 'hidden';
+        
+        // Show modal
+        this.modal.style.display = 'flex';
+        this.modal.setAttribute('aria-hidden', 'false');
+        
+        // Update modal info
+        if (this.modalFilename) this.modalFilename.textContent = filename;
+        if (this.modalFilesize) this.modalFilesize.textContent = filesize ? `Size: ${filesize}` : '';
+        if (this.modalFiletype) this.modalFiletype.textContent = filetype ? `Type: ${filetype}` : '';
+        
+        // Update navigation visibility
+        this.updateNavigation();
+        
+        // Show loading state
+        this.showLoading();
+        
+        try {
+            // Load media content
+            await this.loadMediaContent(mediaUrl, filename);
+            
+            // Show modal with animation
+            setTimeout(() => {
+                if (this.modal) {
+                    this.modal.classList.add('show');
+                }
+            }, 50);
+            
+            // Focus management for accessibility
+            if (this.modalClose) {
+                this.modalClose.focus();
+            }
+            
+        } catch (error) {
+            console.error('Error loading media content:', error);
+            this.showError('Failed to load media content');
+        }
+    }
+    
+    /**
+     * Close modal
+     */
+    closeModal() {
+        if (!this.modal) return;
+        
+        // Hide modal with animation
+        this.modal.classList.remove('show');
+        
+        // Reset zoom state
+        this.isZoomed = false;
+        
+        // Stop any playing media
+        this.stopMedia();
+        
+        setTimeout(() => {
+            if (this.modal) {
+                this.modal.style.display = 'none';
+                this.modal.setAttribute('aria-hidden', 'true');
+                
+                // Clear modal content
+                if (this.modalMediaContainer) {
+                    this.modalMediaContainer.innerHTML = '';
+                    this.modalMediaContainer.classList.remove('show');
+                }
+                
+                // Re-enable body scrolling
+                document.body.style.overflow = '';
+                
+                // Clear media list
+                this.currentMediaList = [];
+                this.currentMediaIndex = -1;
+            }
+        }, 300);
+    }
+    
+    /**
+     * Load media content based on file type
+     */
+    async loadMediaContent(mediaUrl, filename) {
+        const fileType = this.getFileType(filename);
+        const mediaContainer = this.modalMediaContainer;
+        
+        if (!mediaContainer) return;
+        
+        // Clear previous content
+        mediaContainer.innerHTML = '';
+        
+        // Update modal title
+        if (this.modalTitle) {
+            this.modalTitle.textContent = `${this.getFileTypeDisplayName(fileType)} Viewer`;
+        }
+        
+        let mediaElement;
+        
+        switch (fileType) {
+            case 'video':
+                mediaElement = await this.createVideoElement(mediaUrl, filename);
+                break;
+            case 'image':
+                mediaElement = await this.createImageElement(mediaUrl, filename);
+                break;
+            case 'audio':
+                mediaElement = await this.createAudioElement(mediaUrl, filename);
+                break;
+            default:
+                throw new Error(`Unsupported file type: ${fileType}`);
+        }
+        
+        if (mediaElement) {
+            mediaContainer.appendChild(mediaElement);
+            this.hideLoading();
+            mediaContainer.classList.add('show');
+        }
+    }
+    
+    /**
+     * Create video element with iOS Safari optimizations
+     */
+    async createVideoElement(videoUrl, filename) {
+        return new Promise((resolve, reject) => {
+            const video = document.createElement('video');
+            video.className = 'modal-video';
+            video.controls = true;
+            video.preload = 'metadata';
+            video.setAttribute('playsinline', 'true');
+            video.setAttribute('webkit-playsinline', 'true');
+            video.crossOrigin = 'anonymous';
+            
+            // iOS Safari specific optimizations
+            if (window.deviceInfo?.isIOSSafari) {
+                video.muted = true; // Start muted for iOS autoplay policies
+                video.setAttribute('muted', 'true');
+            }
+            
+            video.addEventListener('loadedmetadata', () => {
+                console.log('Video metadata loaded:', filename);
+                resolve(video);
+            });
+            
+            video.addEventListener('error', (e) => {
+                console.error('Video load error:', e);
+                reject(new Error('Failed to load video'));
+            });
+            
+            video.addEventListener('canplay', () => {
+                console.log('Video ready to play:', filename);
+            });
+            
+            // Set video source
+            video.src = videoUrl;
+            
+            // Timeout fallback
+            setTimeout(() => {
+                if (video.readyState === 0) {
+                    reject(new Error('Video load timeout'));
+                }
+            }, 10000);
+        });
+    }
+    
+    /**
+     * Create image element with zoom functionality
+     */
+    async createImageElement(imageUrl, filename) {
+        return new Promise((resolve, reject) => {
+            const img = document.createElement('img');
+            img.className = 'modal-image';
+            img.alt = filename;
+            
+            // Add zoom functionality
+            img.addEventListener('click', () => {
+                this.toggleImageZoom(img);
+            });
+            
+            img.addEventListener('load', () => {
+                console.log('Image loaded:', filename);
+                resolve(img);
+            });
+            
+            img.addEventListener('error', (e) => {
+                console.error('Image load error:', e);
+                reject(new Error('Failed to load image'));
+            });
+            
+            // Set image source
+            img.src = imageUrl;
+            
+            // Timeout fallback
+            setTimeout(() => {
+                if (!img.complete) {
+                    reject(new Error('Image load timeout'));
+                }
+            }, 10000);
+        });
+    }
+    
+    /**
+     * Create audio element
+     */
+    async createAudioElement(audioUrl, filename) {
+        return new Promise((resolve, reject) => {
+            const audio = document.createElement('audio');
+            audio.className = 'modal-audio';
+            audio.controls = true;
+            audio.preload = 'metadata';
+            audio.crossOrigin = 'anonymous';
+            
+            audio.addEventListener('loadedmetadata', () => {
+                console.log('Audio metadata loaded:', filename);
+                resolve(audio);
+            });
+            
+            audio.addEventListener('error', (e) => {
+                console.error('Audio load error:', e);
+                reject(new Error('Failed to load audio'));
+            });
+            
+            // Set audio source
+            audio.src = audioUrl;
+            
+            // Timeout fallback
+            setTimeout(() => {
+                if (audio.readyState === 0) {
+                    reject(new Error('Audio load timeout'));
+                }
+            }, 10000);
+        });
+    }
+    
+    /**
+     * Toggle image zoom
+     */
+    toggleImageZoom(img) {
+        if (this.isZoomed) {
+            img.classList.remove('zoomed');
+            this.isZoomed = false;
+        } else {
+            img.classList.add('zoomed');
+            this.isZoomed = true;
+        }
+    }
+    
+    /**
+     * Show/hide loading state
+     */
+    showLoading() {
+        if (this.modalLoading) {
+            this.modalLoading.style.display = 'flex';
+        }
+        if (this.modalMediaContainer) {
+            this.modalMediaContainer.classList.remove('show');
+        }
+    }
+    
+    hideLoading() {
+        if (this.modalLoading) {
+            this.modalLoading.style.display = 'none';
+        }
+    }
+    
+    /**
+     * Show error message
+     */
+    showError(message) {
+        this.hideLoading();
+        if (this.modalMediaContainer) {
+            this.modalMediaContainer.innerHTML = `
+                <div style="text-align: center; color: #cf6679; padding: 40px;">
+                    <i class="fas fa-exclamation-triangle" style="font-size: 3em; margin-bottom: 20px;"></i>
+                    <p style="font-size: 1.2em; margin: 0;">${message}</p>
+                </div>
+            `;
+            this.modalMediaContainer.classList.add('show');
+        }
+    }
+    
+    /**
+     * Navigation functions
+     */
+    showPrevious() {
+        if (this.currentMediaIndex > 0) {
+            const prevMedia = this.currentMediaList[this.currentMediaIndex - 1];
+            if (prevMedia) {
+                this.openModal(
+                    prevMedia.url,
+                    prevMedia.filename,
+                    prevMedia.filesize,
+                    prevMedia.filetype,
+                    this.currentMediaList,
+                    this.currentMediaIndex - 1
+                );
+            }
+        }
+    }
+    
+    showNext() {
+        if (this.currentMediaIndex < this.currentMediaList.length - 1) {
+            const nextMedia = this.currentMediaList[this.currentMediaIndex + 1];
+            if (nextMedia) {
+                this.openModal(
+                    nextMedia.url,
+                    nextMedia.filename,
+                    nextMedia.filesize,
+                    nextMedia.filetype,
+                    this.currentMediaList,
+                    this.currentMediaIndex + 1
+                );
+            }
+        }
+    }
+    
+    updateNavigation() {
+        if (!this.modalNavigation || this.currentMediaList.length <= 1) {
+            if (this.modalNavigation) {
+                this.modalNavigation.style.display = 'none';
+            }
+            return;
+        }
+        
+        this.modalNavigation.style.display = 'flex';
+        
+        // Update previous button
+        if (this.modalPrev) {
+            this.modalPrev.disabled = this.currentMediaIndex <= 0;
+        }
+        
+        // Update next button
+        if (this.modalNext) {
+            this.modalNext.disabled = this.currentMediaIndex >= this.currentMediaList.length - 1;
+        }
+    }
+    
+    /**
+     * Media control functions
+     */
+    togglePlayPause() {
+        const video = this.modalMediaContainer?.querySelector('video');
+        const audio = this.modalMediaContainer?.querySelector('audio');
+        
+        if (video) {
+            if (video.paused) {
+                video.play().catch(e => console.warn('Video play failed:', e));
+            } else {
+                video.pause();
+            }
+        } else if (audio) {
+            if (audio.paused) {
+                audio.play().catch(e => console.warn('Audio play failed:', e));
+            } else {
+                audio.pause();
+            }
+        }
+    }
+    
+    toggleFullscreen() {
+        const video = this.modalMediaContainer?.querySelector('video');
+        if (video && video.requestFullscreen) {
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                video.requestFullscreen().catch(e => console.warn('Fullscreen failed:', e));
+            }
+        }
+    }
+    
+    stopMedia() {
+        const video = this.modalMediaContainer?.querySelector('video');
+        const audio = this.modalMediaContainer?.querySelector('audio');
+        
+        if (video && !video.paused) {
+            video.pause();
+        }
+        
+        if (audio && !audio.paused) {
+            audio.pause();
+        }
+    }
+    
+    /**
+     * Utility functions
+     */
+    isModalOpen() {
+        return this.modal && this.modal.classList.contains('show');
+    }
+    
+    getFileType(filename) {
+        const ext = filename.split('.').pop().toLowerCase();
+        
+        const videoTypes = ['mp4', 'webm', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'm4v'];
+        const imageTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff'];
+        const audioTypes = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'];
+        
+        if (videoTypes.includes(ext)) return 'video';
+        if (imageTypes.includes(ext)) return 'image';
+        if (audioTypes.includes(ext)) return 'audio';
+        
+        return 'unknown';
+    }
+    
+    getFileTypeDisplayName(fileType) {
+        const displayNames = {
+            video: 'Video',
+            image: 'Image',
+            audio: 'Audio'
+        };
+        return displayNames[fileType] || 'Media';
+    }
+    
+    /**
+     * Format file size for display
+     */
+    formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1000;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+}
+
+// Global modal instance
+let mediaModal = null;
+
+/**
+ * Initialize modal system
+ */
+function initializeMediaModal() {
+    console.log('Initializing media modal system...');
+    mediaModal = new MediaModalLightbox();
+    
+    // Set up click handlers for view buttons
+    setupModalViewButtons();
+    
+    console.log('Media modal system initialized');
+}
+
+/**
+ * Set up click handlers for existing view buttons
+ */
+function setupModalViewButtons() {
+    // Replace existing view button functionality with modal opening
+    document.addEventListener('click', (e) => {
+        // Handle view buttons with modal-view-btn class or href pattern
+        const viewButton = e.target.closest('.modal-view-btn, a[href^="/v/"].btn-success, .modal-view-link');
+        if (viewButton && viewButton.href && viewButton.href.includes('/v/')) {
+            e.preventDefault();
+            
+            // Extract file information
+            const filename = getFilenameFromButton(viewButton);
+            const filesize = getFilesizeFromButton(viewButton);
+            const filetype = getFiletypeFromButton(viewButton);
+            const mediaUrl = viewButton.href;
+            
+            // Get media list for navigation
+            const mediaList = getMediaListFromPage();
+            const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
+            
+            // Open modal
+            if (mediaModal) {
+                mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
+            }
+        }
+        
+        // Handle any remaining view buttons that don't have modal classes
+        const legacyViewButton = e.target.closest('a[href^="/v/"].btn-success');
+        if (legacyViewButton && legacyViewButton.href && viewButton !== legacyViewButton) {
+            e.preventDefault();
+            
+            const filename = getFilenameFromButton(legacyViewButton);
+            const filesize = getFilesizeFromButton(legacyViewButton);
+            const filetype = getFiletypeFromButton(legacyViewButton);
+            const mediaUrl = legacyViewButton.href;
+            
+            // Get media list for navigation
+            const mediaList = getMediaListFromPage();
+            const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
+            
+            if (mediaModal) {
+                mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
+            }
+        }
+    });
+}
+
+/**
+ * Helper functions to extract file information from buttons
+ */
+function getFilenameFromButton(button) {
+    // First try to get from button data attributes
+    if (button.dataset.filename) {
+        return button.dataset.filename;
+    }
+    
+    // Fallback to extracting from table row
+    const row = button.closest('tr');
+    if (row) {
+        const filenameCell = row.querySelector('td:first-child strong');
+        if (filenameCell) return filenameCell.textContent.trim();
+    }
+    return 'Unknown File';
+}
+
+function getFilesizeFromButton(button) {
+    // First try to get from button data attributes
+    if (button.dataset.filesize) {
+        return button.dataset.filesize;
+    }
+    
+    // Fallback to extracting from table row
+    const row = button.closest('tr');
+    if (row) {
+        const filesizeCell = row.querySelector('.filesize-cell');
+        if (filesizeCell) return filesizeCell.textContent.trim();
+    }
+    return '';
+}
+
+function getFiletypeFromButton(button) {
+    // First try to get from button data attributes
+    if (button.dataset.filetype) {
+        return button.dataset.filetype;
+    }
+    
+    // Fallback to extracting from filename
+    const filename = getFilenameFromButton(button);
+    const ext = filename.split('.').pop().toLowerCase();
+    
+    const videoTypes = ['mp4', 'webm', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'm4v'];
+    const imageTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff'];
+    const audioTypes = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'];
+    
+    if (videoTypes.includes(ext)) return 'Video';
+    if (imageTypes.includes(ext)) return 'Image';
+    if (audioTypes.includes(ext)) return 'Audio';
+    
+    return ext.toUpperCase();
+}
+
+/**
+ * Get list of all viewable media from the current page for navigation
+ */
+function getMediaListFromPage() {
+    const mediaList = [];
+    const viewButtons = document.querySelectorAll('a[href^="/v/"]');
+    
+    viewButtons.forEach(button => {
+        if (button.href && button.href.includes('/v/')) {
+            const filename = getFilenameFromButton(button);
+            const fileType = getFiletypeFromButton(button);
+            
+            // Only include actual media files (not download links)
+            if (['Video', 'Image', 'Audio'].includes(fileType)) {
+                mediaList.push({
+                    url: button.href,
+                    filename: filename,
+                    filesize: getFilesizeFromButton(button),
+                    filetype: fileType
+                });
+            }
+        }
+    });
+    
+    return mediaList;
+}
+
+/**
+ * Get the index of current media in the media list
+ */
+function getMediaIndexFromUrl(currentUrl, mediaList) {
+    return mediaList.findIndex(media => media.url === currentUrl);
+}
+
+/**
+ * Public API for opening modal programmatically
+ */
+window.openMediaModal = function(mediaUrl, filename, filesize = '', filetype = '') {
+    if (mediaModal) {
+        const mediaList = getMediaListFromPage();
+        const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
+        mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
+    } else {
+        console.error('Media modal not initialized');
+    }
+};
+
+// Initialize when DOM is ready
+document.addEventListener('DOMContentLoaded', function() {
+    initializeMediaModal();
+});
+
+// Re-initialize when new content is added (for dynamic content)
+document.addEventListener('contentUpdated', function() {
+    setupModalViewButtons();
+});

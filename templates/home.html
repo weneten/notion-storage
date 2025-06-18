@@ -67,7 +67,7 @@
                         </td>
                         <td class="action-buttons">
                             {% if file.file_hash %}
-                            <span class="view-button-container" data-filename="{{ file.name }}" data-hash="{{ file.file_hash }}"></span>
+                            <span class="view-button-container" data-filename="{{ file.name }}" data-hash="{{ file.file_hash }}" data-filesize="{{ file.size | format_bytes }}"></span>
                             {% endif %}
                             <a href="{{ url_for('download_by_hash', salted_sha512_hash=file.file_hash) }}"
                                 class="btn btn-primary btn-sm">
@@ -319,7 +319,7 @@
         let buttonClass = 'btn-success';
         let icon = 'fas fa-eye';
         
-        // For video files, create an inline video player instead of just a button
+        // For video files, create both inline player and modal view button
         if (fileType === 'video') {
             const videoId = `video-${fileHash}`;
             return `<div class="video-player-container" style="margin-bottom: 10px;">
@@ -342,10 +342,10 @@
                             <source src="${viewUrl}" type="video/webm">
                             <source src="${viewUrl}" type="video/quicktime">
                             Your browser does not support the video tag.
-                            <a href="${viewUrl}" target="_blank" rel="noopener">View Video</a>
+                            <a href="${viewUrl}" class="modal-view-link">View Video</a>
                         </video>
                         <div style="margin-top: 5px;">
-                            <a href="${viewUrl}" target="_blank" rel="noopener" class="btn btn-success btn-sm">
+                            <a href="${viewUrl}" class="btn btn-success btn-sm modal-view-btn" data-filename="${filename}" data-filetype="video">
                                 <i class="fas fa-expand mr-1"></i>Fullscreen
                             </a>
                             <button onclick="toggleMute('${videoId}')" class="btn btn-secondary btn-sm">
@@ -355,7 +355,7 @@
                     </div>`;
         }
         
-        // For audio files, create an inline audio player
+        // For audio files, create both inline player and modal view button
         if (fileType === 'audio') {
             return `<div class="audio-player-container" style="margin-bottom: 10px;">
                         <audio
@@ -368,10 +368,10 @@
                             <source src="${viewUrl}" type="audio/wav">
                             <source src="${viewUrl}" type="audio/ogg">
                             Your browser does not support the audio tag.
-                            <a href="${viewUrl}" target="_blank" rel="noopener">Play Audio</a>
+                            <a href="${viewUrl}" class="modal-view-link">Play Audio</a>
                         </audio>
                         <div style="margin-top: 5px;">
-                            <a href="${viewUrl}" target="_blank" rel="noopener" class="btn btn-success btn-sm">
+                            <a href="${viewUrl}" class="btn btn-success btn-sm modal-view-btn" data-filename="${filename}" data-filetype="audio">
                                 <i class="fas fa-external-link-alt mr-1"></i>Open
                             </a>
                         </div>
@@ -390,7 +390,7 @@
                 break;
         }
 
-        return `<a href="${viewUrl}" target="_blank" rel="noopener" class="btn ${buttonClass} btn-sm">
+        return `<a href="${viewUrl}" class="btn ${buttonClass} btn-sm modal-view-btn" data-filename="${filename}" data-filetype="${fileType}">
                     <i class="${icon} mr-1"></i>View
                 </a>`;
     }
@@ -428,10 +428,16 @@
         document.querySelectorAll('.view-button-container').forEach(container => {
             const filename = container.dataset.filename;
             const fileHash = container.dataset.hash;
+            const filesize = container.dataset.filesize || '';
             const fileInfo = getFileTypeInfo(filename);
             
             if (fileInfo.isViewable) {
                 container.innerHTML = createViewButton(fileHash, fileInfo.type, filename);
+                // Add filesize attribute to view buttons for modal system
+                const viewButtons = container.querySelectorAll('.modal-view-btn, .modal-view-link');
+                viewButtons.forEach(btn => {
+                    btn.setAttribute('data-filesize', filesize);
+                });
             }
         });
     }
