@@ -172,6 +172,21 @@
                     <p>Loading content...</p>
                 </div>
                 <div class="modal-media-container" id="modalMediaContainer"></div>
+                <div class="modal-pdf-error" id="modalPdfError" style="display: none;">
+                    <div class="pdf-error-content">
+                        <i class="fas fa-exclamation-triangle" style="font-size: 3em; color: #cf6679; margin-bottom: 20px;"></i>
+                        <h4>PDF Loading Failed</h4>
+                        <p>This PDF cannot be displayed in your browser.</p>
+                        <div class="pdf-error-actions">
+                            <a href="#" id="pdfDownloadLink" class="btn btn-primary" target="_blank">
+                                <i class="fas fa-download mr-2"></i>Download PDF
+                            </a>
+                            <a href="#" id="pdfOpenLink" class="btn btn-success ml-2" target="_blank">
+                                <i class="fas fa-external-link-alt mr-2"></i>Open in New Tab
+                            </a>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer" id="modalFooter">
                 <div class="modal-info" id="modalInfo">

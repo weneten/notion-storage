@@ -13,6 +13,7 @@ class MediaModalLightbox {
         this.modalContent = null;
         this.modalLoading = null;
         this.modalMediaContainer = null;
+        this.modalPdfError = null;
         this.modalFilename = null;
         this.modalFilesize = null;
         this.modalFiletype = null;
@@ -35,6 +36,7 @@ class MediaModalLightbox {
         this.modalContent = document.getElementById('modalContent');
         this.modalLoading = document.getElementById('modalLoading');
         this.modalMediaContainer = document.getElementById('modalMediaContainer');
+        this.modalPdfError = document.getElementById('modalPdfError');
         this.modalFilename = document.getElementById('modalFilename');
         this.modalFilesize = document.getElementById('modalFilesize');
         this.modalFiletype = document.getElementById('modalFiletype');
@@ -231,6 +233,11 @@ class MediaModalLightbox {
                     this.modalMediaContainer.classList.remove('show');
                 }
                 
+                // Hide PDF error if visible
+                if (this.modalPdfError) {
+                    this.modalPdfError.style.display = 'none';
+                }
+                
                 // Re-enable body scrolling
                 document.body.style.overflow = '';
                 
@@ -269,6 +276,9 @@ class MediaModalLightbox {
                 break;
             case 'audio':
                 mediaElement = await this.createAudioElement(mediaUrl, filename);
+                break;
+            case 'pdf':
+                mediaElement = await this.createPdfElement(mediaUrl, filename);
                 break;
             default:
                 throw new Error(`Unsupported file type: ${fileType}`);
@@ -396,6 +406,112 @@ class MediaModalLightbox {
     }
     
     /**
+     * Create PDF element with iframe and fallback options
+     */
+    async createPdfElement(pdfUrl, filename) {
+        return new Promise((resolve, reject) => {
+            const pdfContainer = document.createElement('div');
+            pdfContainer.className = 'modal-pdf-container';
+            
+            // Check if device/browser supports PDF viewing
+            const isMobile = window.deviceInfo?.isMobile || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+            const isIOS = window.deviceInfo?.isIOS || /iPad|iPhone|iPod/.test(navigator.userAgent);
+            
+            // Create iframe for PDF viewing
+            const iframe = document.createElement('iframe');
+            iframe.className = 'modal-pdf-iframe';
+            iframe.src = pdfUrl;
+            iframe.title = `PDF Viewer - ${filename}`;
+            iframe.setAttribute('loading', 'lazy');
+            
+            // Create fallback download button
+            const fallbackContainer = document.createElement('div');
+            fallbackContainer.className = 'modal-pdf-fallback';
+            fallbackContainer.style.display = 'none';
+            fallbackContainer.innerHTML = `
+                <div class="pdf-fallback-content">
+                    <i class="fas fa-file-pdf" style="font-size: 3em; color: #cf6679; margin-bottom: 15px;"></i>
+                    <h4>PDF Preview Not Available</h4>
+                    <p>This PDF cannot be displayed in your browser.</p>
+                    <a href="${pdfUrl}" target="_blank" class="btn btn-primary">
+                        <i class="fas fa-download mr-2"></i>Download PDF
+                    </a>
+                    <a href="${pdfUrl}" target="_blank" class="btn btn-success ml-2">
+                        <i class="fas fa-external-link-alt mr-2"></i>Open in New Tab
+                    </a>
+                </div>
+            `;
+            
+            // Always show download option for mobile devices
+            const downloadBar = document.createElement('div');
+            downloadBar.className = 'modal-pdf-download-bar';
+            downloadBar.innerHTML = `
+                <div class="pdf-controls">
+                    <a href="${pdfUrl}" target="_blank" class="btn btn-sm btn-primary">
+                        <i class="fas fa-download mr-1"></i>Download
+                    </a>
+                    <a href="${pdfUrl}" target="_blank" class="btn btn-sm btn-success">
+                        <i class="fas fa-external-link-alt mr-1"></i>Open in New Tab
+                    </a>
+                </div>
+            `;
+            
+            // Handle iframe load events
+            iframe.onload = () => {
+                console.log('PDF loaded successfully:', filename);
+                resolve(pdfContainer);
+            };
+            
+            iframe.onerror = () => {
+                console.error('PDF load error:', filename);
+                // Show fallback on error
+                iframe.style.display = 'none';
+                fallbackContainer.style.display = 'flex';
+                resolve(pdfContainer);
+            };
+            
+            // Handle cases where iframe doesn't support PDF
+            iframe.onabort = () => {
+                console.warn('PDF load aborted:', filename);
+                iframe.style.display = 'none';
+                fallbackContainer.style.display = 'flex';
+                resolve(pdfContainer);
+            };
+            
+            // For mobile devices, show a more limited experience
+            if (isMobile || isIOS) {
+                // iOS and many mobile browsers have limited PDF support
+                // Show both iframe (if supported) and download options
+                iframe.style.height = '60vh';
+                downloadBar.style.display = 'block';
+                
+                // Add mobile-specific styling
+                pdfContainer.innerHTML = `
+                    <div class="mobile-pdf-notice">
+                        <i class="fas fa-info-circle mr-2"></i>
+                        <span>PDF viewing may be limited on mobile devices.</span>
+                    </div>
+                `;
+            }
+            
+            // Assemble the PDF container
+            pdfContainer.appendChild(downloadBar);
+            pdfContainer.appendChild(iframe);
+            pdfContainer.appendChild(fallbackContainer);
+            
+            // Set timeout for loading
+            setTimeout(() => {
+                if (iframe.contentDocument === null) {
+                    // Iframe didn't load, show fallback
+                    iframe.style.display = 'none';
+                    fallbackContainer.style.display = 'flex';
+                    resolve(pdfContainer);
+                }
+            }, 5000);
+        });
+    }
+    
+    /**
      * Toggle image zoom
      */
     toggleImageZoom(img) {
@@ -429,9 +545,20 @@ class MediaModalLightbox {
     /**
      * Show error message
      */
-    showError(message) {
+    showError(message, pdfUrl = null) {
         this.hideLoading();
-        if (this.modalMediaContainer) {
+        if (this.modalPdfError && pdfUrl) {
+            // Use the dedicated PDF error element for PDF files
+            const downloadLink = document.getElementById('pdfDownloadLink');
+            const openLink = document.getElementById('pdfOpenLink');
+            
+            if (downloadLink) downloadLink.href = pdfUrl;
+            if (openLink) openLink.href = pdfUrl;
+            
+            this.modalPdfError.style.display = 'flex';
+            this.modalMediaContainer.style.display = 'none';
+        } else if (this.modalMediaContainer) {
+            // Use the media container for other errors
             this.modalMediaContainer.innerHTML = `
                 <div style="text-align: center; color: #cf6679; padding: 40px;">
                     <i class="fas fa-exclamation-triangle" style="font-size: 3em; margin-bottom: 20px;"></i>
@@ -557,10 +684,12 @@ class MediaModalLightbox {
         const videoTypes = ['mp4', 'webm', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'm4v'];
         const imageTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff'];
         const audioTypes = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'];
+        const pdfTypes = ['pdf'];
         
         if (videoTypes.includes(ext)) return 'video';
         if (imageTypes.includes(ext)) return 'image';
         if (audioTypes.includes(ext)) return 'audio';
+        if (pdfTypes.includes(ext)) return 'pdf';
         
         return 'unknown';
     }
@@ -569,7 +698,8 @@ class MediaModalLightbox {
         const displayNames = {
             video: 'Video',
             image: 'Image',
-            audio: 'Audio'
+            audio: 'Audio',
+            pdf: 'PDF'
         };
         return displayNames[fileType] || 'Media';
     }
@@ -696,10 +826,12 @@ function getFiletypeFromButton(button) {
     const videoTypes = ['mp4', 'webm', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'm4v'];
     const imageTypes = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff'];
     const audioTypes = ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'];
+    const pdfTypes = ['pdf'];
     
     if (videoTypes.includes(ext)) return 'Video';
     if (imageTypes.includes(ext)) return 'Image';
     if (audioTypes.includes(ext)) return 'Audio';
+    if (pdfTypes.includes(ext)) return 'PDF';
     
     return ext.toUpperCase();
 }
@@ -717,7 +849,7 @@ function getMediaListFromPage() {
             const fileType = getFiletypeFromButton(button);
             
             // Only include actual media files (not download links)
-            if (['Video', 'Image', 'Audio'].includes(fileType)) {
+            if (['Video', 'Image', 'Audio', 'PDF'].includes(fileType)) {
                 mediaList.push({
                     url: button.href,
                     filename: filename,

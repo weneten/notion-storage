@@ -789,6 +789,165 @@ audio::-webkit-media-controls-pause-button {
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
+/* Modal PDF Styling */
+.modal-pdf-container {
+    width: 90vw;
+    max-width: 1200px;
+    height: 80vh;
+    max-height: 900px;
+    display: flex;
+    flex-direction: column;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.modal-pdf-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 8px;
+    background-color: #fff;
+    flex: 1;
+}
+
+.modal-pdf-download-bar {
+    background-color: #2a2a2a;
+    padding: 10px 15px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.pdf-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.pdf-controls .btn {
+    padding: 6px 12px;
+    font-size: 0.9em;
+}
+
+.modal-pdf-fallback {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #1e1e1e;
+    border-radius: 8px;
+}
+
+.pdf-fallback-content {
+    text-align: center;
+    color: #e0e0e0;
+    max-width: 400px;
+    padding: 40px;
+}
+
+.pdf-fallback-content h4 {
+    color: #bb86fc;
+    margin-bottom: 15px;
+}
+
+.pdf-fallback-content p {
+    color: #b0b0b0;
+    margin-bottom: 25px;
+    line-height: 1.5;
+}
+
+.mobile-pdf-notice {
+    background-color: #2a2a2a;
+    color: #03dac6;
+    padding: 8px 15px;
+    font-size: 0.9em;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* PDF Loading States */
+.modal-pdf-container.loading {
+    opacity: 0.6;
+}
+
+.modal-pdf-container.loading .modal-pdf-iframe {
+    pointer-events: none;
+}
+
+.pdf-loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(30, 30, 30, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.pdf-loading-spinner {
+    text-align: center;
+    color: #bb86fc;
+}
+
+.pdf-loading-spinner i {
+    font-size: 2em;
+    margin-bottom: 10px;
+    animation: spin 1s linear infinite;
+}
+
+/* PDF Error Handling Styles */
+.modal-pdf-error {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #1e1e1e;
+    border-radius: 8px;
+    padding: 40px;
+}
+
+.pdf-error-content {
+    text-align: center;
+    color: #e0e0e0;
+    max-width: 400px;
+}
+
+.pdf-error-content h4 {
+    color: #cf6679;
+    margin-bottom: 15px;
+    font-size: 1.3em;
+}
+
+.pdf-error-content p {
+    color: #b0b0b0;
+    margin-bottom: 25px;
+    line-height: 1.5;
+}
+
+.pdf-error-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.pdf-error-actions .btn {
+    padding: 10px 20px;
+    font-size: 1em;
+    border-radius: 6px;
+    text-decoration: none;
+    transition: all 0.3s ease;
+}
+
 .modal-footer {
     padding: 15px 20px;
     background-color: #2a2a2a;
@@ -907,6 +1066,62 @@ audio::-webkit-media-controls-pause-button {
     .modal-audio {
         width: 100%;
         max-width: 95vw;
+    }
+    
+    .modal-pdf-container {
+        width: 98vw;
+        height: 75vh;
+        max-height: 600px;
+    }
+    
+    .modal-pdf-download-bar {
+        padding: 8px 12px;
+    }
+    
+    .pdf-controls {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    
+    .pdf-controls .btn {
+        padding: 8px 12px;
+        font-size: 0.85em;
+        flex: 1;
+        min-width: 100px;
+    }
+    
+    .mobile-pdf-notice {
+        padding: 6px 12px;
+        font-size: 0.8em;
+    }
+    
+    .pdf-fallback-content {
+        padding: 30px 20px;
+        max-width: 300px;
+    }
+    
+    .pdf-fallback-content .btn {
+        display: block;
+        width: 100%;
+        margin: 5px 0;
+    }
+    
+    .modal-pdf-error {
+        padding: 30px 20px;
+    }
+    
+    .pdf-error-content {
+        max-width: 300px;
+    }
+    
+    .pdf-error-actions {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .pdf-error-actions .btn {
+        width: 100%;
+        padding: 12px 20px;
     }
     
     .modal-footer {
