@@ -1,3 +1,5 @@
 .env
 .vscode/
 /OLD CODE/
+/__pycache__/
+/uploader/__pycache__/
