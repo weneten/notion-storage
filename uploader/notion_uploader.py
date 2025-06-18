@@ -151,6 +151,18 @@ class NotionFileUploader:
         self.url_cache = {}  # file_page_id -> {url, expires_at, generated_at}
         self.url_cache_lock = threading.Lock()
         self.url_cache_duration = 3600  # 1 hour default cache duration
+        
+        # Validation configuration
+        self.validation_config = {
+            'enabled': True,                    # Enable/disable validation entirely
+            'validation_threshold': 1800,      # Only validate URLs with less than 30 min left (seconds)
+            'urgent_threshold': 300,           # Urgent validation threshold - 5 min (seconds)
+            'bypass_fresh_urls': True,         # Skip validation for fresh URLs (>30 min left)
+            'timeout': 10,                     # Validation request timeout (seconds)
+            'accept_server_errors': True,      # Treat server errors (5xx) as valid
+            'accept_auth_errors': True,        # Treat auth errors (403, 405) as valid
+            'fallback_on_error': True         # Use cached URL if validation fails with error
+        }
 
     def ensure_txt_filename(self, filename: str) -> str:
         """Ensure filename has .txt extension but do not replace spaces"""
@@ -371,7 +383,7 @@ class NotionFileUploader:
 
     def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
         """
-        Get download URL for a file with caching optimization.
+        Get download URL for a file with caching optimization and smart validation timing.
         This replaces get_notion_file_url_from_page_property with caching logic.
         """
         with self.url_cache_lock:
@@ -382,18 +394,44 @@ class NotionFileUploader:
             if cached_entry:
                 expires_at = cached_entry.get('expires_at', 0)
                 cached_url = cached_entry.get('url', '')
+                generated_at = cached_entry.get('generated_at', current_time)
                 
                 # Check if cached URL is still valid (not expired)
                 if current_time < expires_at and cached_url:
-                    print(f"🚀 CACHE HIT: Using cached URL for {page_id} (expires in {int(expires_at - current_time)}s)")
+                    time_until_expiry = expires_at - current_time
+                    print(f"🚀 CACHE HIT: Using cached URL for {page_id} (expires in {int(time_until_expiry)}s)")
                     
-                    # Validate cached URL is still working
-                    if self._validate_cached_url(cached_url):
+                    # Smart validation timing based on configuration
+                    should_validate = False
+                    
+                    if not self.validation_config['enabled']:
+                        print(f"✅ VALIDATION DISABLED: Using cached URL without validation")
                         return cached_url
+                    
+                    if self.validation_config['bypass_fresh_urls'] and time_until_expiry > self.validation_config['validation_threshold']:
+                        print(f"✅ VALIDATION SKIPPED: URL has {int(time_until_expiry/60)} minutes left, using without validation")
+                        return cached_url
+                    
+                    if time_until_expiry < self.validation_config['validation_threshold']:
+                        if time_until_expiry > self.validation_config['urgent_threshold']:
+                            should_validate = True
+                            print(f"⚠️ VALIDATION NEEDED: URL expires in {int(time_until_expiry/60)} minutes, validating...")
+                        elif time_until_expiry <= self.validation_config['urgent_threshold']:
+                            should_validate = True
+                            print(f"🚨 URGENT VALIDATION: URL expires in {int(time_until_expiry)} seconds, validating...")
+                    
+                    # Validate if needed, otherwise use cached URL directly
+                    if should_validate:
+                        validation_result = self._validate_cached_url(cached_url, time_until_expiry)
+                        if validation_result:
+                            return cached_url
+                        else:
+                            print(f"🔄 CACHE INVALID: Cached URL failed validation, fetching new one")
+                            # Remove invalid cached entry
+                            del self.url_cache[page_id]
                     else:
-                        print(f"🔄 CACHE INVALID: Cached URL failed validation, fetching new one")
-                        # Remove invalid cached entry
-                        del self.url_cache[page_id]
+                        # Fresh URL - use without validation
+                        return cached_url
                 else:
                     print(f"🕐 CACHE EXPIRED: Cached URL expired {int(current_time - expires_at)}s ago")
                     # Remove expired entry
@@ -415,19 +453,72 @@ class NotionFileUploader:
             
             return new_url
 
-    def _validate_cached_url(self, url: str) -> bool:
+    def _validate_cached_url(self, url: str, time_until_expiry: float = 0) -> bool:
         """
-        Validate that a cached URL is still working by making a HEAD request.
+        Validate that a cached URL is still working using smart validation method.
+        Uses small GET range request instead of HEAD for better compatibility.
         """
         try:
-            response = requests.head(url, timeout=5, allow_redirects=True)
-            is_valid = response.status_code == 200
-            if not is_valid:
-                print(f"🚨 URL VALIDATION FAILED: Status {response.status_code}")
-            return is_valid
+            print(f"🔍 VALIDATING URL: Starting validation (expires in {int(time_until_expiry)}s)")
+            
+            # Use small range GET request instead of HEAD for better compatibility with Notion's CDN
+            headers = {
+                'Range': 'bytes=0-1',  # Request just first 2 bytes
+                'User-Agent': 'NotionUploader/1.0'
+            }
+            
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=self.validation_config['timeout'],
+                allow_redirects=True
+            )
+            
+            # Build valid status codes based on configuration
+            valid_status_codes = [200, 206, 416]  # 416 = Range Not Satisfiable (but URL exists)
+            
+            if self.validation_config['accept_auth_errors']:
+                valid_status_codes.extend([403, 405])  # Forbidden, Method Not Allowed
+            
+            if response.status_code in valid_status_codes:
+                print(f"✅ URL VALIDATION PASSED: Status {response.status_code}")
+                return True
+            elif response.status_code == 404:
+                print(f"🚨 URL VALIDATION FAILED: Status {response.status_code} - URL not found")
+                return False
+            elif response.status_code in [500, 502, 503, 504]:
+                # Server errors - handle based on configuration
+                if self.validation_config['accept_server_errors']:
+                    print(f"⚠️ URL VALIDATION INCONCLUSIVE: Server error {response.status_code}, treating as valid per config")
+                    return True
+                else:
+                    print(f"🚨 URL VALIDATION FAILED: Server error {response.status_code}")
+                    return False
+            else:
+                print(f"🚨 URL VALIDATION FAILED: Unexpected status {response.status_code}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            if self.validation_config['fallback_on_error']:
+                print(f"⚠️ URL VALIDATION TIMEOUT: Request timed out, using cached URL per config")
+                return True
+            else:
+                print(f"🚨 URL VALIDATION TIMEOUT: Request timed out, invalidating cached URL")
+                return False
+        except requests.exceptions.ConnectionError as e:
+            if self.validation_config['fallback_on_error']:
+                print(f"⚠️ URL VALIDATION CONNECTION ERROR: {e}, using cached URL per config")
+                return True
+            else:
+                print(f"🚨 URL VALIDATION CONNECTION ERROR: {e}, invalidating cached URL")
+                return False
         except Exception as e:
-            print(f"🚨 URL VALIDATION ERROR: {e}")
-            return False
+            if self.validation_config['fallback_on_error']:
+                print(f"⚠️ URL VALIDATION ERROR: {e}, using cached URL per config")
+                return True
+            else:
+                print(f"🚨 URL VALIDATION ERROR: {e}, invalidating cached URL")
+                return False
 
     def _fetch_fresh_download_url(self, page_id: str, original_filename: str) -> str:
         """
@@ -530,6 +621,86 @@ class NotionFileUploader:
             
             if expired_keys:
                 print(f"🧹 CACHE CLEANUP: Removed {len(expired_keys)} expired entries")
+
+    def configure_validation(self, **kwargs) -> Dict[str, Any]:
+        """
+        Configure URL validation behavior.
+        
+        Args:
+            enabled (bool): Enable/disable validation entirely
+            validation_threshold (int): Only validate URLs with less than this many seconds left
+            urgent_threshold (int): Urgent validation threshold in seconds
+            bypass_fresh_urls (bool): Skip validation for fresh URLs
+            timeout (int): Validation request timeout in seconds
+            accept_server_errors (bool): Treat server errors (5xx) as valid
+            accept_auth_errors (bool): Treat auth errors (403, 405) as valid
+            fallback_on_error (bool): Use cached URL if validation fails with error
+            
+        Returns:
+            Dict with current validation configuration
+        """
+        for key, value in kwargs.items():
+            if key in self.validation_config:
+                old_value = self.validation_config[key]
+                self.validation_config[key] = value
+                print(f"📝 VALIDATION CONFIG: {key} changed from {old_value} to {value}")
+            else:
+                print(f"⚠️ VALIDATION CONFIG: Unknown configuration key: {key}")
+        
+        return self.get_validation_config()
+    
+    def get_validation_config(self) -> Dict[str, Any]:
+        """
+        Get current validation configuration.
+        
+        Returns:
+            Dict with current validation settings
+        """
+        return self.validation_config.copy()
+    
+    def disable_validation(self):
+        """
+        Disable URL validation entirely - cached URLs will be used without validation.
+        """
+        self.validation_config['enabled'] = False
+        print("🚫 VALIDATION DISABLED: Cached URLs will be used without validation")
+    
+    def enable_validation(self):
+        """
+        Enable URL validation with smart timing.
+        """
+        self.validation_config['enabled'] = True
+        print("✅ VALIDATION ENABLED: Smart validation timing active")
+    
+    def set_conservative_validation(self):
+        """
+        Set conservative validation settings - validate more aggressively.
+        """
+        self.validation_config.update({
+            'enabled': True,
+            'validation_threshold': 3600,  # Validate URLs with less than 1 hour left
+            'urgent_threshold': 1800,      # Urgent validation for URLs with less than 30 min left
+            'bypass_fresh_urls': False,    # Always validate
+            'accept_server_errors': False, # Don't accept server errors as valid
+            'accept_auth_errors': True,    # Still accept auth errors (403, 405)
+            'fallback_on_error': False     # Don't use cached URL on validation errors
+        })
+        print("🛡️ CONSERVATIVE VALIDATION: More aggressive validation enabled")
+    
+    def set_permissive_validation(self):
+        """
+        Set permissive validation settings - validate less aggressively.
+        """
+        self.validation_config.update({
+            'enabled': True,
+            'validation_threshold': 900,   # Only validate URLs with less than 15 min left
+            'urgent_threshold': 300,       # Urgent validation for URLs with less than 5 min left
+            'bypass_fresh_urls': True,     # Skip validation for fresh URLs
+            'accept_server_errors': True,  # Accept server errors as valid
+            'accept_auth_errors': True,    # Accept auth errors as valid
+            'fallback_on_error': True      # Use cached URL on validation errors
+        })
+        print("🤝 PERMISSIVE VALIDATION: Less aggressive validation enabled")
     def upload_file_stream(self, file_stream: Iterable[bytes], filename: str, user_id: str, total_size: int, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Uploads a file to Notion from a stream to the specified database.
