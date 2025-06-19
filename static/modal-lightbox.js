@@ -170,9 +170,19 @@ class MediaModalLightbox {
         // Prevent body scrolling
         document.body.style.overflow = 'hidden';
         
-        // Show modal
+        // Show modal immediately with loading state
         this.modal.style.display = 'flex';
         this.modal.setAttribute('aria-hidden', 'false');
+        
+        // Show loading state first with filename for context
+        this.showLoading(filename);
+        
+        // Show modal with animation immediately
+        setTimeout(() => {
+            if (this.modal) {
+                this.modal.classList.add('show');
+            }
+        }, 50);
         
         // Update modal info
         if (this.modalFilename) this.modalFilename.textContent = filename;
@@ -182,25 +192,14 @@ class MediaModalLightbox {
         // Update navigation visibility
         this.updateNavigation();
         
-        // Show loading state
-        this.showLoading();
+        // Focus management for accessibility
+        if (this.modalClose) {
+            this.modalClose.focus();
+        }
         
+        // Load media content asynchronously after modal is shown
         try {
-            // Load media content
             await this.loadMediaContent(mediaUrl, filename);
-            
-            // Show modal with animation
-            setTimeout(() => {
-                if (this.modal) {
-                    this.modal.classList.add('show');
-                }
-            }, 50);
-            
-            // Focus management for accessibility
-            if (this.modalClose) {
-                this.modalClose.focus();
-            }
-            
         } catch (error) {
             console.error('Error loading media content:', error);
             this.showError('Failed to load media content');
@@ -286,8 +285,14 @@ class MediaModalLightbox {
         
         if (mediaElement) {
             mediaContainer.appendChild(mediaElement);
-            this.hideLoading();
-            mediaContainer.classList.add('show');
+            
+            // Smooth transition from loading to content
+            setTimeout(() => {
+                this.hideLoading();
+                setTimeout(() => {
+                    mediaContainer.classList.add('show');
+                }, 150);
+            }, 100);
         }
     }
     
@@ -527,13 +532,55 @@ class MediaModalLightbox {
     /**
      * Show/hide loading state
      */
-    showLoading() {
+    showLoading(filename = '') {
         if (this.modalLoading) {
             this.modalLoading.style.display = 'flex';
+            
+            // Update loading text based on file type
+            const loadingText = this.modalLoading.querySelector('.modal-loading-text');
+            const loadingSubtext = this.modalLoading.querySelector('.modal-loading-subtext');
+            
+            if (filename) {
+                const fileType = this.getFileType(filename);
+                const messages = this.getLoadingMessages(fileType);
+                
+                if (loadingText) loadingText.textContent = messages.main;
+                if (loadingSubtext) loadingSubtext.textContent = messages.sub;
+            }
         }
         if (this.modalMediaContainer) {
             this.modalMediaContainer.classList.remove('show');
         }
+    }
+    
+    /**
+     * Get loading messages based on file type
+     */
+    getLoadingMessages(fileType) {
+        const messages = {
+            video: {
+                main: 'Loading video...',
+                sub: 'Preparing video player and buffering content'
+            },
+            audio: {
+                main: 'Loading audio...',
+                sub: 'Setting up audio player and loading track'
+            },
+            image: {
+                main: 'Loading image...',
+                sub: 'Downloading and optimizing image for display'
+            },
+            pdf: {
+                main: 'Loading PDF...',
+                sub: 'Preparing document viewer and loading content'
+            },
+            unknown: {
+                main: 'Loading content...',
+                sub: 'Please wait while we prepare your media'
+            }
+        };
+        
+        return messages[fileType] || messages.unknown;
     }
     
     hideLoading() {
@@ -576,6 +623,8 @@ class MediaModalLightbox {
         if (this.currentMediaIndex > 0) {
             const prevMedia = this.currentMediaList[this.currentMediaIndex - 1];
             if (prevMedia) {
+                // Show loading immediately when navigating
+                this.showLoading(prevMedia.filename);
                 this.openModal(
                     prevMedia.url,
                     prevMedia.filename,
@@ -592,6 +641,8 @@ class MediaModalLightbox {
         if (this.currentMediaIndex < this.currentMediaList.length - 1) {
             const nextMedia = this.currentMediaList[this.currentMediaIndex + 1];
             if (nextMedia) {
+                // Show loading immediately when navigating
+                this.showLoading(nextMedia.filename);
                 this.openModal(
                     nextMedia.url,
                     nextMedia.filename,

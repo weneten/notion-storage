@@ -595,15 +595,39 @@ input:checked + .slider:before {
     justify-content: center;
     color: #bb86fc;
     font-size: 1.1em;
+    padding: 60px 40px;
+    min-height: 200px;
+    background: radial-gradient(circle, rgba(187, 134, 252, 0.1) 0%, transparent 70%);
+    border-radius: 12px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
 
 .loading-spinner {
-    font-size: 2em;
-    margin-bottom: 15px;
+    font-size: 3em;
+    margin-bottom: 20px;
+    color: #bb86fc;
 }
 
 .loading-spinner i {
-    animation: spin 1s linear infinite;
+    animation: spin 1.5s linear infinite;
+    filter: drop-shadow(0 0 10px rgba(187, 134, 252, 0.5));
+}
+
+.modal-loading-text {
+    font-size: 1.2em;
+    font-weight: 500;
+    text-align: center;
+    margin-top: 10px;
+    color: #e0e0e0;
+}
+
+.modal-loading-subtext {
+    font-size: 0.9em;
+    color: #b0b0b0;
+    text-align: center;
+    margin-top: 8px;
+    opacity: 0.8;
 }
 
 @keyframes spin {
@@ -611,15 +635,30 @@ input:checked + .slider:before {
     100% { transform: rotate(360deg); }
 }
 
+@keyframes pulse {
+    0% { opacity: 0.8; }
+    50% { opacity: 1; }
+    100% { opacity: 0.8; }
+}
+
+.modal-loading-text {
+    animation: pulse 2s ease-in-out infinite;
+}
+
 .modal-media-container {
     display: none;
     max-width: 100%;
     max-height: 100%;
     position: relative;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.4s ease, transform 0.4s ease;
 }
 
 .modal-media-container.show {
     display: block;
+    opacity: 1;
+    transform: translateY(0);
 }
 
 /* Modal Video Styling */
@@ -1140,6 +1179,61 @@ tr[data-file-hash] .view-button-container .modal-view-link:hover::before {
     padding: 40px;
     backdrop-filter: blur(10px);
     -webkit-backdrop-filter: blur(10px);
+    transform: translateY(0);
+    animation: modalFadeIn 0.3s ease-out;
+}
+
+@keyframes modalFadeIn {
+    0% {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Mobile loading adjustments */
+@media (max-width: 768px) {
+    .modal-loading {
+        padding: 30px 20px;
+        min-height: 150px;
+    }
+    
+    .loading-spinner {
+        font-size: 2.5em;
+        margin-bottom: 15px;
+    }
+    
+    .modal-loading-text {
+        font-size: 1.1em;
+    }
+    
+    .modal-loading-subtext {
+        font-size: 0.85em;
+        margin-top: 6px;
+    }
+}
+
+@media (max-width: 480px) {
+    .modal-loading {
+        padding: 25px 15px;
+        min-height: 120px;
+    }
+    
+    .loading-spinner {
+        font-size: 2em;
+        margin-bottom: 12px;
+    }
+    
+    .modal-loading-text {
+        font-size: 1em;
+    }
+    
+    .modal-loading-subtext {
+        font-size: 0.8em;
+    }
 }
 
 /* Enhanced focus styles for accessibility */
