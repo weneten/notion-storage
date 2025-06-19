@@ -319,67 +319,16 @@
         let buttonClass = 'btn-success';
         let icon = 'fas fa-eye';
         
-        // For video files, create both inline player and modal view button
-        if (fileType === 'video') {
-            const videoId = `video-${fileHash}`;
-            return `<div class="video-player-container" style="margin-bottom: 10px;">
-                        <video
-                            id="${videoId}"
-                            controls
-                            preload="metadata"
-                            playsinline
-                            webkit-playsinline
-                            muted
-                            style="width: 100%; max-width: 400px; height: auto; border-radius: 4px;"
-                            poster=""
-                            controlslist="nodownload"
-                            crossorigin="anonymous"
-                            onloadstart="this.setAttribute('data-loading', 'true')"
-                            oncanplay="this.removeAttribute('data-loading')"
-                            onerror="this.setAttribute('data-error', 'true'); console.error('Video load error for ${filename}');"
-                        >
-                            <source src="${viewUrl}" type="video/mp4">
-                            <source src="${viewUrl}" type="video/webm">
-                            <source src="${viewUrl}" type="video/quicktime">
-                            Your browser does not support the video tag.
-                            <a href="${viewUrl}" class="modal-view-link">View Video</a>
-                        </video>
-                        <div style="margin-top: 5px;">
-                            <a href="${viewUrl}" class="btn btn-success btn-sm modal-view-btn" data-filename="${filename}" data-filetype="video">
-                                <i class="fas fa-expand mr-1"></i>Fullscreen
-                            </a>
-                            <button onclick="toggleMute('${videoId}')" class="btn btn-secondary btn-sm">
-                                <i class="fas fa-volume-mute mr-1"></i>Unmute
-                            </button>
-                        </div>
-                    </div>`;
-        }
-        
-        // For audio files, create both inline player and modal view button
-        if (fileType === 'audio') {
-            return `<div class="audio-player-container" style="margin-bottom: 10px;">
-                        <audio
-                            controls
-                            preload="metadata"
-                            style="width: 100%; max-width: 400px; height: 40px;"
-                            crossorigin="anonymous"
-                        >
-                            <source src="${viewUrl}" type="audio/mpeg">
-                            <source src="${viewUrl}" type="audio/wav">
-                            <source src="${viewUrl}" type="audio/ogg">
-                            Your browser does not support the audio tag.
-                            <a href="${viewUrl}" class="modal-view-link">Play Audio</a>
-                        </audio>
-                        <div style="margin-top: 5px;">
-                            <a href="${viewUrl}" class="btn btn-success btn-sm modal-view-btn" data-filename="${filename}" data-filetype="audio">
-                                <i class="fas fa-external-link-alt mr-1"></i>Open
-                            </a>
-                        </div>
-                    </div>`;
-        }
-        
-        // Customize button based on file type for other files
+        // Customize button based on file type
         switch(fileType) {
+            case 'video':
+                icon = 'fas fa-play';
+                buttonClass = 'btn-success';
+                break;
+            case 'audio':
+                icon = 'fas fa-volume-up';
+                buttonClass = 'btn-success';
+                break;
             case 'image':
                 icon = 'fas fa-image';
                 buttonClass = 'btn-success';
@@ -395,25 +344,6 @@
                 </a>`;
     }
     
-    // Helper function to toggle video mute (useful for iOS autoplay policies)
-    function toggleMute(videoId) {
-        const video = document.getElementById(videoId);
-        const button = event.target.closest('button');
-        
-        if (video) {
-            if (video.muted) {
-                video.muted = false;
-                button.innerHTML = '<i class="fas fa-volume-up mr-1"></i>Mute';
-                button.classList.remove('btn-secondary');
-                button.classList.add('btn-warning');
-            } else {
-                video.muted = true;
-                button.innerHTML = '<i class="fas fa-volume-mute mr-1"></i>Unmute';
-                button.classList.remove('btn-warning');
-                button.classList.add('btn-secondary');
-            }
-        }
-    }
 
     function initializeFileTypeIcons() {
         // Set file type icons for server-rendered files

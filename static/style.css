@@ -478,47 +478,8 @@ input:checked + .slider:before {
     }
 }
 
-/* Video player enhancements for iOS Safari and mobile */
-.video-player-container {
-    margin: 10px 0;
-    border-radius: 8px;
-    background-color: #2a2a2a;
-    padding: 10px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-
-.video-player-container video {
-    width: 100%;
-    max-width: 400px;
-    height: auto;
-    border-radius: 4px;
-    background-color: #000;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
-}
-
-/* iOS Safari specific video optimizations */
-@supports (-webkit-touch-callout: none) {
-    .video-player-container video {
-        /* Ensure proper aspect ratio on iOS */
-        object-fit: contain;
-        /* Better performance on iOS */
-        transform: translateZ(0);
-        -webkit-transform: translateZ(0);
-    }
-}
-
-/* Mobile-specific video player adjustments */
+/* Mobile-specific adjustments for action buttons */
 @media (max-width: 768px) {
-    .video-player-container {
-        margin: 8px 0;
-        padding: 8px;
-    }
-    
-    .video-player-container video {
-        max-width: 100%;
-        border-radius: 6px;
-    }
-    
     /* Stack action buttons vertically on small screens */
     .action-buttons {
         display: flex;
@@ -531,96 +492,6 @@ input:checked + .slider:before {
         margin: 2px 0;
         width: auto;
         min-width: 80px;
-    }
-    
-    /* Make video containers more compact on mobile */
-    .video-player-container {
-        padding: 6px;
-        margin: 6px 0;
-    }
-}
-
-/* Enhanced video controls for better mobile experience */
-video::-webkit-media-controls-panel {
-    background-color: rgba(0, 0, 0, 0.8);
-}
-
-video::-webkit-media-controls-play-button,
-video::-webkit-media-controls-pause-button {
-    background-color: #bb86fc;
-    border-radius: 50%;
-}
-
-/* Loading state for videos */
-video[data-loading="true"] {
-    background: linear-gradient(45deg, #2a2a2a 25%, transparent 25%),
-                linear-gradient(-45deg, #2a2a2a 25%, transparent 25%),
-                linear-gradient(45deg, transparent 75%, #2a2a2a 75%),
-                linear-gradient(-45deg, transparent 75%, #2a2a2a 75%);
-    background-size: 20px 20px;
-    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
-    animation: loading-pattern 1s linear infinite;
-}
-
-@keyframes loading-pattern {
-    0% { background-position: 0 0, 0 10px, 10px -10px, -10px 0px; }
-    100% { background-position: 20px 20px, 20px 30px, 30px 10px, 10px 20px; }
-}
-
-/* Error state for videos */
-video[data-error="true"]::after {
-    content: "⚠️ Video loading failed";
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: #cf6679;
-    background-color: rgba(0, 0, 0, 0.8);
-    padding: 10px 15px;
-    border-radius: 4px;
-    font-size: 14px;
-    z-index: 10;
-}
-
-/* Audio player enhancements */
-.audio-player-container {
-    margin: 10px 0;
-    border-radius: 8px;
-    background-color: #2a2a2a;
-    padding: 10px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-}
-
-.audio-player-container audio {
-    width: 100%;
-    max-width: 400px;
-    height: 40px;
-    border-radius: 4px;
-    background-color: #1e1e1e;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
-}
-
-/* Enhanced audio controls */
-audio::-webkit-media-controls-panel {
-    background-color: rgba(30, 30, 30, 0.9);
-}
-
-audio::-webkit-media-controls-play-button,
-audio::-webkit-media-controls-pause-button {
-    background-color: #bb86fc;
-    border-radius: 50%;
-}
-
-/* Mobile-specific audio player adjustments */
-@media (max-width: 768px) {
-    .audio-player-container {
-        margin: 8px 0;
-        padding: 8px;
-    }
-    
-    .audio-player-container audio {
-        max-width: 100%;
-        height: 35px;
     }
 }
 
@@ -1240,13 +1111,6 @@ audio::-webkit-media-controls-pause-button {
     box-shadow: 0 4px 8px rgba(187, 134, 252, 0.3);
 }
 
-/* Video and audio containers with modal integration */
-.video-player-container:hover,
-.audio-player-container:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
-    transition: transform 0.3s ease, box-shadow 0.3s ease;
-}
 
 /* Add visual indicator for viewable files */
 tr[data-file-hash] .view-button-container .modal-view-btn::before,
@@ -1307,12 +1171,6 @@ tr[data-file-hash] .view-button-container .modal-view-link:hover::before {
     .modal-view-btn:active,
     .modal-view-link:active {
         transform: scale(0.95);
-        transition: transform 0.1s ease;
-    }
-    
-    .video-player-container:active,
-    .audio-player-container:active {
-        transform: scale(0.98);
         transition: transform 0.1s ease;
     }
 }
