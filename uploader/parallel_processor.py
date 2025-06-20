@@ -12,7 +12,7 @@ import hashlib
 import secrets
 
 # Simple configuration for upload limits
-MAX_WORKERS = 4
+MAX_WORKERS = 10
 CHUNK_SIZE = 5 * 1024 * 1024  # 5MB chunks for Notion API
 
 # Import checkpoint management

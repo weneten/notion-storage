@@ -271,7 +271,7 @@ class NotionStreamingUploader:
             
             # Use parallel chunk processor
             parallel_processor = ParallelChunkProcessor(
-                max_workers=4,
+                max_workers=10,
                 notion_uploader=self.notion_uploader,
                 upload_session=upload_session,
                 socketio=self.socketio
