@@ -950,7 +950,24 @@ input:checked + .slider:before {
         max-height: 98vh;
         border-radius: 8px;
     }
-    
+    /* Ensure overlays never block upload controls in portrait mode */
+    @media (orientation: portrait) {
+        .modal-overlay {
+            z-index: 1 !important;
+            pointer-events: none !important;
+            opacity: 0 !important;
+        }
+        .alert {
+            z-index: 1 !important;
+        }
+        #progressBarContainer,
+        #uploadForm,
+        #fileInput,
+        button[type="submit"] {
+            z-index: 10001 !important;
+            position: relative !important;
+        }
+    }
     .modal-header {
         padding: 12px 15px;
     }
