@@ -136,7 +136,8 @@ class ChunkProcessor:
                 raise
 
 class NotionFileUploader:
-    def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28", global_file_index_db_id: str = None):
+    def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
+                 global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
         self.socketio = socketio
         self.base_url = "https://api.notion.com/v1"
@@ -147,6 +148,7 @@ class NotionFileUploader:
             "accept": "application/json"
         }
         self.global_file_index_db_id = global_file_index_db_id
+        self.notion_space_id = notion_space_id or "c91485e6-ff71-811c-b300-000345011419"  # Default space ID
         
         # URL caching for performance optimization
         self.url_cache = {}  # file_page_id -> {url, expires_at, generated_at}
@@ -384,8 +386,89 @@ class NotionFileUploader:
 
     def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
         """
-        Get download URL for a file with caching optimization and smart validation timing.
-        This replaces get_notion_file_url_from_page_property with caching logic.
+        Get download URL for a file, now prioritizing permanent URLs over temporary ones.
+        Returns permanent Notion signed attachment URLs when available.
+        """
+        try:
+            # First check if we have a stored permanent URL in the database
+            page_info = self.get_user_by_id(page_id)
+            if page_info:
+                properties = page_info.get('properties', {})
+                
+                # Check for stored permanent URL
+                permanent_url_property = properties.get('permanent_download_url', {})
+                permanent_url = permanent_url_property.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                
+                if permanent_url:
+                    print(f"🔗 PERMANENT URL: Using stored permanent URL for {page_id}")
+                    return permanent_url
+                
+                # If no permanent URL stored, generate one from the file upload ID
+                file_property = properties.get('file', {})
+                files_array = file_property.get('files', [])
+                
+                if files_array:
+                    file_info = files_array[0]
+                    file_upload_id = None
+                    
+                    # Extract file upload ID from the file info
+                    if file_info.get('type') == 'file_upload':
+                        file_upload_info = file_info.get('file_upload', {})
+                        file_upload_id = file_upload_info.get('id')
+                    elif 'file_upload' in file_info:
+                        file_upload_id = file_info['file_upload'].get('id')
+                    
+                    if file_upload_id:
+                        # Generate permanent URL
+                        permanent_url = self.generate_permanent_download_url(file_upload_id, original_filename)
+                        
+                        if permanent_url:
+                            # Store the permanent URL in the database
+                            self._store_permanent_url(page_id, permanent_url)
+                            print(f"🔗 GENERATED: Created and stored permanent URL for {page_id}")
+                            return permanent_url
+            
+            # Fallback to original caching logic for legacy URLs
+            print(f"⚠️ FALLBACK: No permanent URL available, using legacy temporary URL logic for {page_id}")
+            return self._get_legacy_download_url(page_id, original_filename)
+            
+        except Exception as e:
+            print(f"Error getting download URL for file: {e}")
+            # Fallback to legacy logic
+            return self._get_legacy_download_url(page_id, original_filename)
+
+    def _store_permanent_url(self, page_id: str, permanent_url: str) -> None:
+        """Store permanent URL in the database"""
+        try:
+            url = f"{self.base_url}/pages/{page_id}"
+            payload = {
+                "properties": {
+                    "permanent_download_url": {
+                        "rich_text": [
+                            {
+                                "text": {
+                                    "content": permanent_url
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+            
+            headers = {**self.headers, "Content-Type": "application/json"}
+            response = requests.patch(url, json=payload, headers=headers)
+            
+            if response.status_code == 200:
+                print(f"✅ Stored permanent URL for page {page_id}")
+            else:
+                print(f"❌ Failed to store permanent URL: {response.text}")
+                
+        except Exception as e:
+            print(f"Error storing permanent URL: {e}")
+
+    def _get_legacy_download_url(self, page_id: str, original_filename: str) -> str:
+        """
+        Legacy method for getting temporary download URLs with caching.
         """
         with self.url_cache_lock:
             # Check if we have a cached URL that's still valid
@@ -402,7 +485,7 @@ class NotionFileUploader:
                 # Check if cached URL is still valid (not expired)
                 if current_time < expires_at and cached_url:
                     time_until_expiry = expires_at - current_time
-                    print(f"🚀 CACHE HIT: Using cached URL for {page_id} (expires in {int(time_until_expiry)}s, size: {cached_file_size} bytes)")
+                    print(f"🚀 LEGACY CACHE HIT: Using cached URL for {page_id} (expires in {int(time_until_expiry)}s, size: {cached_file_size} bytes)")
                     
                     # Smart validation timing based on configuration
                     should_validate = False
@@ -441,7 +524,7 @@ class NotionFileUploader:
                     del self.url_cache[page_id]
             
             # Cache miss or invalid - fetch new URL with file size
-            print(f"🔄 CACHE MISS: Fetching new URL from Notion API for {page_id}")
+            print(f"🔄 LEGACY CACHE MISS: Fetching new URL from Notion API for {page_id}")
             new_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
             
             if new_url:
@@ -454,7 +537,7 @@ class NotionFileUploader:
                     'content_type': content_type
                 }
                 self.url_cache[page_id] = cache_entry
-                print(f"💾 CACHED: New URL cached for {page_id} with size {file_size} bytes (expires at {cache_entry['expires_at']})")
+                print(f"💾 LEGACY CACHED: New URL cached for {page_id} with size {file_size} bytes (expires at {cache_entry['expires_at']})")
             
             return new_url
 
@@ -692,6 +775,145 @@ class NotionFileUploader:
         except Exception as e:
             print(f"Error determining content type: {e}")
             return 'application/octet-stream'
+
+    def generate_permanent_download_url(self, file_upload_id: str, original_filename: str,
+                                      space_id: str = None, table: str = "block") -> str:
+        """
+        Generate permanent Notion signed attachment URL format.
+        
+        Format: https://www.notion.so/signed/attachment%3A{attachment_id}%3A{filename}?id={file_id}&table={table}&spaceId={space_id}&name={filename}
+        
+        Args:
+            file_upload_id: The Notion file upload ID
+            original_filename: Original filename for the attachment
+            space_id: Notion space ID (optional, will try to extract from context)
+            table: Database table type (default: "block")
+            
+        Returns:
+            str: Permanent download URL
+        """
+        try:
+            # URL encode the filename for use in the path
+            encoded_filename = urllib.parse.quote(original_filename, safe='')
+            
+            # Create the attachment identifier
+            attachment_id = f"attachment%3A{file_upload_id}%3A{encoded_filename}"
+            
+            # If space_id is not provided, use the configured space ID
+            if not space_id:
+                space_id = self.notion_space_id
+            
+            # Construct the permanent URL
+            permanent_url = (
+                f"https://www.notion.so/signed/{attachment_id}"
+                f"?id={file_upload_id}&table={table}&spaceId={space_id}&name={encoded_filename}"
+            )
+            
+            print(f"🔗 Generated permanent download URL for {original_filename}")
+            print(f"🔗 URL: {permanent_url}")
+            
+            return permanent_url
+            
+        except Exception as e:
+            print(f"Error generating permanent download URL: {e}")
+            return ""
+
+    def migrate_to_permanent_urls(self, database_id: str) -> Dict[str, Any]:
+        """
+        Migrate existing files in a database to use permanent URLs.
+        This method can be called to update existing files that don't have permanent URLs yet.
+        
+        Args:
+            database_id: The database ID to migrate
+            
+        Returns:
+            Dict with migration statistics
+        """
+        try:
+            print(f"🔄 Starting migration to permanent URLs for database: {database_id}")
+            
+            # Query all files in the database
+            files_response = self.get_files_from_user_database(database_id)
+            files = files_response.get('results', [])
+            
+            migrated_count = 0
+            skipped_count = 0
+            error_count = 0
+            
+            for file_entry in files:
+                try:
+                    file_page_id = file_entry.get('id')
+                    properties = file_entry.get('properties', {})
+                    
+                    # Check if already has permanent URL
+                    permanent_url_property = properties.get('permanent_download_url', {})
+                    existing_permanent_url = permanent_url_property.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                    
+                    if existing_permanent_url:
+                        print(f"⏭️ Skipping {file_page_id} - already has permanent URL")
+                        skipped_count += 1
+                        continue
+                    
+                    # Extract filename and file upload ID
+                    filename_property = properties.get('filename', {})
+                    original_filename = filename_property.get('title', [{}])[0].get('text', {}).get('content', '')
+                    
+                    file_property = properties.get('file', {})
+                    files_array = file_property.get('files', [])
+                    
+                    if not files_array or not original_filename:
+                        print(f"⚠️ Skipping {file_page_id} - missing filename or file data")
+                        skipped_count += 1
+                        continue
+                    
+                    file_info = files_array[0]
+                    file_upload_id = None
+                    
+                    # Extract file upload ID
+                    if file_info.get('type') == 'file_upload':
+                        file_upload_info = file_info.get('file_upload', {})
+                        file_upload_id = file_upload_info.get('id')
+                    elif 'file_upload' in file_info:
+                        file_upload_id = file_info['file_upload'].get('id')
+                    
+                    if not file_upload_id:
+                        print(f"⚠️ Skipping {file_page_id} - no file upload ID found")
+                        skipped_count += 1
+                        continue
+                    
+                    # Generate and store permanent URL
+                    permanent_url = self.generate_permanent_download_url(file_upload_id, original_filename)
+                    if permanent_url:
+                        self._store_permanent_url(file_page_id, permanent_url)
+                        print(f"✅ Migrated {file_page_id} - {original_filename}")
+                        migrated_count += 1
+                    else:
+                        print(f"❌ Failed to generate permanent URL for {file_page_id}")
+                        error_count += 1
+                        
+                except Exception as e:
+                    print(f"❌ Error migrating file {file_page_id}: {e}")
+                    error_count += 1
+            
+            result = {
+                'database_id': database_id,
+                'total_files': len(files),
+                'migrated': migrated_count,
+                'skipped': skipped_count,
+                'errors': error_count,
+                'status': 'completed'
+            }
+            
+            print(f"🎉 Migration completed: {migrated_count} migrated, {skipped_count} skipped, {error_count} errors")
+            return result
+            
+        except Exception as e:
+            print(f"❌ Migration failed: {e}")
+            return {
+                'database_id': database_id,
+                'status': 'failed',
+                'error': str(e)
+            }
 
     def cache_file_metadata(self, page_id: str, url: str, file_size: int, content_type: str):
         """
@@ -1854,6 +2076,9 @@ class NotionFileUploader:
                 },
                 "salt": {
                     "rich_text": {}
+                },
+                "permanent_download_url": {
+                    "rich_text": {}
                 }
             },
             "is_inline": True
@@ -1996,6 +2221,10 @@ class NotionFileUploader:
 
         # Use original_filename if provided, otherwise fall back to filename
         display_filename = original_filename if original_filename else filename
+        
+        # Generate permanent download URL
+        permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename)
+        print(f"🔗 Generated permanent URL: {permanent_url}")
             
         # Create a new page in the database with file information
         payload = {
@@ -2041,6 +2270,15 @@ class NotionFileUploader:
                         {
                             "text": {
                                 "content": salt
+                            }
+                        }
+                    ]
+                },
+                "permanent_download_url": {
+                    "rich_text": [
+                        {
+                            "text": {
+                                "content": permanent_url
                             }
                         }
                     ]
@@ -2288,13 +2526,23 @@ class NotionFileUploader:
         """Context manager exit handler"""
         pass
 
-    def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool) -> Dict[str, Any]:
+    def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool, permanent_url: str = "") -> Dict[str, Any]:
         """Adds an entry to the Global File Index database."""
         global_index_db_id = self.global_file_index_db_id
         if not global_index_db_id:
             raise Exception("GLOBAL_FILE_INDEX_DB_ID not set in NotionFileUploader instance. Global File Index database must be created manually.")
 
         url = f"{self.base_url}/pages"
+
+        # If permanent_url is not provided, try to get it from the file page
+        if not permanent_url:
+            try:
+                page_info = self.get_user_by_id(file_page_id)
+                if page_info:
+                    permanent_url_property = page_info.get('properties', {}).get('permanent_download_url', {})
+                    permanent_url = permanent_url_property.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            except Exception as e:
+                print(f"Could not retrieve permanent URL for index: {e}")
 
         payload = {
             "parent": {"database_id": global_index_db_id},
@@ -2313,6 +2561,9 @@ class NotionFileUploader:
                 },
                 "Is Public": {
                     "checkbox": is_public
+                },
+                "Permanent Download URL": {
+                    "rich_text": [{"text": {"content": permanent_url}}]
                 }
             }
         }
@@ -2323,6 +2574,7 @@ class NotionFileUploader:
             response = requests.post(url, json=payload, headers=headers)
             if response.status_code != 200:
                 raise Exception(f"Failed to add file to Global File Index: {response.text}")
+            print(f"✅ Added file to Global Index with permanent URL: {permanent_url[:50]}..." if permanent_url else "✅ Added file to Global Index (no permanent URL)")
             return response.json()
         except Exception as e:
             print(f"Error adding file to Global File Index: {e}")

@@ -117,6 +117,9 @@ class ParallelChunkProcessor:
                 multipart_info['id']
             )
             
+            # Extract the actual file ID from completion response for permanent URL generation
+            actual_file_id = complete_result.get('file', {}).get('id', multipart_info['id'])
+            
             # Mark upload as completed in checkpoint
             if checkpoint_manager and checkpoint_key:
                 checkpoint_manager.complete_upload(checkpoint_key)
@@ -124,7 +127,7 @@ class ParallelChunkProcessor:
             print(f"🎉 Multipart upload completed successfully")
             
             return {
-                'file_upload_id': multipart_info['id'],
+                'file_upload_id': actual_file_id,  # Use the correct file ID for permanent URL generation
                 'status': 'completed',
                 'result': complete_result
             }

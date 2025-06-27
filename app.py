@@ -110,8 +110,14 @@ login_manager.login_view = 'login'
 NOTION_API_TOKEN = os.environ.get('NOTION_API_TOKEN')
 NOTION_USER_DB_ID = os.environ.get('NOTION_USER_DB_ID')
 GLOBAL_FILE_INDEX_DB_ID = os.environ.get('GLOBAL_FILE_INDEX_DB_ID')
+NOTION_SPACE_ID = os.environ.get('NOTION_SPACE_ID')  # Add space ID configuration
 
-uploader = NotionFileUploader(api_token=NOTION_API_TOKEN, socketio=socketio, global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID)
+uploader = NotionFileUploader(
+    api_token=NOTION_API_TOKEN,
+    socketio=socketio,
+    global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID,
+    notion_space_id=NOTION_SPACE_ID
+)
 
 # Initialize streaming upload manager
 streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, socketio=socketio, notion_uploader=uploader)
@@ -1151,6 +1157,90 @@ def manage_url_cache():
     except Exception as e:
         print(f"Error managing URL cache: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/system/migrate-permanent-urls', methods=['POST'])
+@login_required
+def migrate_to_permanent_urls():
+    """
+    Migrate existing files to use permanent URLs with enhanced error handling and logging
+    """
+    try:
+        print(f"🔄 Starting permanent URL migration for user: {current_user.id}")
+        
+        # Validate that NOTION_SPACE_ID is configured
+        if not NOTION_SPACE_ID:
+            error_msg = "NOTION_SPACE_ID is not configured. Cannot generate permanent URLs."
+            print(f"❌ Migration failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'error': error_msg,
+                'code': 'MISSING_SPACE_ID'
+            }), 400
+        
+        # Get user's database ID
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            error_msg = f"User database not found for user: {current_user.id}"
+            print(f"❌ Migration failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'error': 'User database not found',
+                'code': 'USER_DATABASE_NOT_FOUND'
+            }), 404
+        
+        print(f"📁 Found user database: {user_database_id}")
+        
+        # Perform migration with detailed logging
+        migration_result = uploader.migrate_to_permanent_urls(user_database_id)
+        
+        # Check migration status
+        if migration_result.get('status') == 'failed':
+            error_msg = migration_result.get('error', 'Unknown migration error')
+            print(f"❌ Migration failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'error': error_msg,
+                'code': 'MIGRATION_FAILED'
+            }), 500
+        
+        # Success response with detailed information
+        migrated_count = migration_result.get('migrated', 0)
+        skipped_count = migration_result.get('skipped', 0)
+        error_count = migration_result.get('errors', 0)
+        total_files = migration_result.get('total_files', 0)
+        
+        print(f"✅ Migration completed: {migrated_count} migrated, {skipped_count} skipped, {error_count} errors")
+        
+        return jsonify({
+            'status': 'success',
+            'migration_result': {
+                'total_files': total_files,
+                'migrated': migrated_count,
+                'skipped': skipped_count,
+                'errors': error_count,
+                'database_id': user_database_id,
+                'space_id': NOTION_SPACE_ID
+            },
+            'message': f"Migration completed successfully: {migrated_count} files migrated, {skipped_count} skipped, {error_count} errors",
+            'summary': {
+                'success_rate': f"{((migrated_count + skipped_count) / total_files * 100):.1f}%" if total_files > 0 else "N/A",
+                'permanent_urls_enabled': True
+            }
+        })
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"💥 Critical error during migration: {error_msg}")
+        import traceback
+        traceback.print_exc()
+        
+        return jsonify({
+            'status': 'error',
+            'error': error_msg,
+            'code': 'INTERNAL_ERROR',
+            'message': 'An internal error occurred during migration. Please check the logs and try again.'
+        }), 500
 
 
 @app.route('/api/upload/abort/<upload_id>', methods=['POST'])
