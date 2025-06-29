@@ -251,13 +251,25 @@ class MediaModalLightbox {
      * Load media content based on file type
      */
     async loadMediaContent(mediaUrl, filename) {
+        console.log('=== DEBUG: loadMediaContent called for:', filename, 'URL:', mediaUrl);
+        
         const fileType = this.getFileType(filename);
         const mediaContainer = this.modalMediaContainer;
         
-        if (!mediaContainer) return;
+        if (!mediaContainer) {
+            console.error('=== DEBUG: mediaContainer not found!');
+            return;
+        }
+        
+        // Check if there's existing content before clearing
+        const existingContent = mediaContainer.innerHTML;
+        if (existingContent.trim() !== '') {
+            console.log('=== DEBUG: Clearing existing content from mediaContainer. Content length:', existingContent.length);
+        }
         
         // Clear previous content
         mediaContainer.innerHTML = '';
+        console.log('=== DEBUG: mediaContainer cleared, innerHTML length now:', mediaContainer.innerHTML.length);
         
         // Update modal title
         if (this.modalTitle) {
@@ -284,7 +296,13 @@ class MediaModalLightbox {
         }
         
         if (mediaElement) {
+            console.log('=== DEBUG: Appending media element to container. Element type:', mediaElement.tagName);
+            console.log('=== DEBUG: mediaContainer children count before append:', mediaContainer.children.length);
+            
             mediaContainer.appendChild(mediaElement);
+            
+            console.log('=== DEBUG: mediaContainer children count after append:', mediaContainer.children.length);
+            console.log('=== DEBUG: All children in container:', Array.from(mediaContainer.children).map(child => child.tagName));
             
             // Smooth transition from loading to content
             setTimeout(() => {
@@ -300,8 +318,11 @@ class MediaModalLightbox {
      * Create video element with iOS Safari optimizations
      */
     async createVideoElement(videoUrl, filename) {
+        console.log('=== DEBUG: Creating video element for:', filename, 'URL:', videoUrl);
+        
         return new Promise((resolve, reject) => {
             const video = document.createElement('video');
+            console.log('=== DEBUG: Video element created with src:', videoUrl);
             video.className = 'modal-video';
             video.controls = true;
             video.preload = 'metadata';
@@ -316,7 +337,8 @@ class MediaModalLightbox {
             }
             
             video.addEventListener('loadedmetadata', () => {
-                console.log('Video metadata loaded:', filename);
+                console.log('=== DEBUG: Video metadata loaded for:', filename);
+                console.log('=== DEBUG: Resolving video element creation');
                 resolve(video);
             });
             
@@ -774,21 +796,34 @@ let mediaModal = null;
  * Initialize modal system
  */
 function initializeMediaModal() {
-    console.log('Initializing media modal system...');
+    console.log('=== DEBUG: Initializing media modal system...');
+    if (mediaModal) {
+        console.warn('=== DEBUG: WARNING - mediaModal already exists, potential duplicate initialization!');
+    }
     mediaModal = new MediaModalLightbox();
     
     // Set up click handlers for view buttons
     setupModalViewButtons();
     
-    console.log('Media modal system initialized');
+    console.log('=== DEBUG: Media modal system initialized');
 }
 
 /**
  * Set up click handlers for existing view buttons
  */
 function setupModalViewButtons() {
+    console.log('=== DEBUG: Setting up modal view buttons - this should only happen once per page load');
+    
+    // Check if we already have listeners attached
+    if (window.modalListenersAttached) {
+        console.error('=== DEBUG: CRITICAL - setupModalViewButtons called multiple times! This will create duplicate listeners.');
+        return; // Prevent duplicate listeners
+    }
+    window.modalListenersAttached = true;
+    
     // Replace existing view button functionality with modal opening
     document.addEventListener('click', (e) => {
+        console.log('=== DEBUG: Click event triggered on:', e.target);
         // Handle view buttons with modal-view-btn class or href pattern
         const viewButton = e.target.closest('.modal-view-btn, a[href^="/v/"].btn-success, .modal-view-link');
         if (viewButton && viewButton.href && viewButton.href.includes('/v/')) {
@@ -936,10 +971,12 @@ window.openMediaModal = function(mediaUrl, filename, filesize = '', filetype = '
 
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', function() {
+    console.log('=== DEBUG: DOMContentLoaded event fired');
     initializeMediaModal();
 });
 
 // Re-initialize when new content is added (for dynamic content)
 document.addEventListener('contentUpdated', function() {
+    console.log('=== DEBUG: contentUpdated event fired - this could be causing duplicate listeners!');
     setupModalViewButtons();
 });
