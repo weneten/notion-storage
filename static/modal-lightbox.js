@@ -299,10 +299,27 @@ class MediaModalLightbox {
             console.log('=== DEBUG: Appending media element to container. Element type:', mediaElement.tagName);
             console.log('=== DEBUG: mediaContainer children count before append:', mediaContainer.children.length);
             
+            // Double-check container is really empty before appending
+            if (mediaContainer.children.length > 0) {
+                console.warn('=== DEBUG: WARNING - Container not empty before append, force clearing!');
+                mediaContainer.innerHTML = '';
+            }
+            
             mediaContainer.appendChild(mediaElement);
             
             console.log('=== DEBUG: mediaContainer children count after append:', mediaContainer.children.length);
             console.log('=== DEBUG: All children in container:', Array.from(mediaContainer.children).map(child => child.tagName));
+            
+            // Additional verification that only one video exists
+            const videoElements = mediaContainer.querySelectorAll('video');
+            if (videoElements.length > 1) {
+                console.error('=== DEBUG: CRITICAL - Multiple video elements detected after append!', videoElements.length);
+                // Keep only the last (newest) video element
+                for (let i = 0; i < videoElements.length - 1; i++) {
+                    console.log('=== DEBUG: Removing duplicate video element', i);
+                    videoElements[i].remove();
+                }
+            }
             
             // Smooth transition from loading to content
             setTimeout(() => {
@@ -339,6 +356,10 @@ class MediaModalLightbox {
             video.addEventListener('loadedmetadata', () => {
                 console.log('=== DEBUG: Video metadata loaded for:', filename);
                 console.log('=== DEBUG: Resolving video element creation');
+                
+                // Mark this video as modal-managed to prevent external interference
+                video.setAttribute('data-modal-managed', 'true');
+                
                 resolve(video);
             });
             
@@ -976,7 +997,11 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // Re-initialize when new content is added (for dynamic content)
+// This is disabled as it can cause duplicate listeners even with protection
+// If needed, call setupModalViewButtons() manually after adding dynamic content
+/*
 document.addEventListener('contentUpdated', function() {
     console.log('=== DEBUG: contentUpdated event fired - this could be causing duplicate listeners!');
     setupModalViewButtons();
 });
+*/

@@ -44,6 +44,11 @@
         window.enhanceVideoElements = function() {
             const videos = document.querySelectorAll('video');
             videos.forEach(video => {
+                // Skip modal-managed videos to prevent interference
+                if (video.getAttribute('data-modal-managed') === 'true') {
+                    console.log('=== DEBUG: Skipping modal-managed video in enhanceVideoElements');
+                    return;
+                }
                 // iOS-specific optimizations
                 if (window.deviceInfo.isIOSSafari) {
                     video.setAttribute('playsinline', 'true');
@@ -85,13 +90,18 @@
         document.addEventListener('DOMContentLoaded', function() {
             window.enhanceVideoElements();
             
-            // Re-enhance when new content is added dynamically
+            // Re-enhance when new content is added dynamically (but exclude modal content)
             const observer = new MutationObserver(function(mutations) {
                 mutations.forEach(function(mutation) {
                     if (mutation.type === 'childList') {
                         mutation.addedNodes.forEach(function(node) {
                             if (node.nodeType === 1) { // Element node
-                                if (node.tagName === 'VIDEO' || node.querySelector('video')) {
+                                // Skip if this is inside the modal media container
+                                const isInsideModal = node.closest && node.closest('#modalMediaContainer');
+                                const hasModalParent = node.querySelector && node.querySelector('#modalMediaContainer video');
+                                
+                                if (!isInsideModal && !hasModalParent && (node.tagName === 'VIDEO' || node.querySelector('video'))) {
+                                    console.log('=== DEBUG: MutationObserver enhancing non-modal videos');
                                     window.enhanceVideoElements();
                                 }
                             }
