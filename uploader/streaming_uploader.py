@@ -218,6 +218,10 @@ class NotionStreamingUploader:
                         # Only create DB entry for .partN, never for the main filename
                         if part_filename != filename:
                             print(f"[DEBUG LOG] add_file_to_user_database called for part: {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
+                            # Extract file_url from upload result for permanent URL
+                            file_url = None
+                            if 'result' in part_result and part_result['result']:
+                                file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
                             db_entry = self.notion_uploader.add_file_to_user_database(
                                 database_id=user_database_id,
                                 filename=part_filename,
@@ -226,7 +230,8 @@ class NotionStreamingUploader:
                                 file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
                                 is_public=False,
                                 salt="",
-                                original_filename=filename
+                                original_filename=filename,
+                                file_url=file_url
                             )
                             print(f"[DEBUG LOG] DB entry created for part: {part_filename}, db_entry_id: {db_entry.get('id')}")
                             # Patch DB entry: set is_visible unchecked, file_data set to file
@@ -265,6 +270,9 @@ class NotionStreamingUploader:
                         # Only create DB entry for .partN, never for the main filename
                         if part_filename != filename:
                             print(f"[DEBUG LOG] add_file_to_user_database called for part (final): {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
+                            file_url = None
+                            if 'result' in part_result and part_result['result']:
+                                file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
                             db_entry = self.notion_uploader.add_file_to_user_database(
                                 database_id=user_database_id,
                                 filename=part_filename,
@@ -273,7 +281,8 @@ class NotionStreamingUploader:
                                 file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
                                 is_public=False,
                                 salt="",
-                                original_filename=filename
+                                original_filename=filename,
+                                file_url=file_url
                             )
                             print(f"[DEBUG LOG] DB entry created for part (final): {part_filename}, db_entry_id: {db_entry.get('id')}")
                             self.notion_uploader.update_user_properties(db_entry['id'], {
@@ -309,6 +318,9 @@ class NotionStreamingUploader:
                     len(metadata_bytes)
                 )
                 print(f"[DEBUG LOG] add_file_to_user_database called for metadata: {metadata_filename}, upload_id: {metadata_result.get('file_upload_id')}, hash: {hashlib.sha512(metadata_bytes).hexdigest()}")
+                metadata_file_url = None
+                if metadata_result and metadata_result.get('result'):
+                    metadata_file_url = metadata_result['result'].get('download_link') or metadata_result['result'].get('file', {}).get('url')
                 metadata_db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
                     filename=metadata_filename,
@@ -317,7 +329,8 @@ class NotionStreamingUploader:
                     file_upload_id=metadata_result.get('file_upload_id'),
                     is_public=False,
                     salt="",
-                    original_filename=filename
+                    original_filename=filename,
+                    file_url=metadata_file_url
                 )
                 print(f"[DEBUG LOG] DB entry created for metadata: {metadata_filename}, db_entry_id: {metadata_db_entry.get('id')}")
                 self.notion_uploader.update_user_properties(metadata_db_entry['id'], {

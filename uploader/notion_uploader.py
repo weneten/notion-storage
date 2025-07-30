@@ -777,28 +777,37 @@ class NotionFileUploader:
             return 'application/octet-stream'
 
     def generate_permanent_download_url(self, file_upload_id: str, original_filename: str,
-                                      space_id: str = None, table: str = "block") -> str:
+                                      file_url: str = None, space_id: str = None, table: str = "block") -> str:
         """
         Generate permanent Notion S3-style signed download URL format.
         
-        Format: https://www.notion.so/signed/https%3A%2F%2Fprod-files-secure.s3.us-west-2.amazonaws.com%2F{space_id}%2F{file_upload_id}%2Ffile.txt?id={file_upload_id}&table={table}&spaceId={space_id}&name=file.txt
+        Format: https://www.notion.so/signed/https%3A%2F%2Fprod-files-secure.s3.us-west-2.amazonaws.com%2F{space_id}%2F{s3_key}%2Ffile.txt?id={file_upload_id}&table={table}&spaceId={space_id}&name=file.txt
         
         Args:
             file_upload_id: The Notion file upload ID
             original_filename: Original filename for the attachment (ignored for URL, always file.txt)
+            file_url: The actual file.url returned by Notion (S3 signed URL)
             space_id: Notion space ID (optional, will try to extract from context)
             table: Database table type (default: "block")
         Returns:
             str: Permanent download URL
         """
         try:
-            # Always use file.txt for the download URL
             notion_filename = "file.txt"
-            # If space_id is not provided, use the configured space ID
             if not space_id:
                 space_id = self.notion_space_id
-            # Build the S3-style URL
-            s3_url = f"https://prod-files-secure.s3.us-west-2.amazonaws.com/{space_id}/{file_upload_id}/{notion_filename}"
+            s3_key = None
+            if file_url:
+                # Extract the S3 key (the UUID between spaceId and /file.txt)
+                # Example: ...amazonaws.com/{space_id}/{s3_key}/file.txt
+                import re
+                match = re.search(rf"{space_id}/([a-f0-9\-]{{36}})/file.txt", file_url)
+                if match:
+                    s3_key = match.group(1)
+            if not s3_key:
+                # Fallback to file_upload_id (legacy, not correct for new uploads)
+                s3_key = file_upload_id
+            s3_url = f"https://prod-files-secure.s3.us-west-2.amazonaws.com/{space_id}/{s3_key}/{notion_filename}"
             encoded_s3_url = urllib.parse.quote(s3_url, safe='')
             permanent_url = (
                 f"https://www.notion.so/signed/{encoded_s3_url}"
