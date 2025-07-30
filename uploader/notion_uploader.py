@@ -2046,7 +2046,7 @@ class NotionFileUploader:
         """Create a Notion database for a user to store file information"""
         url = f"{self.base_url}/databases"
 
-        # Define the database schema with all required properties
+        # Define the database schema with all required properties, only use file_data for file storage
         database_schema = {
             "parent": {"page_id": parent_id},
             "title": [
@@ -2077,7 +2077,6 @@ class NotionFileUploader:
                 "permanent_download_url": {
                     "rich_text": {}
                 },
-                # --- Only use file_data for file storage ---
                 "is_visible": {
                     "checkbox": {}
                 },
@@ -2230,7 +2229,7 @@ class NotionFileUploader:
         permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename)
         print(f"🔗 Generated permanent URL: {permanent_url}")
             
-        # Create a new page in the database with file information
+        # Create a new page in the database with file information, only use file_data for file storage
         payload = {
             "parent": {"database_id": database_id},
             "properties": {
@@ -2238,7 +2237,7 @@ class NotionFileUploader:
                     "title": [
                         {
                             "text": {
-                                "content": display_filename  # Store original filename in title property
+                                "content": display_filename
                             }
                         }
                     ]
@@ -2255,10 +2254,10 @@ class NotionFileUploader:
                         }
                     ]
                 },
-                "file": {
+                "file_data": {
                     "files": [
                         {
-                            "name": "file.txt",  # ALWAYS use "file.txt" for Notion API compatibility
+                            "name": "file.txt",
                             "type": "file_upload",
                             "file_upload": {
                                 "id": file_upload_id
@@ -2296,10 +2295,9 @@ class NotionFileUploader:
         print(f"🔍 DATABASE OPERATION: Original filename: {display_filename}")
         print(f"🔍 DATABASE OPERATION: Stored as: file.txt")
         print(f"🔍 DATABASE OPERATION: Database ID: {database_id}")
-        print(f"🔍 DATABASE OPERATION: Payload file_upload_id: {payload['properties']['file']['files'][0]['file_upload']['id']}")
-        
+        print(f"🔍 DATABASE OPERATION: Payload file_upload_id: {payload['properties']['file_data']['files'][0]['file_upload']['id']}")
         # Verify payload integrity before sending
-        payload_file_id = payload['properties']['file']['files'][0]['file_upload']['id']
+        payload_file_id = payload['properties']['file_data']['files'][0]['file_upload']['id']
         if payload_file_id != file_upload_id:
             error_msg = f"ID CORRUPTION: Payload file_upload_id '{payload_file_id}' does not match parameter '{file_upload_id}'"
             print(f"🚨 CRITICAL ERROR: {error_msg}")
@@ -2321,7 +2319,6 @@ class NotionFileUploader:
         print(f"  - File Upload ID (for Notion file operations): {file_upload_id}")
         print(f"  - Database Page ID (for database operations): {result_id}")
         print(f"  - These IDs serve different purposes and should never be confused")
-        
         return result
 
     def get_file_by_salted_sha512_hash(self, salted_sha512_hash: str) -> Optional[Dict[str, Any]]:
