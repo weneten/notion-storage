@@ -245,45 +245,49 @@ class NotionStreamingUploader:
                             })
                         part_number += 1
 
-                # Final part if any data remains
+                # Final part if any data remains (avoid duplicate if already processed)
                 if buffer.tell() > 0:
-                    buffer.seek(0)
-                    part_data = buffer.read()
-                    part_size = len(part_data)
-                    part_filename = f"{filename}.part{part_number}"
-                    part_hash = hashlib.sha512(part_data).hexdigest()
-                    part_upload_session = self.create_upload_session(
-                        part_filename, part_size, user_database_id
-                    )
-                    if part_size > self.SINGLE_PART_THRESHOLD:
-                        part_result = self._process_multipart_stream(part_upload_session, [part_data])
+                    # If buffer size is exactly SPLIT_THRESHOLD, last part was already processed in the loop
+                    if buffer.tell() == self.SPLIT_THRESHOLD:
+                        print("[DEBUG LOG] Skipping final part block: last part already processed in main loop")
                     else:
-                        part_result = self._process_single_part_stream(part_upload_session, [part_data])
-                    # Only create DB entry for .partN, never for the main filename
-                    if part_filename != filename:
-                        print(f"[DEBUG LOG] add_file_to_user_database called for part (final): {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
-                        db_entry = self.notion_uploader.add_file_to_user_database(
-                            database_id=user_database_id,
-                            filename=part_filename,
-                            file_size=part_size,
-                            file_hash=part_hash,
-                            file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                            is_public=False,
-                            salt="",
-                            original_filename=filename
+                        buffer.seek(0)
+                        part_data = buffer.read()
+                        part_size = len(part_data)
+                        part_filename = f"{filename}.part{part_number}"
+                        part_hash = hashlib.sha512(part_data).hexdigest()
+                        part_upload_session = self.create_upload_session(
+                            part_filename, part_size, user_database_id
                         )
-                        print(f"[DEBUG LOG] DB entry created for part (final): {part_filename}, db_entry_id: {db_entry.get('id')}")
-                        self.notion_uploader.update_user_properties(db_entry['id'], {
-                            "is_visible": {"checkbox": False},
-                            "file_data": db_entry.get('properties', {}).get('file_data', {})
-                        })
-                        parts_metadata.append({
-                            "part_number": part_number,
-                            "filename": part_filename,
-                            "file_id": db_entry['id'],
-                            "file_hash": part_hash,
-                            "size": part_size
-                        })
+                        if part_size > self.SINGLE_PART_THRESHOLD:
+                            part_result = self._process_multipart_stream(part_upload_session, [part_data])
+                        else:
+                            part_result = self._process_single_part_stream(part_upload_session, [part_data])
+                        # Only create DB entry for .partN, never for the main filename
+                        if part_filename != filename:
+                            print(f"[DEBUG LOG] add_file_to_user_database called for part (final): {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
+                            db_entry = self.notion_uploader.add_file_to_user_database(
+                                database_id=user_database_id,
+                                filename=part_filename,
+                                file_size=part_size,
+                                file_hash=part_hash,
+                                file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
+                                is_public=False,
+                                salt="",
+                                original_filename=filename
+                            )
+                            print(f"[DEBUG LOG] DB entry created for part (final): {part_filename}, db_entry_id: {db_entry.get('id')}")
+                            self.notion_uploader.update_user_properties(db_entry['id'], {
+                                "is_visible": {"checkbox": False},
+                                "file_data": db_entry.get('properties', {}).get('file_data', {})
+                            })
+                            parts_metadata.append({
+                                "part_number": part_number,
+                                "filename": part_filename,
+                                "file_id": db_entry['id'],
+                                "file_hash": part_hash,
+                                "size": part_size
+                            })
 
                 # After all parts uploaded, create JSON metadata file
                 import json
@@ -298,15 +302,20 @@ class NotionStreamingUploader:
                     metadata_filename, len(metadata_bytes), user_database_id
                 )
                 # Always single-part for small JSON
-                metadata_result = self._process_single_part_stream(metadata_upload_session, [metadata_bytes])
-                # Create DB entry for JSON metadata (is_visible: checked, file_data: set)
-                print(f"[DEBUG LOG] add_file_to_user_database called for metadata: {metadata_filename}, upload_id: {metadata_result.get('notion_file_upload_id', metadata_result.get('file_id'))}, hash: {hashlib.sha512(metadata_bytes).hexdigest()}")
+                # Prevent recursion: do not call complete_upload_with_database_integration for metadata JSON
+                metadata_result = self._upload_to_notion_single_part(
+                    user_database_id,
+                    metadata_filename,
+                    io.BytesIO(metadata_bytes),
+                    len(metadata_bytes)
+                )
+                print(f"[DEBUG LOG] add_file_to_user_database called for metadata: {metadata_filename}, upload_id: {metadata_result.get('file_upload_id')}, hash: {hashlib.sha512(metadata_bytes).hexdigest()}")
                 metadata_db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
                     filename=metadata_filename,
                     file_size=len(metadata_bytes),
                     file_hash=hashlib.sha512(metadata_bytes).hexdigest(),
-                    file_upload_id=metadata_result.get('notion_file_upload_id', metadata_result.get('file_id')),
+                    file_upload_id=metadata_result.get('file_upload_id'),
                     is_public=False,
                     salt="",
                     original_filename=filename
