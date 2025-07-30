@@ -779,41 +779,34 @@ class NotionFileUploader:
     def generate_permanent_download_url(self, file_upload_id: str, original_filename: str,
                                       space_id: str = None, table: str = "block") -> str:
         """
-        Generate permanent Notion signed attachment URL format.
+        Generate permanent Notion S3-style signed download URL format.
         
-        Format: https://www.notion.so/signed/attachment%3A{attachment_id}%3A{filename}?id={file_id}&table={table}&spaceId={space_id}&name={filename}
+        Format: https://www.notion.so/signed/https%3A%2F%2Fprod-files-secure.s3.us-west-2.amazonaws.com%2F{space_id}%2F{file_upload_id}%2Ffile.txt?id={file_upload_id}&table={table}&spaceId={space_id}&name=file.txt
         
         Args:
             file_upload_id: The Notion file upload ID
-            original_filename: Original filename for the attachment
+            original_filename: Original filename for the attachment (ignored for URL, always file.txt)
             space_id: Notion space ID (optional, will try to extract from context)
             table: Database table type (default: "block")
-            
         Returns:
             str: Permanent download URL
         """
         try:
-            # URL encode the filename for use in the path
-            encoded_filename = urllib.parse.quote(original_filename, safe='')
-            
-            # Create the attachment identifier
-            attachment_id = f"attachment%3A{file_upload_id}%3A{encoded_filename}"
-            
+            # Always use file.txt for the download URL
+            notion_filename = "file.txt"
             # If space_id is not provided, use the configured space ID
             if not space_id:
                 space_id = self.notion_space_id
-            
-            # Construct the permanent URL
+            # Build the S3-style URL
+            s3_url = f"https://prod-files-secure.s3.us-west-2.amazonaws.com/{space_id}/{file_upload_id}/{notion_filename}"
+            encoded_s3_url = urllib.parse.quote(s3_url, safe='')
             permanent_url = (
-                f"https://www.notion.so/signed/{attachment_id}"
-                f"?id={file_upload_id}&table={table}&spaceId={space_id}&name={encoded_filename}"
+                f"https://www.notion.so/signed/{encoded_s3_url}"
+                f"?id={file_upload_id}&table={table}&spaceId={space_id}&name={notion_filename}"
             )
-            
-            print(f"🔗 Generated permanent download URL for {original_filename}")
+            print(f"🔗 Generated permanent download URL for {notion_filename}")
             print(f"🔗 URL: {permanent_url}")
-            
             return permanent_url
-            
         except Exception as e:
             print(f"Error generating permanent download URL: {e}")
             return ""
