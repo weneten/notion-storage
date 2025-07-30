@@ -216,30 +216,31 @@ class NotionStreamingUploader:
                             part_result = self._process_multipart_stream(part_upload_session, [part_data])
                         else:
                             part_result = self._process_single_part_stream(part_upload_session, [part_data])
-                        # Create DB entry for this part (is_visible: unchecked, file_data: set)
-                        db_entry = self.notion_uploader.add_file_to_user_database(
-                            database_id=user_database_id,
-                            filename=part_filename,
-                            file_size=part_size,
-                            file_hash=part_hash,
-                            file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                            is_public=False,
-                            salt="",
-                            original_filename=filename
-                        )
-                        # Patch DB entry: set is_visible unchecked, file_data set to file
-                        self.notion_uploader.update_user_properties(db_entry['id'], {
-                            "is_visible": {"checkbox": False},
-                            "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
-                        })
-                        # Collect metadata for JSON
-                        parts_metadata.append({
-                            "part_number": part_number,
-                            "filename": part_filename,
-                            "file_id": db_entry['id'],
-                            "file_hash": part_hash,
-                            "size": part_size
-                        })
+                        # Only create DB entry for .partN, never for the main filename
+                        if part_filename != filename:
+                            db_entry = self.notion_uploader.add_file_to_user_database(
+                                database_id=user_database_id,
+                                filename=part_filename,
+                                file_size=part_size,
+                                file_hash=part_hash,
+                                file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
+                                is_public=False,
+                                salt="",
+                                original_filename=filename
+                            )
+                            # Patch DB entry: set is_visible unchecked, file_data set to file
+                            self.notion_uploader.update_user_properties(db_entry['id'], {
+                                "is_visible": {"checkbox": False},
+                                "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                            })
+                            # Collect metadata for JSON
+                            parts_metadata.append({
+                                "part_number": part_number,
+                                "filename": part_filename,
+                                "file_id": db_entry['id'],
+                                "file_hash": part_hash,
+                                "size": part_size
+                            })
                         part_number += 1
 
                 # Final part if any data remains
@@ -256,27 +257,29 @@ class NotionStreamingUploader:
                         part_result = self._process_multipart_stream(part_upload_session, [part_data])
                     else:
                         part_result = self._process_single_part_stream(part_upload_session, [part_data])
-                    db_entry = self.notion_uploader.add_file_to_user_database(
-                        database_id=user_database_id,
-                        filename=part_filename,
-                        file_size=part_size,
-                        file_hash=part_hash,
-                        file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                        is_public=False,
-                        salt="",
-                        original_filename=filename
-                    )
-                    self.notion_uploader.update_user_properties(db_entry['id'], {
-                        "is_visible": {"checkbox": False},
-                        "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
-                    })
-                    parts_metadata.append({
-                        "part_number": part_number,
-                        "filename": part_filename,
-                        "file_id": db_entry['id'],
-                        "file_hash": part_hash,
-                        "size": part_size
-                    })
+                    # Only create DB entry for .partN, never for the main filename
+                    if part_filename != filename:
+                        db_entry = self.notion_uploader.add_file_to_user_database(
+                            database_id=user_database_id,
+                            filename=part_filename,
+                            file_size=part_size,
+                            file_hash=part_hash,
+                            file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
+                            is_public=False,
+                            salt="",
+                            original_filename=filename
+                        )
+                        self.notion_uploader.update_user_properties(db_entry['id'], {
+                            "is_visible": {"checkbox": False},
+                            "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                        })
+                        parts_metadata.append({
+                            "part_number": part_number,
+                            "filename": part_filename,
+                            "file_id": db_entry['id'],
+                            "file_hash": part_hash,
+                            "size": part_size
+                        })
 
                 # After all parts uploaded, create JSON metadata file
                 import json
