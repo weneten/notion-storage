@@ -2196,13 +2196,19 @@ class NotionFileUploader:
 
     def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None) -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
+        import traceback
         url = f"{self.base_url}/pages"
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
         print(f"🔍 ADD_FILE_TO_DB: Parameter types - file_upload_id: {type(file_upload_id)}, database_id: {type(database_id)}")
         print(f"🔍 ADD_FILE_TO_DB: IMPORTANT - This file_upload_id should be used for Notion file operations, NOT database operations")
-        
+
+        # EXTRA LOGGING: Log filename, file_size, and call stack for every DB entry creation
+        print(f"[EXTRA LOGGING] Creating DB entry: filename={filename}, file_size={file_size}, original_filename={original_filename}")
+        print(f"[EXTRA LOGGING] Call stack:")
+        traceback.print_stack()
+
         if not file_upload_id:
             error_msg = f"ID VALIDATION FAILED: file_upload_id is required but was null or empty. Received: {repr(file_upload_id)}"
             print(f"🚨 CRITICAL ERROR: {error_msg}")
@@ -2224,11 +2230,11 @@ class NotionFileUploader:
 
         # Use original_filename if provided, otherwise fall back to filename
         display_filename = original_filename if original_filename else filename
-        
+
         # Generate permanent download URL
         permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename)
         print(f"🔗 Generated permanent URL: {permanent_url}")
-            
+
         # Create a new page in the database with file information, only use file_data for file storage
         payload = {
             "parent": {"database_id": database_id},
@@ -2302,7 +2308,7 @@ class NotionFileUploader:
             error_msg = f"ID CORRUPTION: Payload file_upload_id '{payload_file_id}' does not match parameter '{file_upload_id}'"
             print(f"🚨 CRITICAL ERROR: {error_msg}")
             raise Exception(error_msg)
-        
+
         response = requests.post(url, json=payload, headers=headers)
 
         if response.status_code != 200:
