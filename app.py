@@ -161,19 +161,20 @@ def home():
                     properties = file_data.get('properties', {})
                     # The filename in title property is the original filename
                     name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                    
                     size = properties.get('filesize', {}).get('number', 0)
                     file_id = file_data.get('id') # Extract the Notion page ID
                     is_public = properties.get('is_public', {}).get('checkbox', False) # Get is_public status
                     file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
-                    
+                    # Only use file_data for file storage
+                    file_data_files = properties.get('file_data', {}).get('files', [])
                     if name:
                         files.append({
-                            "name": name,  # This is already the original filename
+                            "name": name,
                             "size": size,
-                            "id": file_id, # Add the file_id to the dictionary
-                            "is_public": is_public, # Add is_public status
-                            "file_hash": file_hash # Add file_hash
+                            "id": file_id,
+                            "is_public": is_public,
+                            "file_hash": file_hash,
+                            "file_data": file_data_files
                         })
                 except Exception as e:
                     print(f"Error processing file data in home route: {e}")

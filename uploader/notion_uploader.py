@@ -2068,9 +2068,6 @@ class NotionFileUploader:
                 "filehash": {
                     "rich_text": {}
                 },
-                "file": {
-                    "files": {}
-                },
                 "is_public": {
                     "checkbox": {}
                 },
@@ -2080,7 +2077,7 @@ class NotionFileUploader:
                 "permanent_download_url": {
                     "rich_text": {}
                 },
-                # --- Added for split/metadata plan ---
+                # --- Only use file_data for file storage ---
                 "is_visible": {
                     "checkbox": {}
                 },

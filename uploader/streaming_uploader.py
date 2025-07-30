@@ -231,7 +231,7 @@ class NotionStreamingUploader:
                             # Patch DB entry: set is_visible unchecked, file_data set to file
                             self.notion_uploader.update_user_properties(db_entry['id'], {
                                 "is_visible": {"checkbox": False},
-                                "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                                "file_data": db_entry.get('properties', {}).get('file_data', {})
                             })
                             # Collect metadata for JSON
                             parts_metadata.append({
@@ -271,7 +271,7 @@ class NotionStreamingUploader:
                         )
                         self.notion_uploader.update_user_properties(db_entry['id'], {
                             "is_visible": {"checkbox": False},
-                            "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                            "file_data": db_entry.get('properties', {}).get('file_data', {})
                         })
                         parts_metadata.append({
                             "part_number": part_number,
@@ -308,7 +308,7 @@ class NotionStreamingUploader:
                 )
                 self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
                     "is_visible": {"checkbox": True},
-                    "file_data": {"files": metadata_db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                    "file_data": metadata_db_entry.get('properties', {}).get('file_data', {})
                 })
                 print(f"INFO: File split and uploaded in {part_number} parts + metadata JSON.")
                 return {
@@ -333,7 +333,7 @@ class NotionStreamingUploader:
                     db_entry = self.notion_uploader.get_user_by_id(db_page_id)
                     self.notion_uploader.update_user_properties(db_page_id, {
                         "is_visible": {"checkbox": True},
-                        "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                        "file_data": db_entry.get('properties', {}).get('file_data', {})
                     })
                 print(f"INFO: File uploaded as single DB entry (no split).")
                 return {

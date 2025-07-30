@@ -35,7 +35,7 @@ def patch_db_entry_is_visible_and_file_data(notion_uploader, db_entry_id, file_l
     """
     notion_uploader.update_user_properties(db_entry_id, {
         "is_visible": {"checkbox": is_visible},
-        "file_data": {"files": file_list}
+        "file_data": file_list
     })
 
 # Note: The main chunk upload logic is unchanged. After each part upload, streaming_uploader.py will call this helper to patch the DB entry as required by the split plan.
