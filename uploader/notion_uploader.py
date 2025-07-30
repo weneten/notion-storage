@@ -2079,6 +2079,13 @@ class NotionFileUploader:
                 },
                 "permanent_download_url": {
                     "rich_text": {}
+                },
+                # --- Added for split/metadata plan ---
+                "is_visible": {
+                    "checkbox": {}
+                },
+                "file_data": {
+                    "files": {}
                 }
             },
             "is_inline": True

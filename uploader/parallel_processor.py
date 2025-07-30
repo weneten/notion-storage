@@ -23,9 +23,22 @@ except ImportError:
     checkpoint_manager = None
     create_checkpoint_key = None
 
+
 # Notion API constants
 SINGLE_PART_THRESHOLD = 20 * 1024 * 1024  # 20 MiB
 MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024    # 5 MiB for multipart uploads
+
+# Helper for DB patching after part upload (used by streaming_uploader.py)
+def patch_db_entry_is_visible_and_file_data(notion_uploader, db_entry_id, file_list, is_visible):
+    """
+    Patch a Notion DB entry to set is_visible and file_data properties.
+    """
+    notion_uploader.update_user_properties(db_entry_id, {
+        "is_visible": {"checkbox": is_visible},
+        "file_data": {"files": file_list}
+    })
+
+# Note: The main chunk upload logic is unchanged. After each part upload, streaming_uploader.py will call this helper to patch the DB entry as required by the split plan.
 
 class ParallelChunkProcessor:
     """Handles parallel upload of file chunks to Notion API with resource awareness"""

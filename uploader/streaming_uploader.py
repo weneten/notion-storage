@@ -26,6 +26,7 @@ class NotionStreamingUploader:
       # Notion API constants
     SINGLE_PART_THRESHOLD = 20 * 1024 * 1024  # 20 MiB
     MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024    # 5 MiB for multipart uploads
+    SPLIT_THRESHOLD = 50 * 1024 * 1024        # 50 MiB
     
     def __init__(self, api_token: str, socketio: Optional[SocketIO] = None, notion_uploader: Optional[NotionFileUploader] = None):
         self.api_token = api_token
@@ -163,32 +164,188 @@ class NotionStreamingUploader:
     
     def process_stream(self, upload_session: Dict[str, Any], stream_generator) -> Dict[str, Any]:
         """
-        Process the incoming file stream and handle upload based on file size
+        Process the incoming file stream and handle upload based on file size and splitting plan
         """
         try:
             print(f"DEBUG: Starting stream processing for upload {upload_session['upload_id']}")
             print(f"DEBUG: File: {upload_session['filename']}, Size: {upload_session['file_size']}, Multipart: {upload_session['is_multipart']}")
-            
-            if upload_session['is_multipart']:
-                result = self._process_multipart_stream(upload_session, stream_generator)
+
+            file_size = upload_session['file_size']
+            filename = upload_session['filename']
+            user_database_id = upload_session['user_database_id']
+
+            if file_size > self.SPLIT_THRESHOLD:
+                # --- Split file into parts, upload each part, create DB entry for each part ---
+                print(f"INFO: File size > 50 MiB, splitting and uploading in parts...")
+                part_results = []
+                part_hashes = []
+                part_ids = []
+                part_filenames = []
+                part_sizes = []
+                part_etags = []
+                part_count = 0
+                buffer = io.BytesIO()
+                bytes_received = 0
+                part_number = 1
+                hasher = hashlib.sha512()
+                # For JSON metadata
+                parts_metadata = []
+
+                for chunk in stream_generator:
+                    if not chunk:
+                        break
+                    buffer.write(chunk)
+                    bytes_received += len(chunk)
+                    hasher.update(chunk)
+                    # If buffer >= 50 MiB or end of stream, process part
+                    while buffer.tell() >= self.SPLIT_THRESHOLD:
+                        buffer.seek(0)
+                        part_data = buffer.read(self.SPLIT_THRESHOLD)
+                        remaining = buffer.read()
+                        buffer = io.BytesIO()
+                        buffer.write(remaining)
+                        # Upload part (as multipart or single-part)
+                        part_size = len(part_data)
+                        part_filename = f"{filename}.part{part_number}"
+                        part_hash = hashlib.sha512(part_data).hexdigest()
+                        part_upload_session = self.create_upload_session(
+                            part_filename, part_size, user_database_id
+                        )
+                        # Use multipart or single-part logic for each part
+                        if part_size > self.SINGLE_PART_THRESHOLD:
+                            part_result = self._process_multipart_stream(part_upload_session, [part_data])
+                        else:
+                            part_result = self._process_single_part_stream(part_upload_session, [part_data])
+                        # Create DB entry for this part (is_visible: unchecked, file_data: set)
+                        db_entry = self.notion_uploader.add_file_to_user_database(
+                            database_id=user_database_id,
+                            filename=part_filename,
+                            file_size=part_size,
+                            file_hash=part_hash,
+                            file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
+                            is_public=False,
+                            salt="",
+                            original_filename=filename
+                        )
+                        # Patch DB entry: set is_visible unchecked, file_data set to file
+                        self.notion_uploader.update_user_properties(db_entry['id'], {
+                            "is_visible": {"checkbox": False},
+                            "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                        })
+                        # Collect metadata for JSON
+                        parts_metadata.append({
+                            "part_number": part_number,
+                            "filename": part_filename,
+                            "file_id": db_entry['id'],
+                            "file_hash": part_hash,
+                            "size": part_size
+                        })
+                        part_number += 1
+
+                # Final part if any data remains
+                if buffer.tell() > 0:
+                    buffer.seek(0)
+                    part_data = buffer.read()
+                    part_size = len(part_data)
+                    part_filename = f"{filename}.part{part_number}"
+                    part_hash = hashlib.sha512(part_data).hexdigest()
+                    part_upload_session = self.create_upload_session(
+                        part_filename, part_size, user_database_id
+                    )
+                    if part_size > self.SINGLE_PART_THRESHOLD:
+                        part_result = self._process_multipart_stream(part_upload_session, [part_data])
+                    else:
+                        part_result = self._process_single_part_stream(part_upload_session, [part_data])
+                    db_entry = self.notion_uploader.add_file_to_user_database(
+                        database_id=user_database_id,
+                        filename=part_filename,
+                        file_size=part_size,
+                        file_hash=part_hash,
+                        file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
+                        is_public=False,
+                        salt="",
+                        original_filename=filename
+                    )
+                    self.notion_uploader.update_user_properties(db_entry['id'], {
+                        "is_visible": {"checkbox": False},
+                        "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                    })
+                    parts_metadata.append({
+                        "part_number": part_number,
+                        "filename": part_filename,
+                        "file_id": db_entry['id'],
+                        "file_hash": part_hash,
+                        "size": part_size
+                    })
+
+                # After all parts uploaded, create JSON metadata file
+                import json
+                metadata_json = json.dumps({
+                    "original_filename": filename,
+                    "total_size": file_size,
+                    "parts": parts_metadata
+                }, indent=2)
+                metadata_bytes = metadata_json.encode("utf-8")
+                metadata_filename = f"{filename}.file.json"
+                metadata_upload_session = self.create_upload_session(
+                    metadata_filename, len(metadata_bytes), user_database_id
+                )
+                # Always single-part for small JSON
+                metadata_result = self._process_single_part_stream(metadata_upload_session, [metadata_bytes])
+                # Create DB entry for JSON metadata (is_visible: checked, file_data: set)
+                metadata_db_entry = self.notion_uploader.add_file_to_user_database(
+                    database_id=user_database_id,
+                    filename=metadata_filename,
+                    file_size=len(metadata_bytes),
+                    file_hash=hashlib.sha512(metadata_bytes).hexdigest(),
+                    file_upload_id=metadata_result.get('notion_file_upload_id', metadata_result.get('file_id')),
+                    is_public=False,
+                    salt="",
+                    original_filename=filename
+                )
+                self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
+                    "is_visible": {"checkbox": True},
+                    "file_data": {"files": metadata_db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                })
+                print(f"INFO: File split and uploaded in {part_number} parts + metadata JSON.")
+                return {
+                    "status": "completed",
+                    "split": True,
+                    "parts": parts_metadata,
+                    "metadata_file_id": metadata_db_entry['id'],
+                    "metadata_filename": metadata_filename
+                }
+
             else:
-                result = self._process_single_part_stream(upload_session, stream_generator)
-            
-            print(f"DEBUG: Stream processing completed successfully for upload {upload_session['upload_id']}")
-            return result
-            
+                # --- No split needed, use existing logic ---
+                if file_size > self.SINGLE_PART_THRESHOLD:
+                    result = self._process_multipart_stream(upload_session, stream_generator)
+                else:
+                    result = self._process_single_part_stream(upload_session, stream_generator)
+                # Patch DB entry: is_visible checked, file_data set
+                # (Assume complete_upload_with_database_integration returns DB page id)
+                db_page_id = result.get('file_id')
+                if db_page_id:
+                    # Fetch DB entry to get file property
+                    db_entry = self.notion_uploader.get_user_by_id(db_page_id)
+                    self.notion_uploader.update_user_properties(db_page_id, {
+                        "is_visible": {"checkbox": True},
+                        "file_data": {"files": db_entry.get('properties', {}).get('file', {}).get('files', [])}
+                    })
+                print(f"INFO: File uploaded as single DB entry (no split).")
+                return {
+                    **result,
+                    "split": False
+                }
         except Exception as e:
             print(f"ERROR: Stream processing failed for upload {upload_session['upload_id']}: {str(e)}")
             print(f"ERROR: Exception type: {type(e).__name__}")
-            
-            # Update upload session with error info
             upload_session.update({
                 'status': 'failed',
                 'error': str(e),
                 'error_type': type(e).__name__,
                 'failed_at': time.time()
             })
-            
             raise
     
     def _process_single_part_stream(self, upload_session: Dict[str, Any], stream_generator) -> Dict[str, Any]:
