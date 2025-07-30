@@ -2196,7 +2196,7 @@ class NotionFileUploader:
             print(f"Error deleting file from Global File Index by hash {salted_sha512_hash}: {e}")
             raise
 
-    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None) -> Dict[str, Any]:
+    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None) -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         import traceback
         url = f"{self.base_url}/pages"
@@ -2234,7 +2234,10 @@ class NotionFileUploader:
         display_filename = original_filename if original_filename else filename
 
         # Generate permanent download URL
-        permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename)
+        if file_url:
+            permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename, file_url=file_url)
+        else:
+            permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename)
         print(f"🔗 Generated permanent URL: {permanent_url}")
 
         # Create a new page in the database with file information, only use file_data for file storage
