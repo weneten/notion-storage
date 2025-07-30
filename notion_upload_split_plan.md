@@ -3,9 +3,8 @@
 ## 1. Update User Database Schema
 - **File:** `uploader/notion_uploader.py:create_user_database()`
 - **Action:**
-  - Add two new properties to the Notion user database:
+  - Add one new properties to the Notion user database:
     - `is_visible` (checkbox)
-    - `file_data` (files & media)
 
 ## 2. Upload Flow Adjustments
 
@@ -21,13 +20,13 @@
      - If part ≤ 20 MiB: upload as single-part.
      - For each part, create a DB entry:
        - `is_visible`: unchecked
-       - `file_data`: set to the uploaded part
+       - `file`: set to the uploaded part
   3. **After all parts uploaded:**
      - Create a JSON metadata file (`file.json`) describing the parts (order, IDs, hashes, permanent download link, etc).
      - Upload the JSON file.
      - Create a DB entry:
        - `is_visible`: checked
-       - `file_data`: set to the JSON file
+       - `file`: set to the JSON file
 
   **Example:**
   - For a 60 MiB file:
@@ -42,7 +41,7 @@
   - If file ≤ 20 MiB: upload as single-part
   - Create a single DB entry:
     - `is_visible`: checked
-    - `file_data`: set to the file
+    - `file`: set to the file
     - No JSON metadata needed
 
 ### 2.2. Code Locations

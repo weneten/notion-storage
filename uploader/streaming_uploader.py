@@ -106,46 +106,45 @@ class NotionStreamingUploader:
                 print(f"🚨 STREAMING_UPLOADER ERROR: {error_msg}")
                 raise Exception(error_msg)
             
-            # Add to user database with validated ID
-            user_db_result = self.notion_uploader.add_file_to_user_database(
-                database_id=upload_session['user_database_id'],
-                filename=upload_session['filename'],
-                file_size=upload_session['file_size'],
-                file_hash=salted_hash,
-                file_upload_id=file_upload_id,  # FIXED: Use validated file upload ID for file operations
-                original_filename=upload_session['filename'],
-                salt=salt
-            )
-            
-            database_page_id = user_db_result['id']  # This is the DATABASE PAGE ID - different from file upload ID
-            print(f"DEBUG: Added to user database with database page ID: {database_page_id}")
-            print(f"🔍 STREAMING ID SEPARATION: File Upload ID: {file_upload_id} | Database Page ID: {database_page_id}")
-            
-            # Add to global index - use DATABASE PAGE ID here, not file upload ID
-            if self.notion_uploader.global_file_index_db_id:
-                # Generate permanent URL for the global index
-                permanent_url = self.notion_uploader.generate_permanent_download_url(file_upload_id, upload_session['filename'])
-                
-                self.notion_uploader.add_file_to_index(
-                    salted_sha512_hash=salted_hash,
-                    file_page_id=database_page_id,  # FIXED: Use database page ID for database operations
-                    user_database_id=upload_session['user_database_id'],
+            # Only create DB entry for the main/original filename if NOT splitting (handled in non-split branch below)
+            # For split uploads, DB entries are created for .partN and .file.json only.
+            if upload_session['file_size'] <= self.SPLIT_THRESHOLD:
+                # Add to user database with validated ID (non-split only)
+                user_db_result = self.notion_uploader.add_file_to_user_database(
+                    database_id=upload_session['user_database_id'],
+                    filename=upload_session['filename'],
+                    file_size=upload_session['file_size'],
+                    file_hash=salted_hash,
+                    file_upload_id=file_upload_id,  # FIXED: Use validated file upload ID for file operations
                     original_filename=upload_session['filename'],
-                    is_public=False,
-                    permanent_url=permanent_url
+                    salt=salt
                 )
-                print(f"DEBUG: Added to global file index with database page ID: {database_page_id} and permanent URL")
-            else:
-                print(f"WARNING: Global file index DB ID not configured, skipping global index")
-            
-            return {
-                'file_id': database_page_id,  # FIXED: Return database page ID for database operations
-                'notion_file_upload_id': file_upload_id,  # FIXED: Keep file upload ID separate
-                'file_hash': salted_hash,
-                'status': 'completed',
-                'filename': upload_session['filename'],
-                'bytes_uploaded': upload_session['file_size']
-            }
+                database_page_id = user_db_result['id']  # This is the DATABASE PAGE ID - different from file upload ID
+                print(f"DEBUG: Added to user database with database page ID: {database_page_id}")
+                print(f"🔍 STREAMING ID SEPARATION: File Upload ID: {file_upload_id} | Database Page ID: {database_page_id}")
+                # Add to global index - use DATABASE PAGE ID here, not file upload ID
+                if self.notion_uploader.global_file_index_db_id:
+                    # Generate permanent URL for the global index
+                    permanent_url = self.notion_uploader.generate_permanent_download_url(file_upload_id, upload_session['filename'])
+                    self.notion_uploader.add_file_to_index(
+                        salted_sha512_hash=salted_hash,
+                        file_page_id=database_page_id,  # FIXED: Use database page ID for database operations
+                        user_database_id=upload_session['user_database_id'],
+                        original_filename=upload_session['filename'],
+                        is_public=False,
+                        permanent_url=permanent_url
+                    )
+                    print(f"DEBUG: Added to global file index with database page ID: {database_page_id} and permanent URL")
+                else:
+                    print(f"WARNING: Global file index DB ID not configured, skipping global index")
+                return {
+                    'file_id': database_page_id,  # FIXED: Return database page ID for database operations
+                    'notion_file_upload_id': file_upload_id,  # FIXED: Keep file upload ID separate
+                    'file_hash': salted_hash,
+                    'status': 'completed',
+                    'filename': upload_session['filename'],
+                    'bytes_uploaded': upload_session['file_size']
+                }
         except Exception as e:
             print(f"ERROR: Database integration failed: {e}")
             # Cleanup on failure
