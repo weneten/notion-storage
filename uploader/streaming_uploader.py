@@ -218,6 +218,7 @@ class NotionStreamingUploader:
                             part_result = self._process_single_part_stream(part_upload_session, [part_data])
                         # Only create DB entry for .partN, never for the main filename
                         if part_filename != filename:
+                            print(f"[DEBUG LOG] add_file_to_user_database called for part: {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
                             db_entry = self.notion_uploader.add_file_to_user_database(
                                 database_id=user_database_id,
                                 filename=part_filename,
@@ -228,6 +229,7 @@ class NotionStreamingUploader:
                                 salt="",
                                 original_filename=filename
                             )
+                            print(f"[DEBUG LOG] DB entry created for part: {part_filename}, db_entry_id: {db_entry.get('id')}")
                             # Patch DB entry: set is_visible unchecked, file_data set to file
                             self.notion_uploader.update_user_properties(db_entry['id'], {
                                 "is_visible": {"checkbox": False},
@@ -259,6 +261,7 @@ class NotionStreamingUploader:
                         part_result = self._process_single_part_stream(part_upload_session, [part_data])
                     # Only create DB entry for .partN, never for the main filename
                     if part_filename != filename:
+                        print(f"[DEBUG LOG] add_file_to_user_database called for part (final): {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
                         db_entry = self.notion_uploader.add_file_to_user_database(
                             database_id=user_database_id,
                             filename=part_filename,
@@ -269,6 +272,7 @@ class NotionStreamingUploader:
                             salt="",
                             original_filename=filename
                         )
+                        print(f"[DEBUG LOG] DB entry created for part (final): {part_filename}, db_entry_id: {db_entry.get('id')}")
                         self.notion_uploader.update_user_properties(db_entry['id'], {
                             "is_visible": {"checkbox": False},
                             "file_data": db_entry.get('properties', {}).get('file_data', {})
@@ -296,6 +300,7 @@ class NotionStreamingUploader:
                 # Always single-part for small JSON
                 metadata_result = self._process_single_part_stream(metadata_upload_session, [metadata_bytes])
                 # Create DB entry for JSON metadata (is_visible: checked, file_data: set)
+                print(f"[DEBUG LOG] add_file_to_user_database called for metadata: {metadata_filename}, upload_id: {metadata_result.get('notion_file_upload_id', metadata_result.get('file_id'))}, hash: {hashlib.sha512(metadata_bytes).hexdigest()}")
                 metadata_db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
                     filename=metadata_filename,
@@ -306,6 +311,7 @@ class NotionStreamingUploader:
                     salt="",
                     original_filename=filename
                 )
+                print(f"[DEBUG LOG] DB entry created for metadata: {metadata_filename}, db_entry_id: {metadata_db_entry.get('id')}")
                 self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
                     "is_visible": {"checkbox": True},
                     "file_data": metadata_db_entry.get('properties', {}).get('file_data', {})
