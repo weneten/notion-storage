@@ -646,24 +646,6 @@ class NotionFileUploader:
             print(f"Error determining content type: {e}")
             return 'application/octet-stream'
 
-    def generate_permanent_download_url(self, file_upload_id: str, original_filename: str,
-                                      file_url: str = None, space_id: str = None, table: str = "block") -> str:
-        """
-        Generate permanent Notion S3-style signed download URL format.
-        
-        Format: https://www.notion.so/signed/https%3A%2F%2Fprod-files-secure.s3.us-west-2.amazonaws.com%2F{space_id}%2F{s3_key}%2Ffile.txt?id={file_upload_id}&table={table}&spaceId={space_id}&name=file.txt
-        
-        Args:
-            file_upload_id: The Notion file upload ID
-            original_filename: Original filename for the attachment (ignored for URL, always file.txt)
-            file_url: The actual file.url returned by Notion (S3 signed URL)
-            space_id: Notion space ID (optional, will try to extract from context)
-            table: Database table type (default: "block")
-        Returns:
-            str: Permanent download URL
-        """
-
-
 
     def cache_file_metadata(self, page_id: str, url: str, file_size: int, content_type: str):
         """Cache file metadata including size and content type."""
@@ -1797,9 +1779,6 @@ class NotionFileUploader:
                 "salt": {
                     "rich_text": {}
                 },
-                "permanent_download_url": {
-                    "rich_text": {}
-                },
                 "is_visible": {
                     "checkbox": {}
                 },
@@ -1954,13 +1933,6 @@ class NotionFileUploader:
         # Use original_filename if provided, otherwise fall back to filename
         display_filename = original_filename if original_filename else filename
 
-        # Generate permanent download URL
-        if file_url:
-            permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename, file_url=file_url)
-        else:
-            permanent_url = self.generate_permanent_download_url(file_upload_id, display_filename)
-        print(f"🔗 Generated permanent URL: {permanent_url}")
-
         # Create a new page in the database with file information, only use file_data for file storage
         payload = {
             "parent": {"database_id": database_id},
@@ -2005,15 +1977,6 @@ class NotionFileUploader:
                         {
                             "text": {
                                 "content": salt
-                            }
-                        }
-                    ]
-                },
-                "permanent_download_url": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": permanent_url
                             }
                         }
                     ]
@@ -2186,29 +2149,24 @@ class NotionFileUploader:
         Returns:
             Iterator yielding file content chunks for the requested range
         """
+        # Stream a specific byte range from a Notion signed download URL
+        headers = {
+            'Range': f'bytes={start}-{end}'
+        }
+        print(f"Requesting bytes {start}-{end} from Notion download URL: {notion_download_url}")
         try:
-            # Set the Range header for partial content request
-            headers = {
-                'Range': f'bytes={start}-{end}'
-            }
-            
-            print(f"Requesting bytes {start}-{end} from Notion download URL")
-            
             with requests.get(notion_download_url, headers=headers, stream=True) as r:
                 # Handle both 200 (full content) and 206 (partial content) responses
                 if r.status_code == 206:
-                    # Partial content - exactly what we want
                     print(f"Received partial content response (206) for range {start}-{end}")
                 elif r.status_code == 200:
-                    # Full content - server doesn't support range requests
-                    # We'll need to skip to the start position and limit the content
                     print(f"Server doesn't support range requests, streaming full content and extracting range {start}-{end}")
                 else:
                     r.raise_for_status()
-                
+
                 bytes_read = 0
                 target_bytes = end - start + 1
-                
+
                 # If we got a 200 response, we need to skip bytes until we reach the start position
                 if r.status_code == 200:
                     skip_bytes = start
@@ -2218,64 +2176,35 @@ class NotionFileUploader:
                                 skip_bytes -= len(chunk)
                                 continue
                             else:
-                                # Partial chunk - take only the part we need
                                 chunk = chunk[skip_bytes:]
                                 skip_bytes = 0
-                        
-                        # Now we're at the desired range
-                        if bytes_read + len(chunk) > target_bytes:
-                            # This chunk would exceed our target, truncate it
-                            remaining = target_bytes - bytes_read
-                            yield chunk[:remaining]
+                        to_yield = min(len(chunk), target_bytes - bytes_read)
+                        if to_yield <= 0:
                             break
-                        else:
-                            yield chunk
-                            bytes_read += len(chunk)
-                            
+                        yield chunk[:to_yield]
+                        bytes_read += to_yield
                         if bytes_read >= target_bytes:
                             break
                 else:
-                    # Server supports range requests (206 response)
+                    # 206 Partial Content or other range-supporting response
                     for chunk in r.iter_content(chunk_size=8192):
-                        if bytes_read + len(chunk) > target_bytes:
-                            # This chunk would exceed our target, truncate it
-                            remaining = target_bytes - bytes_read
-                            yield chunk[:remaining]
+                        to_yield = min(len(chunk), target_bytes - bytes_read)
+                        if to_yield <= 0:
                             break
-                        else:
-                            yield chunk
-                            bytes_read += len(chunk)
-                            
+                        yield chunk[:to_yield]
+                        bytes_read += to_yield
                         if bytes_read >= target_bytes:
                             break
-                            
-                print(f"Successfully streamed {bytes_read} bytes for range {start}-{end}")
-                
         except requests.exceptions.RequestException as e:
-            print(f"Error streaming file range from Notion: {e}")
-            raise Exception(f"Failed to stream file range from Notion: {e}")
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit handler"""
-        pass
-
-    def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool, permanent_url: str = "") -> Dict[str, Any]:
+            print(f"Error streaming byte range from Notion: {e}")
+            raise Exception(f"Failed to stream byte range from Notion: {e}")
+    def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool) -> Dict[str, Any]:
         """Adds an entry to the Global File Index database."""
         global_index_db_id = self.global_file_index_db_id
         if not global_index_db_id:
             raise Exception("GLOBAL_FILE_INDEX_DB_ID not set in NotionFileUploader instance. Global File Index database must be created manually.")
 
         url = f"{self.base_url}/pages"
-
-        # If permanent_url is not provided, try to get it from the file page
-        if not permanent_url:
-            try:
-                page_info = self.get_user_by_id(file_page_id)
-                if page_info:
-                    permanent_url_property = page_info.get('properties', {}).get('permanent_download_url', {})
-                    permanent_url = permanent_url_property.get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            except Exception as e:
-                print(f"Could not retrieve permanent URL for index: {e}")
 
         payload = {
             "parent": {"database_id": global_index_db_id},
@@ -2294,9 +2223,6 @@ class NotionFileUploader:
                 },
                 "Is Public": {
                     "checkbox": is_public
-                },
-                "Permanent Download URL": {
-                    "rich_text": [{"text": {"content": permanent_url}}]
                 }
             }
         }
@@ -2307,7 +2233,7 @@ class NotionFileUploader:
             response = requests.post(url, json=payload, headers=headers)
             if response.status_code != 200:
                 raise Exception(f"Failed to add file to Global File Index: {response.text}")
-            print(f"✅ Added file to Global Index with permanent URL: {permanent_url[:50]}..." if permanent_url else "✅ Added file to Global Index (no permanent URL)")
+            print(f"✅ Added file to Global Index for {original_filename}")
             return response.json()
         except Exception as e:
             print(f"Error adding file to Global File Index: {e}")
