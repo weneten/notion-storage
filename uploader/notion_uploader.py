@@ -501,21 +501,27 @@ class NotionFileUploader:
                 print(f"No page found with ID: {page_id}")
                 return "", 0, "application/octet-stream"
 
-            # Extract file information from the 'file' property
-            # Assuming 'file' is the name of the file property in the database
-            file_property = page_info.get('properties', {}).get('file', {})
+            # Extract file information from the 'file_data' property (new name)
+            file_property = page_info.get('properties', {}).get('file_data', {})
             files_array = file_property.get('files', [])
 
             if not files_array:
-                print(f"No files found in 'file' property for page ID: {page_id}")
+                print(f"No files found in 'file_data' property for page ID: {page_id}")
                 return "", 0, "application/octet-stream"
 
-            # Get the first file in the array
-            file_info = files_array[0]
-            file_url = file_info.get('file', {}).get('url', '') # Corrected path to the URL
+            # Try to match by original filename if possible
+            file_info = None
+            for entry in files_array:
+                if entry.get('name') == original_filename or entry.get('name') == 'file.txt':
+                    file_info = entry
+                    break
+            if not file_info:
+                file_info = files_array[0]  # fallback to first if not found
+
+            file_url = file_info.get('file', {}).get('url', '')
 
             if not file_url:
-                print(f"No valid URL found in file property for page ID: {page_id}")
+                print(f"No valid URL found in file_data property for page ID: {page_id}")
                 print(f"File info: {file_info}")
                 return "", 0, "application/octet-stream"
 
