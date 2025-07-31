@@ -28,10 +28,10 @@ class NotionStreamingUploader:
         """
         import json
         print(f"[DELETE] Deleting manifest and parts for manifest_db_id={manifest_db_id}")
-        # Fetch manifest entry
+        # Fetch manifest entry and manifest JSON BEFORE any deletion
         manifest_entry = self.notion_uploader.get_user_by_id(manifest_db_id)
         if not manifest_entry:
-            print(f"[DELETE] Manifest entry not found: {manifest_db_id}")
+            print(f"[DELETE] Manifest entry not found: {manifest_db_id}. Aborting delete.")
             return
         # Try to get the file_data property (should contain the JSON metadata)
         file_data = None
@@ -51,15 +51,16 @@ class NotionStreamingUploader:
         if not file_data and 'file_data' in props and 'rich_text' in props['file_data'] and props['file_data']['rich_text']:
             file_data = props['file_data']['rich_text'][0].get('plain_text')
         if not file_data:
-            print(f"[DELETE] Could not retrieve manifest JSON for manifest {manifest_db_id}")
+            print(f"[DELETE] ABORT: Could not retrieve manifest JSON for manifest {manifest_db_id}. No files will be deleted.")
             return
         # Parse JSON and get parts
         try:
             manifest_json = json.loads(file_data)
             parts = manifest_json.get('parts', [])
         except Exception as e:
-            print(f"[DELETE] Failed to parse manifest JSON: {e}")
+            print(f"[DELETE] ABORT: Failed to parse manifest JSON: {e}. No files will be deleted.")
             return
+        # Only after successful JSON load, proceed to delete parts and manifest
         # Delete each part from user DB and global index
         for part in parts:
             part_id = part.get('file_id')
