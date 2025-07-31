@@ -324,13 +324,17 @@ def download_file(filename):
 
         files_data = uploader.get_files_from_user_database(user_database_id)
         file_hash = None
+        manifest_page_id = None
         for file_data in files_data.get('results', []):
             properties = file_data.get('properties', {})
             name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
             if name == filename:
                 file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                manifest_page_id = file_data.get('id')
                 break
 
+        if filename.lower().endswith('.json') and manifest_page_id:
+            return redirect(url_for('download_multipart_by_page_id', manifest_page_id=manifest_page_id))
         if file_hash:
             return redirect(url_for('download_by_hash', salted_sha512_hash=file_hash))
         else:
@@ -1292,6 +1296,40 @@ def abort_upload(upload_id):
         print(f"Error aborting upload: {e}")
         return jsonify({'error': str(e)}), 500
 
+
+@app.route('/download-multipart/<manifest_page_id>')
+def download_multipart_by_page_id(manifest_page_id):
+    """
+    Download a multi-part file using the manifest's Notion page ID (bypasses global file index).
+    """
+    try:
+        import requests, json
+        manifest_page = uploader.get_user_by_id(manifest_page_id)
+        if not manifest_page:
+            return "Manifest page not found", 404
+        file_property = manifest_page.get('properties', {}).get('file_data', {})
+        files_array = file_property.get('files', [])
+        manifest_file = files_array[0] if files_array else None
+        manifest_url = manifest_file.get('file', {}).get('url', '') if manifest_file else ''
+        if not manifest_url:
+            return "Manifest file not found", 404
+        resp = requests.get(manifest_url)
+        resp.raise_for_status()
+        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        orig_name = manifest.get('original_filename', 'download')
+        total_size = manifest.get('total_size', 0)
+        import mimetypes
+        mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
+        response = Response(stream_with_context(uploader.stream_multi_part_file(manifest_page_id)), mimetype=mimetype)
+        response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
+        if total_size > 0:
+            response.headers['Content-Length'] = str(total_size)
+        return response
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
+        return f"Error streaming multi-part file: {str(e)}", 500
 
 # ============================================================================
 # HELPER FUNCTIONS FOR LEGACY COMPATIBILITY
