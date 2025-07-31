@@ -175,6 +175,7 @@ def home():
                             "id": file_id,
                             "is_public": is_public,
                             "file_hash": file_hash,
+                            "salted_hash": "",
                             "file_data": file_data_files
                         })
                 except Exception as e:
@@ -695,10 +696,19 @@ def get_files_api():
             is_public = file_props.get('is_public', {}).get('checkbox', False)
             is_manifest = file_props.get('is_manifest', {}).get('checkbox', False)
             is_visible = file_props.get('is_visible', {}).get('checkbox', True)
-            
+            salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+
+            # Compute salted hash for download link if salt is present
+            salted_hash = file_hash
+            if salt and file_hash:
+                import hashlib
+                salted_hash = hashlib.sha512((file_hash + salt).encode('utf-8')).hexdigest()
+
             print(f"🔍 DIAGNOSTIC: File {i+1} - {name}:")
             print(f"  - ID: {file_id} (needed for delete button)")
             print(f"  - Hash: {file_hash} (needed for toggle)")
+            print(f"  - Salt: {salt}")
+            print(f"  - Salted Hash: {salted_hash}")
             print(f"  - Is Public: {is_public} (needed for toggle state)")
             print(f"  - Size: {size}")
             print(f"  - Has all button data: {bool(file_id and file_hash is not None and is_public is not None)}")
@@ -709,6 +719,7 @@ def get_files_api():
                     'name': name,
                     'size': size,
                     'file_hash': file_hash,
+                    'salted_hash': salted_hash,
                     'is_public': is_public
                 }
                 formatted_files.append(formatted_file)
