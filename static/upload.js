@@ -76,6 +76,22 @@ function showStatus(message, type) {
     }
 }
 
+// Display a retry button when an upload fails
+function showRetryButton() {
+    const container = document.getElementById('messageContainer');
+    if (!container) return;
+
+    const retryBtn = document.createElement('button');
+    retryBtn.textContent = 'Retry Upload';
+    retryBtn.className = 'btn btn-warning btn-sm ml-2';
+    retryBtn.addEventListener('click', () => {
+        retryBtn.disabled = true;
+        uploadFile();
+    });
+
+    container.appendChild(retryBtn);
+}
+
 // Function to update progress bar
 function updateProgressBar(percentage, statusText) {
     const progressBar = document.getElementById('progressBar');
@@ -728,6 +744,7 @@ const uploadFile = async () => {
             } else {
                 cleanup();
                 showStatus(`Upload failed after ${uploadState.maxRetries} attempts: ${error.message}`, 'error');
+                showRetryButton();
             }
         };
 
@@ -879,5 +896,6 @@ const uploadFile = async () => {
     } catch (error) {
         console.error('Upload failed:', error);
         showStatus(`Upload failed: ${error.message}`, 'error');
+        showRetryButton();
     }
-}; 
+};
