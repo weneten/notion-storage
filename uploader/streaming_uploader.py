@@ -467,7 +467,7 @@ class NotionStreamingUploader:
         except Exception as cleanup_error:
             print(f"Warning: Failed to cleanup Notion upload: {cleanup_error}")
     
-    def process_stream(self, upload_session: Dict[str, Any], stream_generator) -> Dict[str, Any]:
+    def process_stream(self, upload_session: Dict[str, Any], stream_generator, resume_from: int = 0) -> Dict[str, Any]:
         """
         Process the incoming file stream and handle upload based on file size and splitting plan
         """
@@ -623,8 +623,10 @@ class NotionStreamingUploader:
             else:
                 # --- No split needed, use existing logic ---
                 if file_size > self.SINGLE_PART_THRESHOLD:
-                    result = self._process_multipart_stream(upload_session, stream_generator)
+                    result = self._process_multipart_stream(upload_session, stream_generator, resume_from=resume_from)
                 else:
+                    if resume_from > 0:
+                        raise ValueError("Cannot resume single-part upload")
                     result = self._process_single_part_stream(upload_session, stream_generator)
                 # Patch DB entry: is_visible checked, file_data set
                 # (Assume complete_upload_with_database_integration returns DB page id)
@@ -729,7 +731,7 @@ class NotionStreamingUploader:
             })
             raise
 
-    def _process_multipart_stream(self, upload_session: Dict[str, Any], stream_generator, db_integration: bool = True) -> Dict[str, Any]:
+    def _process_multipart_stream(self, upload_session: Dict[str, Any], stream_generator, resume_from: int = 0, db_integration: bool = True) -> Dict[str, Any]:
         """
         Handle multipart upload (> 20 MiB files) with parallel 5 MiB chunks
         """
@@ -745,9 +747,9 @@ class NotionStreamingUploader:
                 upload_session=upload_session,
                 socketio=self.socketio
             )
-            
+
             # Process stream with parallel uploads
-            notion_result = parallel_processor.process_stream(stream_generator)
+            notion_result = parallel_processor.process_stream(stream_generator, resume_from=resume_from)
             
             print(f"DEBUG: Parallel upload completed, starting database integration")
             
@@ -892,7 +894,7 @@ class StreamingUploadManager:
         
         return upload_id
     
-    def process_upload_stream(self, upload_id: str, stream_generator) -> Dict[str, Any]:
+    def process_upload_stream(self, upload_id: str, stream_generator, resume_from: int = 0) -> Dict[str, Any]:
         """
         Process an upload stream for the given upload ID with enhanced thread safety
         """
@@ -911,6 +913,8 @@ class StreamingUploadManager:
             
             upload_session = self.active_uploads[upload_id]
             session_lock = self.session_locks[upload_id]
+
+        resume_from = upload_session.get('bytes_uploaded', 0)
         
         # Process with session-specific lock to prevent concurrent processing of same upload
         with session_lock:
@@ -924,7 +928,7 @@ class StreamingUploadManager:
             upload_session['processing_thread'] = threading.current_thread().ident
             
             try:
-                result = self.uploader.process_stream(upload_session, stream_generator)
+                result = self.uploader.process_stream(upload_session, stream_generator, resume_from=resume_from)
                 print(f"🔒 THREAD SAFETY: Processing completed successfully for {upload_id}")
                 return result
             except Exception as e:
@@ -951,6 +955,14 @@ class StreamingUploadManager:
         """
         with self.upload_lock:
             return self.active_uploads.get(upload_id)
+
+    def resume_upload_stream(self, upload_id: str, stream_generator) -> Dict[str, Any]:
+        """Resume a previously started upload"""
+        status = self.get_upload_status(upload_id)
+        if not status:
+            raise ValueError(f"Upload session {upload_id} not found")
+        resume_from = status.get('bytes_uploaded', 0)
+        return self.process_upload_stream(upload_id, stream_generator, resume_from=resume_from)
     
     def cleanup_old_sessions(self, max_age_seconds: int = 3600) -> None:
         """

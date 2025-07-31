@@ -60,29 +60,38 @@ class ParallelChunkProcessor:
         
         print(f"🎯 Parallel processor initialized with {self.max_workers} workers")
         
-    def process_stream(self, stream_generator):
-        """Process incoming stream with parallel chunk uploads and checkpointing"""
+    def process_stream(self, stream_generator, resume_from: int = 0):
+        """Process incoming stream with optional resume support"""
         upload_id = self.upload_session.get('upload_id', 'unknown')
-        checkpoint_key = None
+        checkpoint_key = self.upload_session.get('checkpoint_key')
         
         try:
             print(f"🚀 Starting parallel processing for upload {upload_id}")
             
             # Initialize multipart upload
-            multipart_info = self._initialize_multipart_upload()
-            
-            # Create checkpoint for resume capability
-            if checkpoint_manager and create_checkpoint_key:
-                total_parts = self.upload_session.get('total_parts', 0)
-                file_hash = self.upload_session.get('hasher', hashlib.sha512()).hexdigest()[:16]
-                checkpoint_key = create_checkpoint_key(upload_id, file_hash)
-                checkpoint_manager.create_checkpoint(self.upload_session, multipart_info['id'], total_parts)
-                print(f"📋 Checkpoint created: {checkpoint_key}")
-            
+            if resume_from > 0 and self.upload_session.get('multipart_upload_id'):
+                multipart_info = {'id': self.upload_session['multipart_upload_id']}
+                completed_count = resume_from // self.chunk_size
+                self.completed_parts = set(range(1, completed_count + 1))
+                part_number = completed_count + 1
+                bytes_received = resume_from
+                checkpoint_key = self.upload_session.get('checkpoint_key')
+                print(f"🚀 Resuming upload {upload_id} from byte {resume_from} (part {part_number})")
+            else:
+                multipart_info = self._initialize_multipart_upload()
+                part_number = 1
+                bytes_received = 0
+                checkpoint_key = None
+                if checkpoint_manager and create_checkpoint_key:
+                    total_parts = self.upload_session.get('total_parts', 0)
+                    file_hash = self.upload_session.get('hasher', hashlib.sha512()).hexdigest()[:16]
+                    checkpoint_key = create_checkpoint_key(upload_id, file_hash)
+                    checkpoint_manager.create_checkpoint(self.upload_session, multipart_info['id'], total_parts)
+                    self.upload_session['checkpoint_key'] = checkpoint_key
+                    print(f"📋 Checkpoint created: {checkpoint_key}")
+
             buffer = io.BytesIO()
             buffer_size = 0
-            part_number = 1
-            bytes_received = 0
             
             for chunk in stream_generator:
                 if not chunk:
@@ -303,6 +312,9 @@ class ParallelChunkProcessor:
                 'total_parts': self.upload_session.get('total_parts', 0),
                 'status': 'uploading'
             })
+
+        # Persist progress in upload session for potential resume
+        self.upload_session['bytes_uploaded'] = bytes_received
     
     def _abort_multipart_upload(self, multipart_info):
         """Abort multipart upload on error"""

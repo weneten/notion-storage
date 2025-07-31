@@ -1051,6 +1051,54 @@ def stream_file_upload(upload_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/upload/resume/<upload_id>', methods=['POST'])
+@login_required
+def resume_stream_file_upload(upload_id):
+    """Resume a previously started upload"""
+    try:
+        with app.upload_session_lock:
+            upload_session = streaming_upload_manager.get_upload_status(upload_id)
+            if not upload_session:
+                return jsonify({'error': 'Upload session not found'}), 404
+            upload_session['processing_thread'] = threading.current_thread().ident
+            upload_session['last_activity'] = time.time()
+
+        def stream_generator():
+            chunk_size = 64 * 1024
+            while True:
+                chunk = request.stream.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+
+        result = streaming_upload_manager.resume_upload_stream(upload_id, stream_generator())
+
+        if socketio:
+            socketio.emit('upload_progress', {
+                'upload_id': upload_id,
+                'status': 'completed',
+                'progress': 100,
+                'bytes_uploaded': result['bytes_uploaded'],
+                'total_size': result['bytes_uploaded']
+            })
+
+        return jsonify({
+            'status': 'completed',
+            'upload_id': upload_id,
+            'filename': result['filename'],
+            'file_size': result['bytes_uploaded'],
+            'file_hash': result['file_hash'],
+            'file_id': result.get('file_id'),
+            'is_public': False,
+            'name': result.get('original_filename', result['filename']),
+            'size': result['bytes_uploaded']
+        })
+
+    except Exception as e:
+        print(f"Resume upload error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/upload/status/<upload_id>', methods=['GET'])
 @login_required
 def get_upload_status(upload_id):
