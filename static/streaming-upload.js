@@ -486,6 +486,19 @@ async function resumeFailedUpload() {
         return;
     }
     const { uploadId, file } = streamingUploader.failedUpload;
+
+    // Get authoritative progress from the server before resuming
+    try {
+        const statusResp = await fetch(`/api/upload/status/${uploadId}`);
+        if (statusResp.ok) {
+            const statusData = await statusResp.json();
+            if (statusData && typeof statusData.bytes_uploaded === 'number') {
+                streamingUploader.failedUpload.bytesUploaded = statusData.bytes_uploaded;
+            }
+        }
+    } catch (statusErr) {
+        console.warn('Failed to fetch resume status:', statusErr);
+    }
     const progressCallback = (progress, bytesUploaded) => {
         updateProgressBar(Math.floor(progress), `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`);
     };
