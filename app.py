@@ -684,6 +684,8 @@ def get_files_api():
             size = file_props.get('filesize', {}).get('number', 0)
             file_hash = file_props.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
             is_public = file_props.get('is_public', {}).get('checkbox', False)
+            is_manifest = file_props.get('is_manifest', {}).get('checkbox', False)
+            is_visible = file_props.get('is_visible', {}).get('checkbox', True)
             
             print(f"🔍 DIAGNOSTIC: File {i+1} - {name}:")
             print(f"  - ID: {file_id} (needed for delete button)")

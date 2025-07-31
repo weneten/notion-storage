@@ -1946,7 +1946,7 @@ class NotionFileUploader:
             print(f"Error deleting file from Global File Index by hash {salted_sha512_hash}: {e}")
             raise
 
-    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None) -> Dict[str, Any]:
+    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False) -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         import traceback
         url = f"{self.base_url}/pages"
@@ -1984,54 +1984,59 @@ class NotionFileUploader:
         display_filename = original_filename if original_filename else filename
 
         # Create a new page in the database with file information, only use file_data for file storage
+        properties = {
+            "filename": {
+                "title": [
+                    {
+                        "text": {
+                            "content": display_filename
+                        }
+                    }
+                ]
+            },
+            "filesize": {
+                "number": file_size
+            },
+            "filehash": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": file_hash
+                        }
+                    }
+                ]
+            },
+            "file_data": {
+                "files": [
+                    {
+                        "name": "file.txt",
+                        "type": "file_upload",
+                        "file_upload": {
+                            "id": file_upload_id
+                        }
+                    }
+                ]
+            },
+            "is_public": {
+                "checkbox": is_public
+            },
+            "salt": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": salt
+                        }
+                    }
+                ]
+            }
+        }
+        # Add is_manifest property if this is a manifest entry
+        if is_manifest:
+            properties["is_manifest"] = {"checkbox": True}
+
         payload = {
             "parent": {"database_id": database_id},
-            "properties": {
-                "filename": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": display_filename
-                            }
-                        }
-                    ]
-                },
-                "filesize": {
-                    "number": file_size
-                },
-                "filehash": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": file_hash
-                            }
-                        }
-                    ]
-                },
-                "file_data": {
-                    "files": [
-                        {
-                            "name": "file.txt",
-                            "type": "file_upload",
-                            "file_upload": {
-                                "id": file_upload_id
-                            }
-                        }
-                    ]
-                },
-                "is_public": {
-                    "checkbox": is_public
-                },
-                "salt": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": salt
-                            }
-                        }
-                    ]
-                }
-            }
+            "properties": properties
         }
 
         headers = {**self.headers, "Content-Type": "application/json"}

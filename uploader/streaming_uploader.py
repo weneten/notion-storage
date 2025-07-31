@@ -318,16 +318,21 @@ class NotionStreamingUploader:
                 metadata_file_url = None
                 if metadata_result and metadata_result.get('result'):
                     metadata_file_url = metadata_result['result'].get('download_link') or metadata_result['result'].get('file', {}).get('url')
+                # Ensure is_manifest property exists in the database
+                self.notion_uploader.ensure_database_property(
+                    user_database_id, "is_manifest", "checkbox"
+                )
                 metadata_db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
                     filename=metadata_filename,
-                    file_size=len(metadata_bytes),
-                    file_hash=hashlib.sha512(metadata_bytes).hexdigest(),
+                    file_size=file_size,  # combined size of all parts
+                    file_hash=hashlib.sha512(metadata_bytes).hexdigest(),  # hash of JSON file itself
                     file_upload_id=metadata_result.get('file_upload_id'),
                     is_public=False,
                     salt="",
                     original_filename=filename,
-                    file_url=metadata_file_url
+                    file_url=metadata_file_url,
+                    is_manifest=True
                 )
                 print(f"[DEBUG LOG] DB entry created for metadata: {metadata_filename}, db_entry_id: {metadata_db_entry.get('id')}")
                 self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
