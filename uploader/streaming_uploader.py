@@ -38,8 +38,10 @@ class NotionStreamingUploader:
         # Check for is_manifest property (Notion checkbox) or .file.json filename
         if 'is_manifest' in props and props['is_manifest'].get('checkbox'):
             is_manifest = True
-        #if filename.endswith('.file.json'):
-            #is_manifest = True
+            print(f"[DELETE] Detected manifest by is_manifest property for {file_db_id}")
+        if filename.endswith('.file.json'):
+            is_manifest = True
+            print(f"[DELETE] Detected manifest by filename for {file_db_id}")
 
         if is_manifest:
             print(f"[DELETE] Entry {file_db_id} is a manifest. Deleting manifest and parts.")
