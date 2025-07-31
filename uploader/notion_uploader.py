@@ -602,8 +602,6 @@ class NotionFileUploader:
             
         except Exception as e:
             print(f"Error constructing download URL from page property: {e}")
-            import traceback
-            traceback.print_exc()
             return "", 0, "application/octet-stream"
 
     def get_file_size_from_notion(self, page_info: Dict[str, Any], original_filename: str) -> int:
@@ -1964,7 +1962,6 @@ class NotionFileUploader:
 
     def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False) -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
-        import traceback
         url = f"{self.base_url}/pages"
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
@@ -1975,7 +1972,6 @@ class NotionFileUploader:
         # EXTRA LOGGING: Log filename, file_size, and call stack for every DB entry creation
         print(f"[EXTRA LOGGING] Creating DB entry: filename={filename}, file_size={file_size}, original_filename={original_filename}")
         print(f"[EXTRA LOGGING] Call stack:")
-        traceback.print_stack()
 
         if not file_upload_id:
             error_msg = f"ID VALIDATION FAILED: file_upload_id is required but was null or empty. Received: {repr(file_upload_id)}"
