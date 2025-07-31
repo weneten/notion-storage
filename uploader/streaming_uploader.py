@@ -19,6 +19,77 @@ from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate
 
 
 class NotionStreamingUploader:
+    def delete_manifest_and_parts(self, manifest_db_id: str, user_database_id: str) -> None:
+        """
+        Delete the manifest (metadata JSON) and all associated part files from the user's database and global index.
+        Args:
+            manifest_db_id: The Notion database page ID of the manifest (.file.json) entry.
+            user_database_id: The user's Notion database ID.
+        """
+        import json
+        print(f"[DELETE] Deleting manifest and parts for manifest_db_id={manifest_db_id}")
+        # Fetch manifest entry
+        manifest_entry = self.notion_uploader.get_user_by_id(manifest_db_id)
+        if not manifest_entry:
+            print(f"[DELETE] Manifest entry not found: {manifest_db_id}")
+            return
+        # Try to get the file_data property (should contain the JSON metadata)
+        file_data = None
+        props = manifest_entry.get('properties', {})
+        if 'file_data' in props and 'files' in props['file_data'] and props['file_data']['files']:
+            # Notion file property: get the first file's URL
+            file_url = props['file_data']['files'][0].get('file', {}).get('url') or props['file_data']['files'][0].get('external', {}).get('url')
+            if file_url:
+                try:
+                    import requests
+                    resp = requests.get(file_url)
+                    if resp.status_code == 200:
+                        file_data = resp.content.decode("utf-8")
+                except Exception as e:
+                    print(f"[DELETE] Failed to fetch manifest JSON from Notion: {e}")
+        # Fallback: try to get file_data as plain text
+        if not file_data and 'file_data' in props and 'rich_text' in props['file_data'] and props['file_data']['rich_text']:
+            file_data = props['file_data']['rich_text'][0].get('plain_text')
+        if not file_data:
+            print(f"[DELETE] Could not retrieve manifest JSON for manifest {manifest_db_id}")
+            return
+        # Parse JSON and get parts
+        try:
+            manifest_json = json.loads(file_data)
+            parts = manifest_json.get('parts', [])
+        except Exception as e:
+            print(f"[DELETE] Failed to parse manifest JSON: {e}")
+            return
+        # Delete each part from user DB and global index
+        for part in parts:
+            part_id = part.get('file_id')
+            part_filename = part.get('filename')
+            if not part_id:
+                print(f"[DELETE] Skipping part with missing file_id: {part}")
+                continue
+            print(f"[DELETE] Deleting part: {part_filename} (id={part_id})")
+            # Delete from user database
+            try:
+                self.notion_uploader.delete_file_from_user_database(part_id)
+            except Exception as e:
+                print(f"[DELETE] Failed to delete part {part_id} from user DB: {e}")
+            # Delete from global index if enabled
+            if self.notion_uploader.global_file_index_db_id:
+                try:
+                    self.notion_uploader.delete_file_from_index(part_id)
+                except Exception as e:
+                    print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+        # Delete the manifest itself from user DB and global index
+        print(f"[DELETE] Deleting manifest entry: {manifest_db_id}")
+        try:
+            self.notion_uploader.delete_file_from_user_database(manifest_db_id)
+        except Exception as e:
+            print(f"[DELETE] Failed to delete manifest from user DB: {e}")
+        if self.notion_uploader.global_file_index_db_id:
+            try:
+                self.notion_uploader.delete_file_from_index(manifest_db_id)
+            except Exception as e:
+                print(f"[DELETE] Failed to delete manifest from global index: {e}")
     """
     Handles streaming file uploads with automatic single-part/multi-part decision making
     based on Notion API specifications.
