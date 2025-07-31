@@ -331,7 +331,7 @@ class NotionStreamingUploader:
                     database_id=user_database_id,
                     filename=metadata_filename,
                     file_size=file_size,  # combined size of all parts
-                    file_hash=manifest_json_hash,  # hash of JSON file itself
+                    file_hash=manifest_salted_hash,  # store salted hash in filehash property (like small files)
                     file_upload_id=metadata_result.get('file_upload_id'),
                     is_public=False,
                     salt=manifest_salt,
