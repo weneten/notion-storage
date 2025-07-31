@@ -286,6 +286,56 @@ class NotionStreamingUploader:
     SINGLE_PART_THRESHOLD = 20 * 1024 * 1024  # 20 MiB
     MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024    # 5 MiB for multipart uploads
     SPLIT_THRESHOLD = 50 * 1024 * 1024        # 50 MiB
+
+    class _PartStream:
+        """Iterator that yields exactly ``part_size`` bytes from ``stream_iter``.
+        It also updates provided hashers and preserves any excess bytes for the
+        next part."""
+
+        def __init__(self, stream_iter, part_size, leftover, overall_hasher):
+            self.stream_iter = stream_iter
+            self.part_size = part_size
+            self.leftover = leftover or b""
+            self.overall_hasher = overall_hasher
+            self.bytes_sent = 0
+            self.part_hasher = hashlib.sha512()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.bytes_sent >= self.part_size:
+                raise StopIteration
+
+            if self.leftover:
+                data = self.leftover
+                self.leftover = b""
+            else:
+                data = next(self.stream_iter)
+
+            if not data:
+                raise StopIteration
+
+            remaining = self.part_size - self.bytes_sent
+            chunk = data[:remaining]
+            if len(data) > remaining:
+                self.leftover = data[remaining:]
+
+            self.bytes_sent += len(chunk)
+            self.part_hasher.update(chunk)
+            if self.overall_hasher is not None:
+                self.overall_hasher.update(chunk)
+
+            return chunk
+
+        def get_leftover(self):
+            return self.leftover
+
+        def get_part_hash(self):
+            return self.part_hasher.hexdigest()
+
+        def get_bytes_sent(self):
+            return self.bytes_sent
     
     def __init__(self, api_token: str, socketio: Optional[SocketIO] = None, notion_uploader: Optional[NotionFileUploader] = None):
         self.api_token = api_token
@@ -430,160 +480,71 @@ class NotionStreamingUploader:
             user_database_id = upload_session['user_database_id']
 
             if file_size > self.SPLIT_THRESHOLD:
-                # --- Split file into parts, upload each part, create DB entry for each part ---
+                # --- Stream large files in parts without buffering the entire part ---
                 print(f"INFO: File size > 50 MiB, splitting and uploading in parts...")
-                part_results = []
-                part_hashes = []
-                part_ids = []
-                part_filenames = []
-                part_sizes = []
-                part_etags = []
-                part_count = 0
-                buffer = io.BytesIO()
-                bytes_received = 0
-                part_number = 1
-                hasher = hashlib.sha512()
-                # For JSON metadata
+
+                total_parts = (file_size + self.SPLIT_THRESHOLD - 1) // self.SPLIT_THRESHOLD
+                last_part_size = file_size - self.SPLIT_THRESHOLD * (total_parts - 1)
+                part_sizes = [self.SPLIT_THRESHOLD] * (total_parts - 1)
+                if last_part_size:
+                    part_sizes.append(last_part_size)
+
+                stream_iter = iter(stream_generator)
+                leftover = b""
                 parts_metadata = []
 
-                for chunk in stream_generator:
-                    if not chunk:
-                        break
-                    buffer.write(chunk)
-                    bytes_received += len(chunk)
-                    hasher.update(chunk)
-                    # If buffer >= 50 MiB or end of stream, process part
-                    while buffer.tell() >= self.SPLIT_THRESHOLD:
-                        buffer.seek(0)
-                        part_data = buffer.read(self.SPLIT_THRESHOLD)
-                        remaining = buffer.read()
-                        buffer = io.BytesIO()
-                        buffer.write(remaining)
-                        # Upload part (as multipart or single-part)
-                        part_size = len(part_data)
-                        part_filename = f"{filename}.part{part_number}"
-                        part_hash = hashlib.sha512(part_data).hexdigest()
-                        part_upload_session = self.create_upload_session(
-                            part_filename, part_size, user_database_id
-                        )
-                        # Use multipart or single-part logic for each part
-                        if part_size > self.SINGLE_PART_THRESHOLD:
-                            part_result = self._process_multipart_stream(part_upload_session, [part_data], db_integration=False)
-                        else:
-                            part_result = self._process_single_part_stream(part_upload_session, [part_data], db_integration=False)
-                        # Only create DB entry for .partN, never for the main filename
-                        if part_filename != filename:
-                            print(f"[DEBUG LOG] add_file_to_user_database called for part: {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
-                            # Extract file_url from upload result for permanent URL
-                            file_url = None
-                            if 'result' in part_result and part_result['result']:
-                                file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
-                            # Generate salt and salted hash for the part
-                            part_salt = generate_salt()
-                            part_salted_hash = calculate_salted_hash(part_hash, part_salt)
-                            db_entry = self.notion_uploader.add_file_to_user_database(
-                                database_id=user_database_id,
-                                filename=part_filename,
-                                file_size=part_size,
-                                file_hash=part_salted_hash,
-                                file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                                is_public=False,
-                                salt=part_salt,
-                                original_filename=filename,
-                                file_url=file_url
-                            )
-                            print(f"[DEBUG LOG] DB entry created for part: {part_filename}, db_entry_id: {db_entry.get('id')}")
-                            # Add part to global file index
-                            if self.notion_uploader.global_file_index_db_id:
-                                self.notion_uploader.add_file_to_index(
-                                    salted_sha512_hash=part_salted_hash,
-                                    file_page_id=db_entry['id'],
-                                    user_database_id=user_database_id,
-                                    original_filename=part_filename,
-                                    is_public=False
-                                )
-                                print(f"[DEBUG LOG] Part added to global file index with salted hash: {part_salted_hash}")
-                            else:
-                                print(f"[DEBUG LOG] Global file index DB ID not configured, skipping global index for part")
-                            # Patch DB entry: set is_visible unchecked, file_data set to file
-                            self.notion_uploader.update_user_properties(db_entry['id'], {
-                                "is_visible": {"checkbox": False},
-                                "file_data": db_entry.get('properties', {}).get('file_data', {})
-                            })
-                            # Collect metadata for JSON
-                            parts_metadata.append({
-                                "part_number": part_number,
-                                "filename": part_filename,
-                                "file_id": db_entry['id'],
-                                "file_hash": part_salted_hash,
-                                "size": part_size
-                            })
-                        part_number += 1
-
-                # Final part if any data remains (avoid duplicate if already processed)
-                if buffer.tell() > 0:
-                    # If buffer size is exactly SPLIT_THRESHOLD, last part was already processed in the loop
-                    if buffer.tell() == self.SPLIT_THRESHOLD:
-                        print("[DEBUG LOG] Skipping final part block: last part already processed in main loop")
+                for idx, part_size in enumerate(part_sizes, start=1):
+                    part_filename = f"{filename}.part{idx}"
+                    part_session = self.create_upload_session(part_filename, part_size, user_database_id)
+                    part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
+                    if part_size > self.SINGLE_PART_THRESHOLD:
+                        part_result = self._process_multipart_stream(part_session, part_stream, db_integration=False)
                     else:
-                        buffer.seek(0)
-                        part_data = buffer.read()
-                        part_size = len(part_data)
-                        part_filename = f"{filename}.part{part_number}"
-                        part_hash = hashlib.sha512(part_data).hexdigest()
-                        part_upload_session = self.create_upload_session(
-                            part_filename, part_size, user_database_id
-                        )
-                        if part_size > self.SINGLE_PART_THRESHOLD:
-                            part_result = self._process_multipart_stream(part_upload_session, [part_data], db_integration=False)
-                        else:
-                            part_result = self._process_single_part_stream(part_upload_session, [part_data], db_integration=False)
-                        # Only create DB entry for .partN, never for the main filename
-                        if part_filename != filename:
-                            print(f"[DEBUG LOG] add_file_to_user_database called for part (final): {part_filename}, upload_id: {part_result.get('notion_file_upload_id', part_result.get('file_id'))}, hash: {part_hash}")
-                            file_url = None
-                            if 'result' in part_result and part_result['result']:
-                                file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
-                            # Generate salt and salted hash for the part (final)
-                            part_salt = generate_salt()
-                            part_salted_hash = calculate_salted_hash(part_hash, part_salt)
-                            db_entry = self.notion_uploader.add_file_to_user_database(
-                                database_id=user_database_id,
-                                filename=part_filename,
-                                file_size=part_size,
-                                file_hash=part_salted_hash,
-                                file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                                is_public=False,
-                                salt=part_salt,
-                                original_filename=filename,
-                                file_url=file_url
-                            )
-                            print(f"[DEBUG LOG] DB entry created for part (final): {part_filename}, db_entry_id: {db_entry.get('id')}")
-                            # Add part to global file index
-                            if self.notion_uploader.global_file_index_db_id:
-                                self.notion_uploader.add_file_to_index(
-                                    salted_sha512_hash=part_salted_hash,
-                                    file_page_id=db_entry['id'],
-                                    user_database_id=user_database_id,
-                                    original_filename=part_filename,
-                                    is_public=False
-                                )
-                                print(f"[DEBUG LOG] Final part added to global file index with salted hash: {part_salted_hash}")
-                            else:
-                                print(f"[DEBUG LOG] Global file index DB ID not configured, skipping global index for final part")
-                            self.notion_uploader.update_user_properties(db_entry['id'], {
-                                "is_visible": {"checkbox": False},
-                                "file_data": db_entry.get('properties', {}).get('file_data', {})
-                            })
-                            parts_metadata.append({
-                                "part_number": part_number,
-                                "filename": part_filename,
-                                "file_id": db_entry['id'],
-                                "file_hash": part_salted_hash,
-                                "size": part_size
-                            })
+                        part_result = self._process_single_part_stream(part_session, part_stream, db_integration=False)
 
-                # After all parts uploaded, create JSON metadata file
+                    leftover = part_stream.get_leftover()
+                    part_hash = part_stream.get_part_hash()
+
+                    file_url = None
+                    if 'result' in part_result and part_result['result']:
+                        file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
+
+                    part_salt = generate_salt()
+                    part_salted_hash = calculate_salted_hash(part_hash, part_salt)
+                    db_entry = self.notion_uploader.add_file_to_user_database(
+                        database_id=user_database_id,
+                        filename=part_filename,
+                        file_size=part_size,
+                        file_hash=part_salted_hash,
+                        file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
+                        is_public=False,
+                        salt=part_salt,
+                        original_filename=filename,
+                        file_url=file_url
+                    )
+
+                    if self.notion_uploader.global_file_index_db_id:
+                        self.notion_uploader.add_file_to_index(
+                            salted_sha512_hash=part_salted_hash,
+                            file_page_id=db_entry['id'],
+                            user_database_id=user_database_id,
+                            original_filename=part_filename,
+                            is_public=False
+                        )
+
+                    self.notion_uploader.update_user_properties(db_entry['id'], {
+                        "is_visible": {"checkbox": False},
+                        "file_data": db_entry.get('properties', {}).get('file_data', {})
+                    })
+
+                    parts_metadata.append({
+                        "part_number": idx,
+                        "filename": part_filename,
+                        "file_id": db_entry['id'],
+                        "file_hash": part_salted_hash,
+                        "size": part_size
+                    })
+
                 import json
                 metadata_json = json.dumps({
                     "original_filename": filename,
@@ -592,26 +553,20 @@ class NotionStreamingUploader:
                 }, indent=2)
                 metadata_bytes = metadata_json.encode("utf-8")
                 metadata_filename = f"{filename}.file.json"
-                metadata_upload_session = self.create_upload_session(
-                    metadata_filename, len(metadata_bytes), user_database_id
-                )
-                # Always single-part for small JSON
-                # Prevent recursion: do not call complete_upload_with_database_integration for metadata JSON
+
                 metadata_result = self._upload_to_notion_single_part(
                     user_database_id,
                     metadata_filename,
                     io.BytesIO(metadata_bytes),
                     len(metadata_bytes)
                 )
-                print(f"[DEBUG LOG] add_file_to_user_database called for metadata: {metadata_filename}, upload_id: {metadata_result.get('file_upload_id')}, hash: {hashlib.sha512(metadata_bytes).hexdigest()}")
+
                 metadata_file_url = None
                 if metadata_result and metadata_result.get('result'):
                     metadata_file_url = metadata_result['result'].get('download_link') or metadata_result['result'].get('file', {}).get('url')
-                # Ensure is_manifest property exists in the database
-                self.notion_uploader.ensure_database_property(
-                    user_database_id, "is_manifest", "checkbox"
-                )
-                # Generate salt and salted hash for manifest JSON
+
+                self.notion_uploader.ensure_database_property(user_database_id, "is_manifest", "checkbox")
+
                 manifest_json_hash = hashlib.sha512(metadata_bytes).hexdigest()
                 manifest_salt = generate_salt()
                 manifest_salted_hash = calculate_salted_hash(manifest_json_hash, manifest_salt)
@@ -619,8 +574,8 @@ class NotionStreamingUploader:
                 metadata_db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
                     filename=metadata_filename,
-                    file_size=file_size,  # combined size of all parts
-                    file_hash=manifest_salted_hash,  # store salted hash in filehash property (like small files)
+                    file_size=file_size,
+                    file_hash=manifest_salted_hash,
                     file_upload_id=metadata_result.get('file_upload_id'),
                     is_public=False,
                     salt=manifest_salt,
@@ -628,13 +583,12 @@ class NotionStreamingUploader:
                     file_url=metadata_file_url,
                     is_manifest=True
                 )
-                print(f"[DEBUG LOG] DB entry created for metadata: {metadata_filename}, db_entry_id: {metadata_db_entry.get('id')}")
+
                 self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
                     "is_visible": {"checkbox": True},
                     "file_data": metadata_db_entry.get('properties', {}).get('file_data', {})
                 })
 
-                # Add manifest JSON to global file index so /d/<hash> works
                 if self.notion_uploader.global_file_index_db_id:
                     self.notion_uploader.add_file_to_index(
                         salted_sha512_hash=manifest_salted_hash,
@@ -643,9 +597,8 @@ class NotionStreamingUploader:
                         original_filename=metadata_filename,
                         is_public=False
                     )
-                    print(f"[DEBUG LOG] Manifest JSON added to global file index with salted hash: {manifest_salted_hash}")
 
-                print(f"INFO: File split and uploaded in {part_number} parts + metadata JSON.")
+                print(f"INFO: File split and uploaded in {len(parts_metadata)} parts + metadata JSON.")
                 return {
                     "status": "completed",
                     "split": True,
