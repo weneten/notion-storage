@@ -431,9 +431,10 @@ def download_by_hash(salted_sha512_hash):
         response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
         if file_metadata['file_size'] > 0:
             response.headers['Content-Length'] = str(file_metadata['file_size'])
-            print(f"\ud83d\udcca Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
+            # Avoid printing Unicode emoji to stdout to prevent UnicodeEncodeError in some environments
+            print(f"Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
         else:
-            print(f"\u26a0\ufe0f No file size available for Content-Length header for {original_filename}")
+            print(f"No file size available for Content-Length header for {original_filename}")
         return response
 
     except Exception as e:
