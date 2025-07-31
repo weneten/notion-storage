@@ -322,14 +322,19 @@ class NotionStreamingUploader:
                 self.notion_uploader.ensure_database_property(
                     user_database_id, "is_manifest", "checkbox"
                 )
+                # Generate salt and salted hash for manifest JSON
+                manifest_json_hash = hashlib.sha512(metadata_bytes).hexdigest()
+                manifest_salt = generate_salt()
+                manifest_salted_hash = calculate_salted_hash(manifest_json_hash, manifest_salt)
+
                 metadata_db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
                     filename=metadata_filename,
                     file_size=file_size,  # combined size of all parts
-                    file_hash=hashlib.sha512(metadata_bytes).hexdigest(),  # hash of JSON file itself
+                    file_hash=manifest_json_hash,  # hash of JSON file itself
                     file_upload_id=metadata_result.get('file_upload_id'),
                     is_public=False,
-                    salt="",
+                    salt=manifest_salt,
                     original_filename=filename,
                     file_url=metadata_file_url,
                     is_manifest=True
@@ -339,6 +344,18 @@ class NotionStreamingUploader:
                     "is_visible": {"checkbox": True},
                     "file_data": metadata_db_entry.get('properties', {}).get('file_data', {})
                 })
+
+                # Add manifest JSON to global file index so /d/<hash> works
+                if self.notion_uploader.global_file_index_db_id:
+                    self.notion_uploader.add_file_to_index(
+                        salted_sha512_hash=manifest_salted_hash,
+                        file_page_id=metadata_db_entry['id'],
+                        user_database_id=user_database_id,
+                        original_filename=metadata_filename,
+                        is_public=False
+                    )
+                    print(f"[DEBUG LOG] Manifest JSON added to global file index with salted hash: {manifest_salted_hash}")
+
                 print(f"INFO: File split and uploaded in {part_number} parts + metadata JSON.")
                 return {
                     "status": "completed",
