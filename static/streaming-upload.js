@@ -126,7 +126,8 @@ class StreamingFileUploader {
                 body: JSON.stringify({
                     filename: file.name,
                     fileSize: file.size,
-                    contentType: file.type || 'application/octet-stream'
+                    contentType: file.type || 'application/octet-stream',
+                    folderPath: window.currentFolder || '/'
                 })
             });
 

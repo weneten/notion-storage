@@ -151,7 +151,9 @@ def load_user(user_id):
 def home():
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
+        current_folder = request.args.get('folder', '/')
         files = []
+        folders = {'/'}
         if user_database_id:
             # Ensure 'is_public' and 'salt' properties exist in the user's database
 
@@ -167,8 +169,13 @@ def home():
                     file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
                     # Only use file_data for file storage
                     file_data_files = properties.get('file_data', {}).get('files', [])
+                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                    folders.add(folder_path)
                     is_visible = properties.get('is_visible', {}).get('checkbox', True)
-                    if name and is_visible:
+                    if is_folder:
+                        continue
+                    if name and is_visible and folder_path == current_folder:
                         files.append({
                             "name": name,
                             "size": size,
@@ -176,12 +183,13 @@ def home():
                             "is_public": is_public,
                             "file_hash": file_hash,
                             "salted_hash": "",
-                            "file_data": file_data_files
+                            "file_data": file_data_files,
+                            "folder": folder_path
                         })
                 except Exception as e:
                     print(f"Error processing file data in home route: {e}")
                     continue
-        return render_template('home.html', files=files)
+        return render_template('home.html', files=files, folders=sorted(folders), current_folder=current_folder)
     except Exception as e:
         return f"Error loading home page: {str(e)}", 500
 
@@ -857,6 +865,64 @@ def toggle_public_access():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/update_file_metadata', methods=['POST'])
+@login_required
+def update_file_metadata():
+    try:
+        data = request.get_json()
+        file_id = data.get('file_id')
+        new_name = data.get('filename')
+        new_folder = data.get('folder_path')
+
+        if not file_id:
+            return jsonify({'error': 'file_id required'}), 400
+
+        uploader.update_file_metadata(file_id, filename=new_name, folder_path=new_folder)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/create_folder', methods=['POST'])
+@login_required
+def create_folder():
+    try:
+        data = request.get_json()
+        folder_path = data.get('folder_path')
+        if not folder_path:
+            return jsonify({'error': 'folder_path required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        uploader.ensure_database_property(user_database_id, 'is_folder', 'checkbox')
+        uploader.add_folder_placeholder(user_database_id, folder_path)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/rename_folder', methods=['POST'])
+@login_required
+def rename_folder():
+    try:
+        data = request.get_json()
+        old_path = data.get('old_path')
+        new_path = data.get('new_path')
+        if not old_path or not new_path:
+            return jsonify({'error': 'paths required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        uploader.rename_folder(user_database_id, old_path, new_path)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # END FILE DOWNLOAD ROUTES
 # ============================================================================
@@ -879,6 +945,7 @@ def create_streaming_upload_session():
         filename = data.get('filename')
         file_size = data.get('fileSize')
         content_type = data.get('contentType', 'text/plain')  # Default to text/plain for Notion compatibility
+        folder_path = data.get('folderPath', '/')
         
         print(f"DEBUG: Creating session for {filename}, size: {file_size}")
         
@@ -899,7 +966,8 @@ def create_streaming_upload_session():
             filename=filename,
             file_size=file_size,
             user_database_id=user_database_id,
-            progress_callback=None  # Will use SocketIO for progress updates
+            progress_callback=None,  # Will use SocketIO for progress updates
+            folder_path=folder_path
         )
         
         print(f"DEBUG: Created upload session with ID: {upload_id}")

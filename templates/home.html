@@ -5,6 +5,20 @@
     <h1><i class="fas fa-cloud-upload-alt mr-2"></i>Upload Files</h1>
     <!-- Message container for notifications (will be filled dynamically) -->
     <div id="messageContainer"></div>
+    <div id="folderNav" class="mb-3">
+        <strong>Current Folder:</strong> {{ current_folder }}
+        {% if current_folder != '/' %}
+            {% set parent_folder = '/' + '/'.join(current_folder.strip('/').split('/')[:-1]) %}
+            <a href="{{ url_for('home', folder=parent_folder if parent_folder != '//' else '/') }}" class="ml-2">Back</a>
+            <button id="renameFolderBtn" class="btn btn-sm btn-secondary ml-2">Rename Folder</button>
+        {% endif %}
+        <button id="createFolderBtn" class="btn btn-sm btn-primary ml-2">Create Folder</button>
+        <ul class="mt-2">
+            {% for f in folders %}
+                <li><a href="{{ url_for('home', folder=f) }}">{{ f }}</a></li>
+            {% endfor %}
+        </ul>
+    </div>
     <form id="uploadForm" method="post" enctype="multipart/form-data">
         <div class="form-group">
             <label for="fileInput">Select File:</label>
@@ -35,6 +49,7 @@
                     <tr>
                         <th><i class="fas fa-file mr-1"></i> Filename</th>
                         <th><i class="fas fa-weight mr-1"></i> Size</th>
+                        <th>Folder</th>
                         <th><i class="fas fa-link mr-1"></i> Public Link</th>
                         <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                         <th><i class="fas fa-cogs mr-1"></i> Actions</th>
@@ -48,6 +63,7 @@
                             <strong>{{ file.name }}</strong>
                         </td>
                         <td class="filesize-cell">{{ file.size | format_bytes }}</td>
+                        <td>{{ file.folder }}</td>
                         <td>
                             {% if file.file_hash %}
                             <a href="{{ url_for('download_by_hash', salted_sha512_hash=file.file_hash) }}"
@@ -73,6 +89,12 @@
                                 class="btn btn-primary btn-sm">
                                 <i class="fas fa-download mr-1"></i>Download
                             </a>
+                            <button class="btn btn-secondary btn-sm rename-btn" data-file-id="{{ file.id }}">
+                                <i class="fas fa-edit mr-1"></i>Rename
+                            </button>
+                            <button class="btn btn-info btn-sm move-btn" data-file-id="{{ file.id }}">
+                                <i class="fas fa-folder-open mr-1"></i>Move
+                            </button>
                             <button class="btn btn-danger btn-sm delete-btn" data-file-id="{{ file.id }}">
                                 <i class="fas fa-trash-alt mr-1"></i>Delete
                             </button>
@@ -96,6 +118,7 @@
 <script>
     // Initialize socket connection
     const socket = io();
+    window.currentFolder = "{{ current_folder }}";
     // Set up event handlers when DOM is fully loaded
     document.addEventListener('DOMContentLoaded', function () {
         // Initialize streaming uploader
@@ -226,6 +249,62 @@
                 }
             });
         });
+
+        document.querySelectorAll('.rename-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const fileId = this.dataset.fileId;
+                const newName = prompt('New filename:');
+                if (!newName) return;
+                await fetch('/update_file_metadata', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({file_id: fileId, filename: newName})
+                });
+                location.reload();
+            });
+        });
+
+        document.querySelectorAll('.move-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const fileId = this.dataset.fileId;
+                const newFolder = prompt('Move to folder:', window.currentFolder || '/');
+                if (newFolder === null) return;
+                await fetch('/update_file_metadata', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({file_id: fileId, folder_path: newFolder})
+                });
+                location.reload();
+            });
+        });
+
+        const createBtn = document.getElementById('createFolderBtn');
+        if (createBtn) {
+            createBtn.addEventListener('click', async function () {
+                const name = prompt('Folder path:', window.currentFolder + 'new_folder/');
+                if (!name) return;
+                await fetch('/create_folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({folder_path: name})
+                });
+                location.href = '?folder=' + encodeURIComponent(name);
+            });
+        }
+
+        const renameBtn = document.getElementById('renameFolderBtn');
+        if (renameBtn) {
+            renameBtn.addEventListener('click', async function () {
+                const newName = prompt('New folder path:', window.currentFolder);
+                if (!newName || newName === window.currentFolder) return;
+                await fetch('/rename_folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({old_path: window.currentFolder, new_path: newName})
+                });
+                location.href = '?folder=' + encodeURIComponent(newName);
+            });
+        }
     });
 
     // Helper function to show status messages

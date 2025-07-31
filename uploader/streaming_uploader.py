@@ -342,8 +342,8 @@ class NotionStreamingUploader:
         self.socketio = socketio
         self.notion_uploader = notion_uploader  # Use existing Notion uploader for actual API calls
         
-    def create_upload_session(self, filename: str, file_size: int, user_database_id: str, 
-                            progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
+    def create_upload_session(self, filename: str, file_size: int, user_database_id: str,
+                            progress_callback: Optional[Callable] = None, folder_path: str = "/") -> Dict[str, Any]:
         """
         Create an upload session and determine upload strategy based on file size
         """
@@ -355,6 +355,7 @@ class NotionStreamingUploader:
             'filename': filename,
             'file_size': file_size,
             'user_database_id': user_database_id,
+            'folder_path': folder_path,
             'is_multipart': is_multipart,
             'progress_callback': progress_callback,
             'created_at': time.time(),
@@ -424,9 +425,10 @@ class NotionStreamingUploader:
                     filename=upload_session['filename'],
                     file_size=upload_session['file_size'],
                     file_hash=salted_hash,
-                    file_upload_id=file_upload_id,  # FIXED: Use validated file upload ID for file operations
+                    file_upload_id=file_upload_id,
                     original_filename=upload_session['filename'],
-                    salt=salt
+                    salt=salt,
+                    folder_path=upload_session.get('folder_path', '/')
                 )
                 database_page_id = user_db_result['id']  # This is the DATABASE PAGE ID - different from file upload ID
                 print(f"DEBUG: Added to user database with database page ID: {database_page_id}")
@@ -520,7 +522,8 @@ class NotionStreamingUploader:
                         is_public=False,
                         salt=part_salt,
                         original_filename=filename,
-                        file_url=file_url
+                        file_url=file_url,
+                        folder_path=upload_session.get('folder_path', '/')
                     )
 
                     if self.notion_uploader.global_file_index_db_id:
@@ -584,7 +587,8 @@ class NotionStreamingUploader:
                     salt=manifest_salt,
                     original_filename=filename,
                     file_url=metadata_file_url,
-                    is_manifest=True
+                    is_manifest=True,
+                    folder_path=upload_session.get('folder_path', '/')
                 )
 
                 self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
@@ -879,12 +883,12 @@ class StreamingUploadManager:
         print("🔒 THREAD SAFETY: StreamingUploadManager initialized with enhanced synchronization")
     
     def create_upload_session(self, filename: str, file_size: int, user_database_id: str,
-                            progress_callback: Optional[Callable] = None) -> str:
+                            progress_callback: Optional[Callable] = None, folder_path: str = "/") -> str:
         """
         Create a new upload session and return the upload ID
         """
         session = self.uploader.create_upload_session(
-            filename, file_size, user_database_id, progress_callback
+            filename, file_size, user_database_id, progress_callback, folder_path
         )
         
         upload_id = session['upload_id']
