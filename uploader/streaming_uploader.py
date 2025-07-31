@@ -75,6 +75,7 @@ class NotionStreamingUploader:
             print(f"[DELETE] Manifest entry not found: {manifest_db_id}. Aborting delete.")
             return
 
+
         # Try to get the file_data property (should contain the JSON metadata)
         file_data = None
         props = manifest_entry.get('properties', {})
@@ -86,6 +87,7 @@ class NotionStreamingUploader:
                     resp = requests.get(file_url)
                     if resp.status_code == 200:
                         file_data = resp.content.decode("utf-8")
+                        print(f"[DELETE] Manifest JSON loaded from file property (url): {file_url}")
                     else:
                         print(f"[DELETE] Manifest JSON fetch failed with status {resp.status_code}: {resp.text}")
                 except Exception as e:
@@ -94,6 +96,7 @@ class NotionStreamingUploader:
         # Fallback: try to get file_data as plain text
         if not file_data and 'file_data' in props and 'rich_text' in props['file_data'] and props['file_data']['rich_text']:
             file_data = props['file_data']['rich_text'][0].get('plain_text')
+            print(f"[DELETE] Manifest JSON loaded from rich_text property.")
 
         # Extra fallback: try to fetch the page content directly via Notion API if above fails
         if not file_data:
@@ -113,6 +116,7 @@ class NotionStreamingUploader:
                     api_props = manifest_api_data.get('properties', {})
                     if 'file_data' in api_props and 'rich_text' in api_props['file_data'] and api_props['file_data']['rich_text']:
                         file_data = api_props['file_data']['rich_text'][0].get('plain_text')
+                        print(f"[DELETE] Manifest JSON loaded from Notion API fallback.")
                 else:
                     print(f"[DELETE] Notion API fallback failed with status {resp.status_code}: {resp.text}")
             except Exception as e:
@@ -124,16 +128,19 @@ class NotionStreamingUploader:
 
         # Parse JSON and get parts
         try:
+            print(f"[DELETE] Raw manifest JSON string: {file_data}")
             manifest_json = json.loads(file_data)
             print(f"[DELETE] Loaded manifest JSON: {manifest_json}")
             parts = manifest_json.get('parts', [])
             print(f"[DELETE] Parts found in manifest: {parts}")
         except Exception as e:
             print(f"[DELETE] ABORT: Failed to parse manifest JSON: {e}. No files will be deleted.")
+            print(f"[DELETE] Raw manifest JSON for debugging: {file_data}")
             return
 
         if not parts:
             print(f"[DELETE] WARNING: No parts found in manifest JSON for {manifest_db_id}. No part files will be deleted.")
+            print(f"[DELETE] Raw manifest JSON for diagnosis: {file_data}")
 
         deleted_count = 0
         # Only after successful JSON load, proceed to delete parts and manifest
