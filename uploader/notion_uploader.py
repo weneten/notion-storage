@@ -1846,6 +1846,9 @@ class NotionFileUploader:
                 "is_visible": {
                     "checkbox": {}
                 },
+                "folder_path": {
+                    "rich_text": {}
+                },
                 "file_data": {
                     "files": {}
                 }
@@ -1960,7 +1963,7 @@ class NotionFileUploader:
             print(f"Error deleting file from Global File Index by hash {salted_sha512_hash}: {e}")
             raise
 
-    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False) -> Dict[str, Any]:
+    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False, folder_path: str = "/") -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
@@ -2037,6 +2040,15 @@ class NotionFileUploader:
                     {
                         "text": {
                             "content": salt
+                        }
+                    }
+                ]
+            },
+            "folder_path": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": folder_path
                         }
                     }
                 ]
@@ -2190,6 +2202,32 @@ class NotionFileUploader:
         except Exception as e:
             print(f"Error updating file public status: {e}")
             raise
+
+    def update_file_metadata(self, file_id: str, filename: str = None, folder_path: str = None) -> Dict[str, Any]:
+        """Update filename or folder path for a file entry."""
+        url = f"{self.base_url}/pages/{file_id}"
+        properties = {}
+
+        if filename is not None:
+            properties["filename"] = {
+                "title": [{"text": {"content": filename}}]
+            }
+
+        if folder_path is not None:
+            properties["folder_path"] = {
+                "rich_text": [{"text": {"content": folder_path}}]
+            }
+
+        if not properties:
+            return {}
+
+        payload = {"properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        response = requests.patch(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to update file metadata: {response.text}")
+        return response.json()
 
     def stream_file_from_notion(self, page_id: str, original_filename: str) -> Iterable[bytes]:
         """
