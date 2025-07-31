@@ -19,6 +19,45 @@ from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate
 
 
 class NotionStreamingUploader:
+    def delete_file_entry(self, file_db_id: str, user_database_id: str) -> None:
+        """
+        Deletes a file entry from Notion. If the entry is a manifest (split upload), deletes all parts as well.
+        Args:
+            file_db_id: The Notion database page ID of the file or manifest.
+            user_database_id: The user's Notion database ID.
+        """
+        entry = self.notion_uploader.get_user_by_id(file_db_id)
+        if not entry:
+            print(f"[DELETE] Entry not found: {file_db_id}. Aborting delete.")
+            return
+
+        props = entry.get('properties', {})
+        filename = props.get('Name', {}).get('title', [{}])[0].get('plain_text', '') if 'Name' in props else ''
+        is_manifest = False
+
+        # Check for is_manifest property (Notion checkbox) or .file.json filename
+        if 'is_manifest' in props and props['is_manifest'].get('checkbox'):
+            is_manifest = True
+        #if filename.endswith('.file.json'):
+            #is_manifest = True
+
+        if is_manifest:
+            print(f"[DELETE] Entry {file_db_id} is a manifest. Deleting manifest and parts.")
+            self.delete_manifest_and_parts(file_db_id, user_database_id)
+        else:
+            print(f"[DELETE] Entry {file_db_id} is a single file. Deleting directly.")
+            try:
+                self.notion_uploader.delete_file_from_user_database(file_db_id)
+                print(f"[DELETE] Deleted file {file_db_id} from user DB.")
+            except Exception as e:
+                print(f"[DELETE] Failed to delete file {file_db_id} from user DB: {e}")
+            if self.notion_uploader.global_file_index_db_id:
+                try:
+                    self.notion_uploader.delete_file_from_index(file_db_id)
+                    print(f"[DELETE] Deleted file {file_db_id} from global index.")
+                except Exception as e:
+                    print(f"[DELETE] Failed to delete file {file_db_id} from global index: {e}")
+
     def delete_manifest_and_parts(self, manifest_db_id: str, user_database_id: str) -> None:
         """
         Delete the manifest (metadata JSON) and all associated part files from the user's database and global index.
