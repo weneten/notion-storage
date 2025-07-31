@@ -167,7 +167,8 @@ def home():
                     file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
                     # Only use file_data for file storage
                     file_data_files = properties.get('file_data', {}).get('files', [])
-                    if name:
+                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
+                    if name and is_visible:
                         files.append({
                             "name": name,
                             "size": size,
@@ -694,15 +695,15 @@ def get_files_api():
             print(f"  - Size: {size}")
             print(f"  - Has all button data: {bool(file_id and file_hash is not None and is_public is not None)}")
             
-            formatted_file = {
-                'id': file_id,
-                'name': name,
-                'size': size,
-                'file_hash': file_hash,
-                'is_public': is_public
-            }
-            
-            formatted_files.append(formatted_file)
+            if is_visible:
+                formatted_file = {
+                    'id': file_id,
+                    'name': name,
+                    'size': size,
+                    'file_hash': file_hash,
+                    'is_public': is_public
+                }
+                formatted_files.append(formatted_file)
         
         print(f"🔍 DIAGNOSTIC: Returning {len(formatted_files)} formatted files to frontend")
         if formatted_files:
