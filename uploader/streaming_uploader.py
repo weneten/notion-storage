@@ -56,12 +56,16 @@ class NotionStreamingUploader:
         # Parse JSON and get parts
         try:
             manifest_json = json.loads(file_data)
+            print(f"[DELETE] Loaded manifest JSON: {manifest_json}")
             parts = manifest_json.get('parts', [])
+            print(f"[DELETE] Parts found in manifest: {parts}")
         except Exception as e:
             print(f"[DELETE] ABORT: Failed to parse manifest JSON: {e}. No files will be deleted.")
             return
+        if not parts:
+            print(f"[DELETE] WARNING: No parts found in manifest JSON for {manifest_db_id}. No part files will be deleted.")
+        deleted_count = 0
         # Only after successful JSON load, proceed to delete parts and manifest
-        # Delete each part from user DB and global index
         for part in parts:
             part_id = part.get('file_id')
             part_filename = part.get('filename')
@@ -72,6 +76,7 @@ class NotionStreamingUploader:
             # Delete from user database
             try:
                 self.notion_uploader.delete_file_from_user_database(part_id)
+                deleted_count += 1
             except Exception as e:
                 print(f"[DELETE] Failed to delete part {part_id} from user DB: {e}")
             # Delete from global index if enabled
@@ -80,6 +85,8 @@ class NotionStreamingUploader:
                     self.notion_uploader.delete_file_from_index(part_id)
                 except Exception as e:
                     print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+        if deleted_count == 0:
+            print(f"[DELETE] WARNING: No part files were deleted for manifest {manifest_db_id}.")
         # Delete the manifest itself from user DB and global index
         print(f"[DELETE] Deleting manifest entry: {manifest_db_id}")
         try:
