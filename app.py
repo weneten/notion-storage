@@ -389,7 +389,7 @@ def download_by_hash(salted_sha512_hash):
             if detected_type:
                 mimetype = detected_type
 
-        response = Response(stream_with_context(uploader.stream_file_from_notion(file_metadata['url'])), mimetype=mimetype)
+        response = Response(stream_with_context(uploader.stream_file_from_notion(file_page_id, original_filename)), mimetype=mimetype)
         response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
         
         # Add Content-Length header if file size is available
@@ -595,7 +595,7 @@ def stream_by_hash(salted_sha512_hash):
         
         else:
             # Full content request
-            response = Response(stream_with_context(uploader.stream_file_from_notion(notion_download_link)), mimetype=mimetype)
+            response = Response(stream_with_context(uploader.stream_file_from_notion(file_page_id, original_filename)), mimetype=mimetype)
             response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
             
             # Add Content-Length header if file size is available
