@@ -375,30 +375,53 @@ def download_by_hash(salted_sha512_hash):
             if file_user_db_id != current_user_db_id:
                 return "Access Denied: You do not have permission to download this file.", 403
 
-        # Get comprehensive file metadata including URL, size, and content type
+        # Check if this is a manifest JSON (multi-part file)
+        is_manifest = original_filename.lower().endswith('.json')
+        if is_manifest:
+            # Stream all parts as a single file
+            try:
+                # Download manifest JSON to get original filename and total size
+                import requests, json
+                manifest_page = uploader.get_user_by_id(file_page_id)
+                file_property = manifest_page.get('properties', {}).get('file_data', {})
+                files_array = file_property.get('files', [])
+                manifest_file = files_array[0] if files_array else None
+                manifest_url = manifest_file.get('file', {}).get('url', '') if manifest_file else ''
+                resp = requests.get(manifest_url)
+                resp.raise_for_status()
+                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+                orig_name = manifest.get('original_filename', 'download')
+                total_size = manifest.get('total_size', 0)
+                # Use video mimetype if possible, fallback to octet-stream
+                import mimetypes
+                mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
+                response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
+                if total_size > 0:
+                    response.headers['Content-Length'] = str(total_size)
+                return response
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
+                return f"Error streaming multi-part file: {str(e)}", 500
+        # Otherwise, normal single file download
         file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
-        
         if not file_metadata['url']:
             return "Download link not available for this file", 500
-
-        # Use detected content type or fallback to mimetypes
         mimetype = file_metadata['content_type']
         if mimetype == 'application/octet-stream':
             import mimetypes
             detected_type, _ = mimetypes.guess_type(original_filename)
             if detected_type:
                 mimetype = detected_type
-
         response = Response(stream_with_context(uploader.stream_file_from_notion(file_page_id, original_filename)), mimetype=mimetype)
         response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
-        
-        # Add Content-Length header if file size is available
         if file_metadata['file_size'] > 0:
             response.headers['Content-Length'] = str(file_metadata['file_size'])
-            print(f"📊 Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
+            print(f"\ud83d\udcca Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
         else:
-            print(f"⚠️ No file size available for Content-Length header for {original_filename}")
-            
+            print(f"\u26a0\ufe0f No file size available for Content-Length header for {original_filename}")
         return response
 
     except Exception as e:

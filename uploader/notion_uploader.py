@@ -136,6 +136,50 @@ class ChunkProcessor:
                 raise
 
 class NotionFileUploader:
+    def stream_multi_part_file(self, manifest_page_id: str) -> Iterable[bytes]:
+        """
+        Streams a multi-part file described by a manifest JSON stored in Notion.
+        The manifest must have a 'parts' array, each with a 'file_hash', 'filename', and 'size'.
+        For each part, fetches the Notion page ID from the global index, then fetches a fresh S3 download URL, and streams the bytes.
+        Yields all bytes in order as a single stream.
+        """
+        import json
+        # 1. Fetch the manifest JSON from Notion (as a file attachment)
+        manifest_page = self.get_user_by_id(manifest_page_id)
+        if not manifest_page:
+            raise Exception(f"Manifest page not found: {manifest_page_id}")
+        file_property = manifest_page.get('properties', {}).get('file_data', {})
+        files_array = file_property.get('files', [])
+        if not files_array:
+            raise Exception(f"No files found in 'file_data' for manifest page {manifest_page_id}")
+        # Assume the first file is the manifest JSON
+        manifest_file = files_array[0]
+        manifest_url = manifest_file.get('file', {}).get('url', '')
+        if not manifest_url:
+            raise Exception(f"No valid URL for manifest file on page {manifest_page_id}")
+        # Download the manifest JSON
+        resp = requests.get(manifest_url)
+        resp.raise_for_status()
+        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        parts = manifest.get('parts', [])
+        if not parts:
+            raise Exception(f"Manifest JSON does not contain 'parts' array")
+        # 2. For each part, stream the file in order
+        for part in sorted(parts, key=lambda p: p.get('part_number', 0)):
+            file_hash = part.get('file_hash')
+            part_filename = part.get('filename')
+            if not file_hash:
+                raise Exception(f"Part missing file_hash: {part}")
+            # Look up the part in the global index to get the Notion page ID
+            index_entry = self.get_file_by_salted_sha512_hash(file_hash)
+            if not index_entry:
+                raise Exception(f"File part with hash {file_hash} not found in global index")
+            part_page_id = index_entry.get('properties', {}).get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            if not part_page_id:
+                raise Exception(f"No File Page ID for part hash {file_hash}")
+            # Stream the part using the normal streaming method
+            for chunk in self.stream_file_from_notion(part_page_id, part_filename):
+                yield chunk
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
