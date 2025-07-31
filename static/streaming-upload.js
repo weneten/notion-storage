@@ -64,7 +64,11 @@ function showRetryButton() {
     retryBtn.className = 'btn btn-warning btn-sm ml-2';
     retryBtn.addEventListener('click', () => {
         retryBtn.disabled = true;
-        uploadFile();
+        if (streamingUploader && streamingUploader.failedUpload) {
+            resumeFailedUpload();
+        } else {
+            uploadFile();
+        }
     });
 
     container.appendChild(retryBtn);
@@ -95,6 +99,7 @@ class StreamingFileUploader {
     constructor() {
         this.activeUploads = new Map();
         this.defaultChunkSize = 64 * 1024; // 64KB read chunks for streaming (much smaller than before)
+        this.failedUpload = null;
     }
 
     /**
@@ -105,6 +110,7 @@ class StreamingFileUploader {
      * @returns {Promise} Upload result
      */    async uploadFile(file, progressCallback, statusCallback) {
         const uploadId = this.generateUploadId();
+        this.failedUpload = null;
 
         try {
             statusCallback('Initializing streaming upload...', 'info');
@@ -150,6 +156,11 @@ class StreamingFileUploader {
             console.error('Upload error:', error);
             statusCallback(`Upload failed: ${error.message}`, 'error');
 
+            const info = this.activeUploads.get(uploadId);
+            if (info) {
+                this.failedUpload = { file, uploadId, bytesUploaded: info.bytesUploaded };
+            }
+
             // Cleanup failed upload
             if (uploadId) {
                 this.abortUpload(uploadId);
@@ -168,7 +179,8 @@ class StreamingFileUploader {
         this.activeUploads.set(uploadId, {
             file: file,
             controller: controller,
-            startTime: Date.now()
+            startTime: Date.now(),
+            bytesUploaded: 0
         });
 
         try {
@@ -180,6 +192,10 @@ class StreamingFileUploader {
                 xhr.upload.onprogress = (event) => {
                     if (event.lengthComputable) {
                         const progress = (event.loaded / event.total) * 100;
+                        const info = this.activeUploads.get(uploadId);
+                        if (info) {
+                            info.bytesUploaded = event.loaded;
+                        }
                         progressCallback(progress, event.loaded);
                     }
                 };
@@ -269,6 +285,55 @@ class StreamingFileUploader {
             cancel(reason) {
                 console.log('Stream cancelled:', reason);
             }
+        });
+    }
+
+    /**
+     * Resume a failed upload
+     */
+    async resumeUpload(uploadId, progressCallback, statusCallback) {
+        const info = this.failedUpload;
+        if (!info || info.uploadId !== uploadId) {
+            throw new Error('No failed upload to resume');
+        }
+        const { file, bytesUploaded } = info;
+        const controller = new AbortController();
+        this.activeUploads.set(uploadId, {
+            file,
+            controller,
+            startTime: Date.now(),
+            bytesUploaded
+        });
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    const total = bytesUploaded + event.loaded;
+                    const progress = (total / file.size) * 100;
+                    const info = this.activeUploads.get(uploadId);
+                    if (info) info.bytesUploaded = total;
+                    progressCallback(progress, total);
+                }
+            };
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try { resolve(JSON.parse(xhr.responseText)); } catch (e) { reject(new Error('Invalid response format')); }
+                } else {
+                    reject(new Error(`Resume failed: ${xhr.status} ${xhr.statusText}`));
+                }
+            };
+            xhr.onerror = () => reject(new Error('Resume failed: Network error'));
+            xhr.onabort = () => reject(new Error('Resume was cancelled'));
+            xhr.open('POST', `/api/upload/resume/${uploadId}`, true);
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+            xhr.setRequestHeader('X-File-Size', file.size.toString());
+            xhr.setRequestHeader('X-Start-Byte', bytesUploaded.toString());
+            const slice = file.slice(bytesUploaded);
+            xhr.send(slice);
+        }).finally(() => {
+            this.activeUploads.delete(uploadId);
+            delete this.failedUpload;
         });
     }
 
@@ -414,6 +479,31 @@ const uploadFile = async () => {
         }, 3000);
     }
 };
+
+async function resumeFailedUpload() {
+    if (!streamingUploader || !streamingUploader.failedUpload) {
+        showStatus('No failed upload to resume.', 'error');
+        return;
+    }
+    const { uploadId, file } = streamingUploader.failedUpload;
+    const progressCallback = (progress, bytesUploaded) => {
+        updateProgressBar(Math.floor(progress), `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`);
+    };
+    const statusCallback = (message, type) => { showStatus(message, type); };
+    try {
+        await streamingUploader.resumeUpload(uploadId, progressCallback, statusCallback);
+        showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+        if (typeof refreshFileList === 'function') {
+            refreshFileList();
+        } else if (typeof loadFiles === 'function') {
+            loadFiles();
+        }
+    } catch (error) {
+        console.error('Resume upload error:', error);
+        showStatus(`Resume failed: ${error.message}`, 'error');
+        showRetryButton();
+    }
+}
 
 // Initialize when page loads
 document.addEventListener('DOMContentLoaded', function () {
