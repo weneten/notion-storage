@@ -805,9 +805,11 @@ def delete_file():
         
         print(f"Deleting file: ID={file_id}, Hash={file_hash}")
         
-        # Delete from user database and global index
-        result = uploader.delete_file_from_db(file_id)
-        
+        # Use unified deletion logic from StreamingUploadManager
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+        streaming_upload_manager.uploader.delete_file_entry(file_id, user_database_id)
         return jsonify({
             'status': 'success',
             'message': 'File deleted successfully'
