@@ -136,6 +136,22 @@ class ChunkProcessor:
                 raise
 
 class NotionFileUploader:
+    def delete_file_from_user_database(self, file_page_id: str) -> Dict[str, Any]:
+        """Alias for delete_file_from_db for compatibility with streaming uploader."""
+        return self.delete_file_from_db(file_page_id)
+
+    def delete_file_from_index(self, file_page_id: str) -> Optional[Dict[str, Any]]:
+        """Alias for delete_file_from_global_index for compatibility with streaming uploader. Accepts file_page_id, retrieves hash, and deletes from global index if possible."""
+        # Try to get the hash from the file_page_id
+        file_details = self.get_user_by_id(file_page_id)
+        if not file_details:
+            print(f"[delete_file_from_index] File details not found for page ID: {file_page_id}")
+            return None
+        salted_sha512_hash = file_details.get('properties', {}).get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        if not salted_sha512_hash:
+            print(f"[delete_file_from_index] Could not retrieve salted_sha512_hash for file_page_id: {file_page_id}. Skipping Global File Index deletion.")
+            return None
+        return self.delete_file_from_global_index(salted_sha512_hash)
     def stream_multi_part_file(self, manifest_page_id: str) -> Iterable[bytes]:
         """
         Streams a multi-part file described by a manifest JSON stored in Notion.
