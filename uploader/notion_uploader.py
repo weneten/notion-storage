@@ -216,42 +216,31 @@ class NotionFileUploader:
             
         print(f"Creating file upload with payload: {payload}")
         
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            
-            if response.status_code != 200:
-                print(f"ERROR: Failed to create file upload: {response.text}")
-                raise Exception(f"Failed to create file upload: {response.text}")
-                
-            result = response.json()
-            
-            # CRITICAL FIX 1: ID Validation on Upload Creation
-            upload_id = result.get('id')
-            if not upload_id:
-                error_msg = f"ID CORRUPTION: File upload creation succeeded but no ID returned. Response: {result}"
-                print(f"🚨 CRITICAL ERROR: {error_msg}")
-                raise Exception(error_msg)
-            
-            print(f"🔍 CREATE_UPLOAD: File upload created with ID: {upload_id}")
-            print(f"🔍 CREATE_UPLOAD: Response keys: {list(result.keys())}")
-            
-            # Additional validation
-            if isinstance(upload_id, str) and len(upload_id.strip()) == 0:
-                error_msg = f"ID CORRUPTION: Upload ID is empty string"
-                print(f"🚨 CRITICAL ERROR: {error_msg}")
-                raise Exception(error_msg)
-            
-            return result
-            
-        except Exception as e:
-            # CRITICAL FIX 4: Enhanced Error Handling
-            error_msg = str(e).lower()
-            if any(keyword in error_msg for keyword in ['id', 'creation', 'null']):
-                print(f"🚨 ID-RELATED ERROR in create_file_upload: {e}")
-                print(f"🔍 ERROR CONTEXT: payload={payload}")
-            
-            print(f"ERROR in create_file_upload: {str(e)}")
-            raise
+        response = requests.post(url, headers=headers, json=payload)
+        
+        if response.status_code != 200:
+            print(f"ERROR: Failed to create file upload: {response.text}")
+            raise Exception(f"Failed to create file upload: {response.text}")
+        
+        result = response.json()
+        
+        # CRITICAL FIX 1: ID Validation on Upload Creation
+        upload_id = result.get('id')
+        if not upload_id:
+            error_msg = f"ID CORRUPTION: File upload creation succeeded but no ID returned. Response: {result}"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+        
+        print(f"🔍 CREATE_UPLOAD: File upload created with ID: {upload_id}")
+        print(f"🔍 CREATE_UPLOAD: Response keys: {list(result.keys())}")
+        
+        # Additional validation
+        if isinstance(upload_id, str) and len(upload_id.strip()) == 0:
+            error_msg = f"ID CORRUPTION: Upload ID is empty string"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+        
+        return result
 
     def send_file_content(self, file_upload_id: str, file_stream: Union[Iterable[bytes], io.BytesIO], content_type: str, filename: str, total_size: int) -> Dict[str, Any]:
         """Step 2: Send file content to Notion (for single file uploads)"""
@@ -335,15 +324,11 @@ class NotionFileUploader:
     def get_block_info(self, block_id: str) -> Dict[str, Any]:
         """Get information about a specific block"""
         url = f"{self.base_url}/blocks/{block_id}"
-
-        try:
-            response = requests.get(url, headers=self.headers)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                raise Exception(f"Failed to get block info: {response.status_code} - {response.text}")
-        except Exception as e:
-            print(f"Error getting block info: {e}")
+        response = requests.get(url, headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Error getting block info: {response.status_code} - {response.text}")
             return {}
 
     def get_download_url(self, block_result: Dict[str, Any], original_filename: str) -> str:
@@ -389,157 +374,42 @@ class NotionFileUploader:
         Get download URL for a file, now prioritizing permanent URLs over temporary ones.
         Returns permanent Notion signed attachment URLs when available.
         """
-        try:
-            # First check if we have a stored permanent URL in the database
-            page_info = self.get_user_by_id(page_id)
-            if page_info:
-                properties = page_info.get('properties', {})
-                
-                # Check for stored permanent URL
-                permanent_url_property = properties.get('permanent_download_url', {})
-                permanent_url = permanent_url_property.get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                
-                if permanent_url:
-                    print(f"🔗 PERMANENT URL: Using stored permanent URL for {page_id}")
-                    return permanent_url
-                
-                # If no permanent URL stored, generate one from the file upload ID
-                file_property = properties.get('file', {})
-                files_array = file_property.get('files', [])
-                
-                if files_array:
-                    file_info = files_array[0]
-                    file_upload_id = None
-                    
-                    # Extract file upload ID from the file info
-                    if file_info.get('type') == 'file_upload':
-                        file_upload_info = file_info.get('file_upload', {})
-                        file_upload_id = file_upload_info.get('id')
-                    elif 'file_upload' in file_info:
-                        file_upload_id = file_info['file_upload'].get('id')
-                    
-                    if file_upload_id:
-                        # Generate permanent URL
-                        permanent_url = self.generate_permanent_download_url(file_upload_id, original_filename)
-                        
-                        if permanent_url:
-                            # Store the permanent URL in the database
-                            self._store_permanent_url(page_id, permanent_url)
-                            print(f"🔗 GENERATED: Created and stored permanent URL for {page_id}")
-                            return permanent_url
-            
-            # Fallback to original caching logic for legacy URLs
-            print(f"⚠️ FALLBACK: No permanent URL available, using legacy temporary URL logic for {page_id}")
-            return self._get_legacy_download_url(page_id, original_filename)
-            
-        except Exception as e:
-            print(f"Error getting download URL for file: {e}")
-            # Fallback to legacy logic
-            return self._get_legacy_download_url(page_id, original_filename)
+        # This function is now deprecated and replaced by the always-fresh download link logic.
+        raise NotImplementedError("get_download_url_for_file legacy method is removed. Use the new always-fresh download link logic.")
 
-    def _store_permanent_url(self, page_id: str, permanent_url: str) -> None:
-        """Store permanent URL in the database"""
-        try:
-            url = f"{self.base_url}/pages/{page_id}"
-            payload = {
-                "properties": {
-                    "permanent_download_url": {
-                        "rich_text": [
-                            {
-                                "text": {
-                                    "content": permanent_url
-                                }
-                            }
-                        ]
-                    }
-                }
-            }
-            
-            headers = {**self.headers, "Content-Type": "application/json"}
-            response = requests.patch(url, json=payload, headers=headers)
-            
-            if response.status_code == 200:
-                print(f"✅ Stored permanent URL for page {page_id}")
-            else:
-                print(f"❌ Failed to store permanent URL: {response.text}")
-                
-        except Exception as e:
-            print(f"Error storing permanent URL: {e}")
 
-    def _get_legacy_download_url(self, page_id: str, original_filename: str) -> str:
+
+    def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
         """
-        Legacy method for getting temporary download URLs with caching.
+        Always fetch a fresh Notion download link and cache it for 30 minutes.
         """
         with self.url_cache_lock:
-            # Check if we have a cached URL that's still valid
             cached_entry = self.url_cache.get(page_id)
             current_time = time.time()
-            
             if cached_entry:
                 expires_at = cached_entry.get('expires_at', 0)
                 cached_url = cached_entry.get('url', '')
-                generated_at = cached_entry.get('generated_at', current_time)
-                cached_file_size = cached_entry.get('file_size', 0)
-                cached_content_type = cached_entry.get('content_type', 'application/octet-stream')
-                
-                # Check if cached URL is still valid (not expired)
                 if current_time < expires_at and cached_url:
-                    time_until_expiry = expires_at - current_time
-                    print(f"🚀 LEGACY CACHE HIT: Using cached URL for {page_id} (expires in {int(time_until_expiry)}s, size: {cached_file_size} bytes)")
-                    
-                    # Smart validation timing based on configuration
-                    should_validate = False
-                    
-                    if not self.validation_config['enabled']:
-                        print(f"✅ VALIDATION DISABLED: Using cached URL without validation")
-                        return cached_url
-                    
-                    if self.validation_config['bypass_fresh_urls'] and time_until_expiry > self.validation_config['validation_threshold']:
-                        print(f"✅ VALIDATION SKIPPED: URL has {int(time_until_expiry/60)} minutes left, using without validation")
-                        return cached_url
-                    
-                    if time_until_expiry < self.validation_config['validation_threshold']:
-                        if time_until_expiry > self.validation_config['urgent_threshold']:
-                            should_validate = True
-                            print(f"⚠️ VALIDATION NEEDED: URL expires in {int(time_until_expiry/60)} minutes, validating...")
-                        elif time_until_expiry <= self.validation_config['urgent_threshold']:
-                            should_validate = True
-                            print(f"🚨 URGENT VALIDATION: URL expires in {int(time_until_expiry)} seconds, validating...")
-                    
-                    # Validate if needed, otherwise use cached URL directly
-                    if should_validate:
-                        validation_result = self._validate_cached_url(cached_url, time_until_expiry)
-                        if validation_result:
-                            return cached_url
-                        else:
-                            print(f"🔄 CACHE INVALID: Cached URL failed validation, fetching new one")
-                            # Remove invalid cached entry
-                            del self.url_cache[page_id]
-                    else:
-                        # Fresh URL - use without validation
-                        return cached_url
+                    print(f"[CACHE HIT] Using cached download URL for {page_id}")
+                    return cached_url
                 else:
-                    print(f"🕐 CACHE EXPIRED: Cached URL expired {int(current_time - expires_at)}s ago")
-                    # Remove expired entry
+                    print(f"[CACHE EXPIRED] Cached URL expired for {page_id}")
                     del self.url_cache[page_id]
-            
-            # Cache miss or invalid - fetch new URL with file size
-            print(f"🔄 LEGACY CACHE MISS: Fetching new URL from Notion API for {page_id}")
-            new_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
-            
-            if new_url:
-                # Cache the new URL with file metadata
-                cache_entry = {
-                    'url': new_url,
-                    'expires_at': current_time + self.url_cache_duration,
-                    'generated_at': current_time,
-                    'file_size': file_size,
-                    'content_type': content_type
-                }
+        # Always fetch a new download link from Notion
+        print(f"[FETCH] Fetching new download URL for {page_id}")
+        new_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+        if new_url:
+            cache_entry = {
+                'url': new_url,
+                'expires_at': current_time + self.url_cache_duration,
+                'generated_at': current_time,
+                'file_size': file_size,
+                'content_type': content_type
+            }
+            with self.url_cache_lock:
                 self.url_cache[page_id] = cache_entry
-                print(f"💾 LEGACY CACHED: New URL cached for {page_id} with size {file_size} bytes (expires at {cache_entry['expires_at']})")
-            
-            return new_url
+            print(f"[CACHE STORE] New download URL cached for {page_id}")
+        return new_url
 
     def _validate_cached_url(self, url: str, time_until_expiry: float = 0) -> bool:
         """
@@ -792,141 +662,11 @@ class NotionFileUploader:
         Returns:
             str: Permanent download URL
         """
-        try:
-            notion_filename = "file.txt"
-            if not space_id:
-                space_id = self.notion_space_id
-            s3_key = None
-            if file_url:
-                # Extract the S3 key (the UUID between spaceId and /file.txt)
-                # Example: ...amazonaws.com/{space_id}/{s3_key}/file.txt
-                import re
-                match = re.search(rf"{space_id}/([a-f0-9\-]{{36}})/file.txt", file_url)
-                if match:
-                    s3_key = match.group(1)
-            if not s3_key:
-                # Fallback to file_upload_id (legacy, not correct for new uploads)
-                s3_key = file_upload_id
-            s3_url = f"https://prod-files-secure.s3.us-west-2.amazonaws.com/{space_id}/{s3_key}/{notion_filename}"
-            encoded_s3_url = urllib.parse.quote(s3_url, safe='')
-            permanent_url = (
-                f"https://www.notion.so/signed/{encoded_s3_url}"
-                f"?id={file_upload_id}&table={table}&spaceId={space_id}&name={notion_filename}"
-            )
-            print(f"🔗 Generated permanent download URL for {notion_filename}")
-            print(f"🔗 URL: {permanent_url}")
-            return permanent_url
-        except Exception as e:
-            print(f"Error generating permanent download URL: {e}")
-            return ""
 
-    def migrate_to_permanent_urls(self, database_id: str) -> Dict[str, Any]:
-        """
-        Migrate existing files in a database to use permanent URLs.
-        This method can be called to update existing files that don't have permanent URLs yet.
-        
-        Args:
-            database_id: The database ID to migrate
-            
-        Returns:
-            Dict with migration statistics
-        """
-        try:
-            print(f"🔄 Starting migration to permanent URLs for database: {database_id}")
-            
-            # Query all files in the database
-            files_response = self.get_files_from_user_database(database_id)
-            files = files_response.get('results', [])
-            
-            migrated_count = 0
-            skipped_count = 0
-            error_count = 0
-            
-            for file_entry in files:
-                try:
-                    file_page_id = file_entry.get('id')
-                    properties = file_entry.get('properties', {})
-                    
-                    # Check if already has permanent URL
-                    permanent_url_property = properties.get('permanent_download_url', {})
-                    existing_permanent_url = permanent_url_property.get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                    
-                    if existing_permanent_url:
-                        print(f"⏭️ Skipping {file_page_id} - already has permanent URL")
-                        skipped_count += 1
-                        continue
-                    
-                    # Extract filename and file upload ID
-                    filename_property = properties.get('filename', {})
-                    original_filename = filename_property.get('title', [{}])[0].get('text', {}).get('content', '')
-                    
-                    file_property = properties.get('file', {})
-                    files_array = file_property.get('files', [])
-                    
-                    if not files_array or not original_filename:
-                        print(f"⚠️ Skipping {file_page_id} - missing filename or file data")
-                        skipped_count += 1
-                        continue
-                    
-                    file_info = files_array[0]
-                    file_upload_id = None
-                    
-                    # Extract file upload ID
-                    if file_info.get('type') == 'file_upload':
-                        file_upload_info = file_info.get('file_upload', {})
-                        file_upload_id = file_upload_info.get('id')
-                    elif 'file_upload' in file_info:
-                        file_upload_id = file_info['file_upload'].get('id')
-                    
-                    if not file_upload_id:
-                        print(f"⚠️ Skipping {file_page_id} - no file upload ID found")
-                        skipped_count += 1
-                        continue
-                    
-                    # Generate and store permanent URL
-                    permanent_url = self.generate_permanent_download_url(file_upload_id, original_filename)
-                    if permanent_url:
-                        self._store_permanent_url(file_page_id, permanent_url)
-                        print(f"✅ Migrated {file_page_id} - {original_filename}")
-                        migrated_count += 1
-                    else:
-                        print(f"❌ Failed to generate permanent URL for {file_page_id}")
-                        error_count += 1
-                        
-                except Exception as e:
-                    print(f"❌ Error migrating file {file_page_id}: {e}")
-                    error_count += 1
-            
-            result = {
-                'database_id': database_id,
-                'total_files': len(files),
-                'migrated': migrated_count,
-                'skipped': skipped_count,
-                'errors': error_count,
-                'status': 'completed'
-            }
-            
-            print(f"🎉 Migration completed: {migrated_count} migrated, {skipped_count} skipped, {error_count} errors")
-            return result
-            
-        except Exception as e:
-            print(f"❌ Migration failed: {e}")
-            return {
-                'database_id': database_id,
-                'status': 'failed',
-                'error': str(e)
-            }
+
 
     def cache_file_metadata(self, page_id: str, url: str, file_size: int, content_type: str):
-        """
-        Cache file metadata including size and content type.
-        
-        Args:
-            page_id: Notion page ID
-            url: Download URL
-            file_size: File size in bytes
-            content_type: MIME type
-        """
+        """Cache file metadata including size and content type."""
         with self.url_cache_lock:
             current_time = time.time()
             cache_entry = {
@@ -1467,13 +1207,6 @@ class NotionFileUploader:
         """Enhanced send_file_part with comprehensive retry logic and resilience"""
         import random
         import time
-        
-        # Import diagnostics
-        try:
-            from diagnostic_logs import timeout_diagnostics
-        except ImportError:
-            timeout_diagnostics = None
-            
         request_id = f"part_{part_number}_{uuid.uuid4().hex[:8]}"
         
         # Retry configuration
@@ -1509,8 +1242,6 @@ class NotionFileUploader:
         print(f"Uploading part {part_number} of {total_parts} ({len(chunk_data)/(1024*1024):.3f} MiB)")
         
         # Log memory snapshot for high part numbers
-        if timeout_diagnostics and part_number % 50 == 0:
-            timeout_diagnostics.log_memory_snapshot(f"before_part_upload", part_number)
             
         # Prepare the multipart/form-data request
         files = {
@@ -1523,8 +1254,6 @@ class NotionFileUploader:
         for attempt in range(retry_config['max_retries']):
             try:
                 # Log request start
-                if timeout_diagnostics:
-                    timeout_diagnostics.log_request_start(request_id, upload_url, part_number)
                 
                 # Multi-tier timeout strategy: (connect_timeout, read_timeout)
                 timeout_config = (30, 300)  # 30s connect, 5min read
@@ -1537,8 +1266,6 @@ class NotionFileUploader:
                 )
                 
                 # Log successful request
-                if timeout_diagnostics:
-                    timeout_diagnostics.log_request_end(request_id, response.status_code)
                 
                 # Check for retryable status codes
                 if response.status_code in retry_config['retryable_status_codes']:
@@ -1592,8 +1319,6 @@ class NotionFileUploader:
                 error_msg = str(e).lower()
                 if any(keyword in error_msg for keyword in ['timeout', '504', 'gateway', 'connection', 'reset']):
                     print(f"🚨 TIMEOUT_ERROR_DETECTED: Part {part_number} failed with timeout-related error: {e}")
-                    if timeout_diagnostics:
-                        timeout_diagnostics.log_memory_snapshot(f"timeout_error", part_number)
                 
                 if attempt < retry_config['max_retries'] - 1:
                     delay = self._calculate_retry_delay(attempt, retry_config)
@@ -1602,15 +1327,11 @@ class NotionFileUploader:
                     continue
                 else:
                     # Log failed request
-                    if timeout_diagnostics:
-                        timeout_diagnostics.log_request_end(request_id, error=str(e))
                     raise Exception(f"Part {part_number} failed permanently after {retry_config['max_retries']} attempts: {str(e)}")
                     
             except Exception as e:
                 last_exception = e
                 # Log failed request
-                if timeout_diagnostics:
-                    timeout_diagnostics.log_request_end(request_id, error=str(e))
                 print(f"ERROR in send_file_part for part {part_number}: {str(e)}")
                 raise
         

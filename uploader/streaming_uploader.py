@@ -124,17 +124,14 @@ class NotionStreamingUploader:
                 print(f"🔍 STREAMING ID SEPARATION: File Upload ID: {file_upload_id} | Database Page ID: {database_page_id}")
                 # Add to global index - use DATABASE PAGE ID here, not file upload ID
                 if self.notion_uploader.global_file_index_db_id:
-                    # Generate permanent URL for the global index
-                    permanent_url = self.notion_uploader.generate_permanent_download_url(file_upload_id, upload_session['filename'])
                     self.notion_uploader.add_file_to_index(
                         salted_sha512_hash=salted_hash,
-                        file_page_id=database_page_id,  # FIXED: Use database page ID for database operations
+                        file_page_id=database_page_id,  # Use database page ID for database operations
                         user_database_id=upload_session['user_database_id'],
                         original_filename=upload_session['filename'],
-                        is_public=False,
-                        permanent_url=permanent_url
+                        is_public=False
                     )
-                    print(f"DEBUG: Added to global file index with database page ID: {database_page_id} and permanent URL")
+                    print(f"DEBUG: Added to global file index with database page ID: {database_page_id}")
                 else:
                     print(f"WARNING: Global file index DB ID not configured, skipping global index")
                 return {
