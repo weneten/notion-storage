@@ -219,18 +219,33 @@ class NotionStreamingUploader:
                             file_url = None
                             if 'result' in part_result and part_result['result']:
                                 file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
+                            # Generate salt and salted hash for the part
+                            part_salt = generate_salt()
+                            part_salted_hash = calculate_salted_hash(part_hash, part_salt)
                             db_entry = self.notion_uploader.add_file_to_user_database(
                                 database_id=user_database_id,
                                 filename=part_filename,
                                 file_size=part_size,
-                                file_hash=part_hash,
+                                file_hash=part_salted_hash,
                                 file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
                                 is_public=False,
-                                salt="",
+                                salt=part_salt,
                                 original_filename=filename,
                                 file_url=file_url
                             )
                             print(f"[DEBUG LOG] DB entry created for part: {part_filename}, db_entry_id: {db_entry.get('id')}")
+                            # Add part to global file index
+                            if self.notion_uploader.global_file_index_db_id:
+                                self.notion_uploader.add_file_to_index(
+                                    salted_sha512_hash=part_salted_hash,
+                                    file_page_id=db_entry['id'],
+                                    user_database_id=user_database_id,
+                                    original_filename=part_filename,
+                                    is_public=False
+                                )
+                                print(f"[DEBUG LOG] Part added to global file index with salted hash: {part_salted_hash}")
+                            else:
+                                print(f"[DEBUG LOG] Global file index DB ID not configured, skipping global index for part")
                             # Patch DB entry: set is_visible unchecked, file_data set to file
                             self.notion_uploader.update_user_properties(db_entry['id'], {
                                 "is_visible": {"checkbox": False},
@@ -241,7 +256,7 @@ class NotionStreamingUploader:
                                 "part_number": part_number,
                                 "filename": part_filename,
                                 "file_id": db_entry['id'],
-                                "file_hash": part_hash,
+                                "file_hash": part_salted_hash,
                                 "size": part_size
                             })
                         part_number += 1
@@ -270,18 +285,33 @@ class NotionStreamingUploader:
                             file_url = None
                             if 'result' in part_result and part_result['result']:
                                 file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
+                            # Generate salt and salted hash for the part (final)
+                            part_salt = generate_salt()
+                            part_salted_hash = calculate_salted_hash(part_hash, part_salt)
                             db_entry = self.notion_uploader.add_file_to_user_database(
                                 database_id=user_database_id,
                                 filename=part_filename,
                                 file_size=part_size,
-                                file_hash=part_hash,
+                                file_hash=part_salted_hash,
                                 file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
                                 is_public=False,
-                                salt="",
+                                salt=part_salt,
                                 original_filename=filename,
                                 file_url=file_url
                             )
                             print(f"[DEBUG LOG] DB entry created for part (final): {part_filename}, db_entry_id: {db_entry.get('id')}")
+                            # Add part to global file index
+                            if self.notion_uploader.global_file_index_db_id:
+                                self.notion_uploader.add_file_to_index(
+                                    salted_sha512_hash=part_salted_hash,
+                                    file_page_id=db_entry['id'],
+                                    user_database_id=user_database_id,
+                                    original_filename=part_filename,
+                                    is_public=False
+                                )
+                                print(f"[DEBUG LOG] Final part added to global file index with salted hash: {part_salted_hash}")
+                            else:
+                                print(f"[DEBUG LOG] Global file index DB ID not configured, skipping global index for final part")
                             self.notion_uploader.update_user_properties(db_entry['id'], {
                                 "is_visible": {"checkbox": False},
                                 "file_data": db_entry.get('properties', {}).get('file_data', {})
@@ -290,7 +320,7 @@ class NotionStreamingUploader:
                                 "part_number": part_number,
                                 "filename": part_filename,
                                 "file_id": db_entry['id'],
-                                "file_hash": part_hash,
+                                "file_hash": part_salted_hash,
                                 "size": part_size
                             })
 
