@@ -1,6 +1,9 @@
 // Global reference to spinning icon element to maintain continuous animation
 let persistentSpinningIcon = null;
 
+// Global state for resumable uploads
+let currentUpload = null; // { uploadState, resume }
+
 // Function to get or create a persistent spinning icon
 function getSpinningIcon() {
     if (!persistentSpinningIcon) {
@@ -74,6 +77,26 @@ function showStatus(message, type) {
             }
         }, 5000);
     }
+}
+
+// Display a retry button when an upload fails
+function showRetryButton(callback) {
+    const container = document.getElementById('messageContainer');
+    if (!container) return;
+
+    const retryBtn = document.createElement('button');
+    retryBtn.textContent = 'Retry Upload';
+    retryBtn.className = 'btn btn-warning btn-sm ml-2';
+    retryBtn.addEventListener('click', () => {
+        retryBtn.disabled = true;
+        if (typeof callback === 'function') {
+            callback();
+        } else {
+            uploadFile();
+        }
+    });
+
+    container.appendChild(retryBtn);
 }
 
 // Function to update progress bar
@@ -728,6 +751,7 @@ const uploadFile = async () => {
             } else {
                 cleanup();
                 showStatus(`Upload failed after ${uploadState.maxRetries} attempts: ${error.message}`, 'error');
+                showRetryButton(resumeUpload);
             }
         };
 
@@ -876,8 +900,29 @@ const uploadFile = async () => {
             }
         };
 
+        const resumeUpload = () => {
+            if (!uploadState || uploadState.chunkQueue.length === 0) {
+                uploadFile();
+                return;
+            }
+
+            if (uploadState.socket) {
+                uploadState.socket.disconnect();
+            }
+
+            uploadState.isActive = true;
+            uploadState.retryCount = 0;
+
+            uploadState.socket = io('/ws/upload', socketConfig);
+            uploadState.socket.binaryType = 'arraybuffer';
+            attachSocketHandlers();
+        };
+
+        currentUpload = { uploadState, resumeUpload };
+
     } catch (error) {
         console.error('Upload failed:', error);
         showStatus(`Upload failed: ${error.message}`, 'error');
+        showRetryButton(resumeUpload);
     }
-}; 
+};
