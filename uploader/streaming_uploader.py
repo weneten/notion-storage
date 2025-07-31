@@ -571,6 +571,9 @@ class NotionStreamingUploader:
                 manifest_salt = generate_salt()
                 manifest_salted_hash = calculate_salted_hash(manifest_json_hash, manifest_salt)
 
+                # Store the original file's size so the manifest entry reflects
+                # the combined size of all parts rather than the JSON manifest
+                # payload itself.
                 metadata_db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
                     filename=metadata_filename,
@@ -599,12 +602,22 @@ class NotionStreamingUploader:
                     )
 
                 print(f"INFO: File split and uploaded in {len(parts_metadata)} parts + metadata JSON.")
+
+                # Include bytes_uploaded and file_hash in the result so callers
+                # can report progress and offer download links just like the
+                # single-file path.  We use the manifest's salted hash since
+                # that entry is what gets indexed for downloads.
                 return {
                     "status": "completed",
                     "split": True,
                     "parts": parts_metadata,
                     "metadata_file_id": metadata_db_entry['id'],
-                    "metadata_filename": metadata_filename
+                    "metadata_filename": metadata_filename,
+                    "file_id": metadata_db_entry['id'],
+                    "bytes_uploaded": file_size,
+                    "file_hash": manifest_salted_hash,
+                    "filename": metadata_filename,
+                    "original_filename": filename
                 }
 
             else:
