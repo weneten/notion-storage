@@ -2124,39 +2124,47 @@ class NotionFileUploader:
             print(f"Error updating file public status: {e}")
             raise
 
-    def stream_file_from_notion(self, notion_download_url: str) -> Iterable[bytes]:
+    def stream_file_from_notion(self, page_id: str, original_filename: str) -> Iterable[bytes]:
         """
-        Streams file content from a Notion signed download URL.
+        Streams file content from a Notion file property using the AWS S3 signed URL.
+        Args:
+            page_id: The Notion page ID where the file is stored
+            original_filename: The original filename to match in the file property
+        Returns:
+            Iterator yielding file content chunks
         """
+        notion_download_url = self.get_notion_file_url_from_page_property(page_id, original_filename)
+        if not notion_download_url:
+            raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         try:
             with requests.get(notion_download_url, stream=True) as r:
                 r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
                 for chunk in r.iter_content(chunk_size=8192): # 8KB chunks
                     yield chunk
         except requests.exceptions.RequestException as e:
-            print(f"Error streaming file from Notion: {e}")
-            raise Exception(f"Failed to stream file from Notion: {e}")
+            print(f"Error streaming file from Notion S3 URL: {e}")
+            raise Exception(f"Failed to stream file from Notion S3 URL: {e}")
 
-    def stream_file_from_notion_range(self, notion_download_url: str, start: int, end: int) -> Iterable[bytes]:
+    def stream_file_from_notion_range(self, page_id: str, original_filename: str, start: int, end: int) -> Iterable[bytes]:
         """
-        Streams a specific byte range of file content from a Notion signed download URL.
-        
+        Streams a specific byte range of file content from a Notion file property using the AWS S3 signed URL.
         Args:
-            notion_download_url: The Notion signed download URL
+            page_id: The Notion page ID where the file is stored
+            original_filename: The original filename to match in the file property
             start: Starting byte position (inclusive)
             end: Ending byte position (inclusive)
-            
         Returns:
             Iterator yielding file content chunks for the requested range
         """
-        # Stream a specific byte range from a Notion signed download URL
+        notion_download_url = self.get_notion_file_url_from_page_property(page_id, original_filename)
+        if not notion_download_url:
+            raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         headers = {
             'Range': f'bytes={start}-{end}'
         }
-        print(f"Requesting bytes {start}-{end} from Notion download URL: {notion_download_url}")
+        print(f"Requesting bytes {start}-{end} from Notion S3 download URL: {notion_download_url}")
         try:
             with requests.get(notion_download_url, headers=headers, stream=True) as r:
-                # Handle both 200 (full content) and 206 (partial content) responses
                 if r.status_code == 206:
                     print(f"Received partial content response (206) for range {start}-{end}")
                 elif r.status_code == 200:
@@ -2167,7 +2175,6 @@ class NotionFileUploader:
                 bytes_read = 0
                 target_bytes = end - start + 1
 
-                # If we got a 200 response, we need to skip bytes until we reach the start position
                 if r.status_code == 200:
                     skip_bytes = start
                     for chunk in r.iter_content(chunk_size=8192):
@@ -2186,7 +2193,6 @@ class NotionFileUploader:
                         if bytes_read >= target_bytes:
                             break
                 else:
-                    # 206 Partial Content or other range-supporting response
                     for chunk in r.iter_content(chunk_size=8192):
                         to_yield = min(len(chunk), target_bytes - bytes_read)
                         if to_yield <= 0:
@@ -2196,8 +2202,8 @@ class NotionFileUploader:
                         if bytes_read >= target_bytes:
                             break
         except requests.exceptions.RequestException as e:
-            print(f"Error streaming byte range from Notion: {e}")
-            raise Exception(f"Failed to stream byte range from Notion: {e}")
+            print(f"Error streaming byte range from Notion S3 URL: {e}")
+            raise Exception(f"Failed to stream byte range from Notion S3 URL: {e}")
     def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool) -> Dict[str, Any]:
         """Adds an entry to the Global File Index database."""
         global_index_db_id = self.global_file_index_db_id
