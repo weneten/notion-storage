@@ -391,7 +391,14 @@ def download_by_hash(salted_sha512_hash):
                 file_property = manifest_page.get('properties', {}).get('file_data', {})
                 files_array = file_property.get('files', [])
                 manifest_file = files_array[0] if files_array else None
-                manifest_url = manifest_file.get('file', {}).get('url', '') if manifest_file else ''
+
+                # Use NotionFileUploader's method to get a fresh signed URL for the manifest JSON
+                manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
+                manifest_metadata = uploader.get_file_download_metadata(file_page_id, manifest_filename)
+                manifest_url = manifest_metadata.get('url', '')
+                if not manifest_url:
+                    return "Manifest file not found", 404
+
                 resp = requests.get(manifest_url)
                 resp.raise_for_status()
                 manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
@@ -1313,9 +1320,14 @@ def download_multipart_by_page_id(manifest_page_id):
         file_property = manifest_page.get('properties', {}).get('file_data', {})
         files_array = file_property.get('files', [])
         manifest_file = files_array[0] if files_array else None
-        manifest_url = manifest_file.get('file', {}).get('url', '') if manifest_file else ''
+
+        # Use NotionFileUploader's method to get a fresh signed URL for the manifest JSON
+        manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
+        manifest_metadata = uploader.get_file_download_metadata(manifest_page_id, manifest_filename)
+        manifest_url = manifest_metadata.get('url', '')
         if not manifest_url:
             return "Manifest file not found", 404
+
         resp = requests.get(manifest_url)
         resp.raise_for_status()
         manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
