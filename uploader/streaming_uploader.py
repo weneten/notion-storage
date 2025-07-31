@@ -27,32 +27,62 @@ class NotionStreamingUploader:
             user_database_id: The user's Notion database ID.
         """
         import json
+        import requests
         print(f"[DELETE] Deleting manifest and parts for manifest_db_id={manifest_db_id}")
+
         # Fetch manifest entry and manifest JSON BEFORE any deletion
         manifest_entry = self.notion_uploader.get_user_by_id(manifest_db_id)
         if not manifest_entry:
             print(f"[DELETE] Manifest entry not found: {manifest_db_id}. Aborting delete.")
             return
+
         # Try to get the file_data property (should contain the JSON metadata)
         file_data = None
         props = manifest_entry.get('properties', {})
+        # Try file property first
         if 'file_data' in props and 'files' in props['file_data'] and props['file_data']['files']:
-            # Notion file property: get the first file's URL
             file_url = props['file_data']['files'][0].get('file', {}).get('url') or props['file_data']['files'][0].get('external', {}).get('url')
             if file_url:
                 try:
-                    import requests
                     resp = requests.get(file_url)
                     if resp.status_code == 200:
                         file_data = resp.content.decode("utf-8")
+                    else:
+                        print(f"[DELETE] Manifest JSON fetch failed with status {resp.status_code}: {resp.text}")
                 except Exception as e:
                     print(f"[DELETE] Failed to fetch manifest JSON from Notion: {e}")
+
         # Fallback: try to get file_data as plain text
         if not file_data and 'file_data' in props and 'rich_text' in props['file_data'] and props['file_data']['rich_text']:
             file_data = props['file_data']['rich_text'][0].get('plain_text')
+
+        # Extra fallback: try to fetch the page content directly via Notion API if above fails
+        if not file_data:
+            print(f"[DELETE] Could not retrieve manifest JSON from file property, trying Notion API fallback...")
+            try:
+                manifest_api_url = f"https://api.notion.com/v1/pages/{manifest_db_id}"
+                headers = {
+                    "Authorization": f"Bearer {self.api_token}",
+                    "Notion-Version": "2022-06-28",
+                    "accept": "application/json",
+                    "Content-Type": "application/json"
+                }
+                resp = requests.get(manifest_api_url, headers=headers)
+                if resp.status_code == 200:
+                    manifest_api_data = resp.json()
+                    # Try to extract file_data from API response
+                    api_props = manifest_api_data.get('properties', {})
+                    if 'file_data' in api_props and 'rich_text' in api_props['file_data'] and api_props['file_data']['rich_text']:
+                        file_data = api_props['file_data']['rich_text'][0].get('plain_text')
+                else:
+                    print(f"[DELETE] Notion API fallback failed with status {resp.status_code}: {resp.text}")
+            except Exception as e:
+                print(f"[DELETE] Notion API fallback failed: {e}")
+
         if not file_data:
             print(f"[DELETE] ABORT: Could not retrieve manifest JSON for manifest {manifest_db_id}. No files will be deleted.")
             return
+
         # Parse JSON and get parts
         try:
             manifest_json = json.loads(file_data)
@@ -62,8 +92,10 @@ class NotionStreamingUploader:
         except Exception as e:
             print(f"[DELETE] ABORT: Failed to parse manifest JSON: {e}. No files will be deleted.")
             return
+
         if not parts:
             print(f"[DELETE] WARNING: No parts found in manifest JSON for {manifest_db_id}. No part files will be deleted.")
+
         deleted_count = 0
         # Only after successful JSON load, proceed to delete parts and manifest
         for part in parts:
@@ -76,6 +108,7 @@ class NotionStreamingUploader:
             # Delete from user database
             try:
                 self.notion_uploader.delete_file_from_user_database(part_id)
+                print(f"[DELETE] Deleted part {part_id} from user DB.")
                 deleted_count += 1
             except Exception as e:
                 print(f"[DELETE] Failed to delete part {part_id} from user DB: {e}")
@@ -83,19 +116,24 @@ class NotionStreamingUploader:
             if self.notion_uploader.global_file_index_db_id:
                 try:
                     self.notion_uploader.delete_file_from_index(part_id)
+                    print(f"[DELETE] Deleted part {part_id} from global index.")
                 except Exception as e:
                     print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+
         if deleted_count == 0:
             print(f"[DELETE] WARNING: No part files were deleted for manifest {manifest_db_id}.")
+
         # Delete the manifest itself from user DB and global index
         print(f"[DELETE] Deleting manifest entry: {manifest_db_id}")
         try:
             self.notion_uploader.delete_file_from_user_database(manifest_db_id)
+            print(f"[DELETE] Deleted manifest from user DB.")
         except Exception as e:
             print(f"[DELETE] Failed to delete manifest from user DB: {e}")
         if self.notion_uploader.global_file_index_db_id:
             try:
                 self.notion_uploader.delete_file_from_index(manifest_db_id)
+                print(f"[DELETE] Deleted manifest from global index.")
             except Exception as e:
                 print(f"[DELETE] Failed to delete manifest from global index: {e}")
     """
