@@ -21,11 +21,14 @@ from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate
 class NotionStreamingUploader:
     def delete_file_entry(self, file_db_id: str, user_database_id: str) -> None:
         """
-        Deletes a file entry from Notion. If the entry is a manifest (split upload), deletes all parts as well.
+        Deletes a file entry from Notion. Handles both single files and manifests (with parts),
+        and deletes from both user and global index as needed.
         Args:
             file_db_id: The Notion database page ID of the file or manifest.
             user_database_id: The user's Notion database ID.
         """
+        import json
+        import requests
         entry = self.notion_uploader.get_user_by_id(file_db_id)
         if not entry:
             print(f"[DELETE] Entry not found: {file_db_id}. Aborting delete.")
@@ -49,22 +52,107 @@ class NotionStreamingUploader:
 
         print(f"[DEBUG] is_manifest={is_manifest} for {file_db_id} (reason: {manifest_reason})")
 
+        parts = []
         if is_manifest:
-            print(f"[DELETE] Entry {file_db_id} is a manifest. Deleting manifest and parts.")
-            self.delete_manifest_and_parts(file_db_id, user_database_id)
-        else:
-            print(f"[DELETE] Entry {file_db_id} is a single file. Deleting directly.")
+            print(f"[DELETE] Entry {file_db_id} is a manifest. Attempting to delete manifest and all parts.")
+            # Try to get the file_data property (should contain the JSON metadata)
+            file_data = None
+            # Try file property first
+            if 'file_data' in props and 'files' in props['file_data'] and props['file_data']['files']:
+                file_url = props['file_data']['files'][0].get('file', {}).get('url') or props['file_data']['files'][0].get('external', {}).get('url')
+                if file_url:
+                    try:
+                        resp = requests.get(file_url)
+                        if resp.status_code == 200:
+                            file_data = resp.content.decode("utf-8")
+                            print(f"[DELETE] Manifest JSON loaded from file property (url): {file_url}")
+                        else:
+                            print(f"[DELETE] Manifest JSON fetch failed with status {resp.status_code}: {resp.text}")
+                    except Exception as e:
+                        print(f"[DELETE] Failed to fetch manifest JSON from Notion: {e}")
+            # Fallback: try to get file_data as plain text
+            if not file_data and 'file_data' in props and 'rich_text' in props['file_data'] and props['file_data']['rich_text']:
+                file_data = props['file_data']['rich_text'][0].get('plain_text')
+                print(f"[DELETE] Manifest JSON loaded from rich_text property.")
+            # Extra fallback: try to fetch the page content directly via Notion API if above fails
+            if not file_data:
+                print(f"[DELETE] Could not retrieve manifest JSON from file property, trying Notion API fallback...")
+                try:
+                    manifest_api_url = f"https://api.notion.com/v1/pages/{file_db_id}"
+                    headers = {
+                        "Authorization": f"Bearer {self.api_token}",
+                        "Notion-Version": "2022-06-28",
+                        "accept": "application/json",
+                        "Content-Type": "application/json"
+                    }
+                    resp = requests.get(manifest_api_url, headers=headers)
+                    if resp.status_code == 200:
+                        manifest_api_data = resp.json()
+                        # Try to extract file_data from API response
+                        api_props = manifest_api_data.get('properties', {})
+                        if 'file_data' in api_props and 'rich_text' in api_props['file_data'] and api_props['file_data']['rich_text']:
+                            file_data = api_props['file_data']['rich_text'][0].get('plain_text')
+                            print(f"[DELETE] Manifest JSON loaded from Notion API fallback.")
+                    else:
+                        print(f"[DELETE] Notion API fallback failed with status {resp.status_code}: {resp.text}")
+                except Exception as e:
+                    print(f"[DELETE] Notion API fallback failed: {e}")
+            if not file_data:
+                print(f"[DELETE] ABORT: Could not retrieve manifest JSON for manifest {file_db_id}. No files will be deleted.")
+            else:
+                try:
+                    print(f"[DELETE] Raw manifest JSON string: {file_data}")
+                    manifest_json = json.loads(file_data)
+                    print(f"[DELETE] Loaded manifest JSON: {manifest_json}")
+                    parts = manifest_json.get('parts', [])
+                    print(f"[DELETE] Parts found in manifest: {parts}")
+                except Exception as e:
+                    print(f"[DELETE] ABORT: Failed to parse manifest JSON: {e}. No files will be deleted.")
+                    print(f"[DELETE] Raw manifest JSON for debugging: {file_data}")
+                    parts = []
+            if not parts:
+                print(f"[DELETE] WARNING: No parts found in manifest JSON for {file_db_id}. No part files will be deleted.")
+                print(f"[DELETE] Raw manifest JSON for diagnosis: {file_data}")
+
+        deleted_count = 0
+        # Delete all parts if any
+        for part in parts:
+            part_id = part.get('file_id')
+            part_filename = part.get('filename')
+            if not part_id:
+                print(f"[DELETE] Skipping part with missing file_id: {part}")
+                continue
+            print(f"[DELETE] Deleting part: {part_filename} (id={part_id})")
+            # Delete from user database
             try:
-                self.notion_uploader.delete_file_from_user_database(file_db_id)
-                print(f"[DELETE] Deleted file {file_db_id} from user DB.")
+                self.notion_uploader.delete_file_from_user_database(part_id)
+                print(f"[DELETE] Deleted part {part_id} from user DB.")
+                deleted_count += 1
             except Exception as e:
-                print(f"[DELETE] Failed to delete file {file_db_id} from user DB: {e}")
+                print(f"[DELETE] Failed to delete part {part_id} from user DB: {e}")
+            # Delete from global index if enabled
             if self.notion_uploader.global_file_index_db_id:
                 try:
-                    self.notion_uploader.delete_file_from_index(file_db_id)
-                    print(f"[DELETE] Deleted file {file_db_id} from global index.")
+                    self.notion_uploader.delete_file_from_index(part_id)
+                    print(f"[DELETE] Deleted part {part_id} from global index.")
                 except Exception as e:
-                    print(f"[DELETE] Failed to delete file {file_db_id} from global index: {e}")
+                    print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+        if deleted_count == 0 and is_manifest:
+            print(f"[DELETE] WARNING: No part files were deleted for manifest {file_db_id}.")
+
+        # Delete the main entry (single file or manifest itself)
+        print(f"[DELETE] Deleting main entry: {file_db_id}")
+        try:
+            self.notion_uploader.delete_file_from_user_database(file_db_id)
+            print(f"[DELETE] Deleted main entry {file_db_id} from user DB.")
+        except Exception as e:
+            print(f"[DELETE] Failed to delete main entry {file_db_id} from user DB: {e}")
+        if self.notion_uploader.global_file_index_db_id:
+            try:
+                self.notion_uploader.delete_file_from_index(file_db_id)
+                print(f"[DELETE] Deleted main entry {file_db_id} from global index.")
+            except Exception as e:
+                print(f"[DELETE] Failed to delete main entry {file_db_id} from global index: {e}")
 
     def delete_manifest_and_parts(self, manifest_db_id: str, user_database_id: str) -> None:
         """
