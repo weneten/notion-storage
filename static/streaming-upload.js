@@ -536,7 +536,8 @@ async function loadFiles() {
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
         console.log('🔍 DIAGNOSTIC: Fetching file list from /api/files...');
 
-        const response = await fetch('/api/files');
+        const folderParam = encodeURIComponent(window.currentFolder || '/');
+        const response = await fetch(`/api/files?folder=${folderParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }
@@ -665,6 +666,11 @@ async function loadFiles() {
 
         // Set up event handlers for the new elements
         setupFileActionEventHandlers();
+
+        // Reinitialize file type icons for newly loaded content
+        if (typeof initializeFileTypeIcons === 'function') {
+            initializeFileTypeIcons();
+        }
 
         // Trigger content update event for modal system
         document.dispatchEvent(new CustomEvent('contentUpdated'));

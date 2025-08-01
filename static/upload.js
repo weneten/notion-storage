@@ -146,7 +146,8 @@ async function loadFiles() {
     try {
         console.log('Refreshing file list with AJAX...');
         // Fetch the file list data from the API
-        const response = await fetch('/files-api');
+        const folderParam = encodeURIComponent(window.currentFolder || '/');
+        const response = await fetch(`/files-api?folder=${folderParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }
@@ -238,6 +239,11 @@ async function loadFiles() {
 
         // Add event listeners to the buttons
         setupFileActionEventHandlers();
+
+        // Reinitialize file type icons for dynamically loaded files
+        if (typeof initializeFileTypeIcons === 'function') {
+            initializeFileTypeIcons();
+        }
 
         console.log('File list refreshed successfully');
     } catch (error) {
