@@ -1846,6 +1846,12 @@ class NotionFileUploader:
                 "is_visible": {
                     "checkbox": {}
                 },
+                "folder_path": {
+                    "rich_text": {}
+                },
+                "is_folder": {
+                    "checkbox": {}
+                },
                 "file_data": {
                     "files": {}
                 }
@@ -1960,7 +1966,7 @@ class NotionFileUploader:
             print(f"Error deleting file from Global File Index by hash {salted_sha512_hash}: {e}")
             raise
 
-    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False) -> Dict[str, Any]:
+    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False, folder_path: str = "/") -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
@@ -2037,6 +2043,15 @@ class NotionFileUploader:
                     {
                         "text": {
                             "content": salt
+                        }
+                    }
+                ]
+            },
+            "folder_path": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": folder_path
                         }
                     }
                 ]
@@ -2190,6 +2205,97 @@ class NotionFileUploader:
         except Exception as e:
             print(f"Error updating file public status: {e}")
             raise
+
+    def update_file_metadata(self, file_id: str, filename: str = None, folder_path: str = None, file_hash: str = None) -> Dict[str, Any]:
+        """Update filename or folder path for a file entry and reflect changes in the Global File Index."""
+        url = f"{self.base_url}/pages/{file_id}"
+        properties = {}
+
+        if filename is not None:
+            properties["filename"] = {
+                "title": [{"text": {"content": filename}}]
+            }
+            properties["Original Filename"] = {
+                "title": [{"text": {"content": filename}}]
+            }
+
+        if folder_path is not None:
+            properties["folder_path"] = {
+                "rich_text": [{"text": {"content": folder_path}}]
+            }
+
+        if not properties:
+            return {}
+
+        payload = {"properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        response = requests.patch(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to update file metadata: {response.text}")
+
+        if filename is not None and file_hash:
+            self._update_global_index_filename(file_hash, filename)
+
+        return response.json()
+
+    def add_folder_placeholder(self, database_id: str, folder_path: str) -> Dict[str, Any]:
+        """Create a hidden page representing a folder."""
+        url = f"{self.base_url}/pages"
+
+        properties = {
+            "filename": {"title": [{"text": {"content": folder_path}}]},
+            "filesize": {"number": 0},
+            "filehash": {"rich_text": [{"text": {"content": ""}}]},
+            "is_public": {"checkbox": False},
+            "salt": {"rich_text": [{"text": {"content": ""}}]},
+            "is_visible": {"checkbox": False},
+            "folder_path": {"rich_text": [{"text": {"content": folder_path}}]},
+            "is_folder": {"checkbox": True}
+        }
+
+        payload = {"parent": {"database_id": database_id}, "properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to create folder placeholder: {response.text}")
+        return response.json()
+
+    def rename_folder(self, database_id: str, old_path: str, new_path: str) -> None:
+        """Rename a folder by updating all pages with the given path."""
+        files = self.get_files_from_user_database(database_id)
+        for entry in files.get('results', []):
+            props = entry.get('properties', {})
+            current = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            if current.startswith(old_path):
+                updated = new_path + current[len(old_path):]
+                self.update_file_metadata(entry['id'], folder_path=updated)
+
+    def _update_global_index_filename(self, salted_sha512_hash: str, new_name: str) -> None:
+        """Update the filename stored in the Global File Index."""
+        global_index_db_id = self.global_file_index_db_id
+        if not global_index_db_id:
+            return
+
+        headers = {**self.headers, "Content-Type": "application/json"}
+        query_url = f"{self.base_url}/databases/{global_index_db_id}/query"
+        payload = {
+            "filter": {
+                "property": "Salted SHA512 Hash",
+                "rich_text": {"equals": salted_sha512_hash}
+            }
+        }
+        resp = requests.post(query_url, json=payload, headers=headers)
+        if resp.status_code != 200 or not resp.json().get('results'):
+            return
+        entry_id = resp.json()['results'][0]['id']
+        update_url = f"{self.base_url}/pages/{entry_id}"
+        update_payload = {
+            "properties": {
+                "Original Filename": {"title": [{"text": {"content": new_name}}]}
+            }
+        }
+        requests.patch(update_url, json=update_payload, headers=headers)
 
     def stream_file_from_notion(self, page_id: str, original_filename: str) -> Iterable[bytes]:
         """
