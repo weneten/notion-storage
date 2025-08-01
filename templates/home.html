@@ -323,7 +323,18 @@
                 }
                 const data = await resp.json();
                 if (data.needs_confirm) {
-                    if (!confirm(`Folder is not empty. Delete ${data.count} items as well?`)) {
+                    let msg = `Folder is not empty. Delete ${data.file_count} file`;
+                    msg += data.file_count === 1 ? '' : 's';
+                    if (data.folder_count > 0) {
+                        msg += ` and ${data.folder_count} folder`;
+                        msg += data.folder_count === 1 ? '' : 's';
+                        if (data.subfolder_file_count > 0) {
+                            msg += ` containing ${data.subfolder_file_count} file`;
+                            msg += data.subfolder_file_count === 1 ? '' : 's';
+                        }
+                    }
+                    msg += ' as well?';
+                    if (!confirm(msg)) {
                         return;
                     }
                     resp = await fetch('/delete_folder', {
