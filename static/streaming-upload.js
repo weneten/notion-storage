@@ -534,10 +534,10 @@ document.addEventListener('DOMContentLoaded', function () {
 async function loadFiles() {
     try {
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
-        console.log('🔍 DIAGNOSTIC: Fetching file list from /api/files...');
+    console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
 
         const folderParam = encodeURIComponent(window.currentFolder || '/');
-        const response = await fetch(`/api/files?folder=${folderParam}`);
+        const response = await fetch(`/api/entries?folder=${folderParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }
@@ -545,16 +545,16 @@ async function loadFiles() {
         const data = await response.json();
         console.log('🔍 DIAGNOSTIC: API Response received:', data);
 
-        if (!data.files) {
+        if (!data.entries) {
             throw new Error('Invalid response format');
         }
 
-        console.log('🔍 DIAGNOSTIC: Files array length:', data.files.length);
-        if (data.files.length > 0) {
-            console.log('🔍 DIAGNOSTIC: First file structure:', data.files[0]);
+        console.log('🔍 DIAGNOSTIC: Entries array length:', data.entries.length);
+        if (data.entries.length > 0) {
+            console.log('🔍 DIAGNOSTIC: First entry structure:', data.entries[0]);
 
             // Check what properties each file has for buttons
-            data.files.forEach((file, index) => {
+            data.entries.filter(e => e.type === 'file').forEach((file, index) => {
                 console.log(`🔍 DIAGNOSTIC: File ${index + 1} - ${file.name}:`, {
                     id: file.id,
                     file_hash: file.file_hash,
@@ -571,7 +571,7 @@ async function loadFiles() {
             return;
         }
 
-        if (data.files.length === 0) {
+        if (data.entries.length === 0) {
             filesContainer.innerHTML = `
                 <div class="alert alert-info text-center">
                     <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
@@ -599,33 +599,47 @@ async function loadFiles() {
                     <tbody>
         `;
 
-        data.files.forEach(file => {
-            const fileId = file.id || '';
-            const fileHash = file.file_hash || '';
-            const saltedHash = file.salted_hash || fileHash;
-            const isPublic = file.is_public || false;
-            const fileInfo = getFileTypeInfo(file.name);
+        data.entries.forEach(entry => {
+            if (entry.type === 'folder') {
+                tableHTML += `
+                <tr class="folder-row" data-folder-path="${entry.full_path}">
+                    <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                    <td class="filesize-cell">-</td>
+                    <td>${entry.full_path}</td>
+                    <td></td>
+                    <td></td>
+                    <td>
+                        <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-folder-open mr-1"></i>Open
+                        </a>
+                        <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}">
+                            <i class="fas fa-trash-alt mr-1"></i>Delete
+                        </button>
+                    </td>
+                </tr>`;
+            } else {
+                const fileId = entry.id || '';
+                const fileHash = entry.file_hash || '';
+                const isPublic = entry.is_public || false;
+                const fileInfo = getFileTypeInfo(entry.name);
 
-            console.log(`✅ DIAGNOSTIC: Processing ${file.name} - Now includes toggle, delete, and view buttons!`);
-            
-            // Generate view button HTML if file is viewable
-            const viewButtonHTML = fileInfo.isViewable && fileHash ?
-                createViewButton(fileHash, fileInfo.type, file.name) : '';
+                const viewButtonHTML = fileInfo.isViewable && fileHash ?
+                    createViewButton(fileHash, fileInfo.type, entry.name) : '';
 
-            tableHTML += `
+                tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
                     <td>
                         <span style="margin-right: 8px;">${fileInfo.icon}</span>
-                        <strong>${file.name}</strong>
+                        <strong>${entry.name}</strong>
                     </td>
-                    <td class="filesize-cell">${formatFileSize(file.size)}</td>
+                    <td class="filesize-cell">${formatFileSize(entry.size)}</td>
+                    <td>${entry.folder}</td>
                     <td>
-                        ${saltedHash ?
-                    `<a href="/d/${saltedHash}" target="_blank" class="public-link">
-                                <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${saltedHash.substring(0, 10)}...
+                        ${fileHash ?
+                    `<a href="/d/${fileHash}" target="_blank" class="public-link">
+                                <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0,10)}...
                             </a>` :
-                    '<span class="text-muted">N/A</span>'
-                }
+                    '<span class="text-muted">N/A</span>'}
                     </td>
                     <td>
                         <label class="switch">
@@ -635,7 +649,7 @@ async function loadFiles() {
                     </td>
                     <td class="action-buttons">
                         ${viewButtonHTML}
-                        <a href="/d/${saltedHash}" class="btn btn-primary btn-sm">
+                        <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
                         <button class="btn btn-secondary btn-sm rename-btn" data-file-id="${fileId}">
@@ -648,8 +662,8 @@ async function loadFiles() {
                             <i class="fas fa-trash-alt mr-1"></i>Delete
                         </button>
                     </td>
-                </tr>
-            `;
+                </tr>`;
+            }
         });
 
         tableHTML += `</tbody></table></div>`;
@@ -660,12 +674,13 @@ async function loadFiles() {
         console.log('✅ DIAGNOSTIC: CONFIRMED FIX - Created elements:', {
             toggleCount: toggles.length,
             deleteButtonCount: deleteButtons.length,
-            expectedCount: data.files.length,
+            expectedCount: data.entries.length,
             SUCCESS: 'All toggle switches and delete buttons created!'
         });
 
         // Set up event handlers for the new elements
         setupFileActionEventHandlers();
+        setupFolderActionEventHandlers();
 
         // Reinitialize file type icons for newly loaded content
         if (typeof initializeFileTypeIcons === 'function') {
@@ -956,6 +971,51 @@ function setupFileActionEventHandlers() {
                 body: JSON.stringify({ file_id: fileId, folder_path: newFolder })
             });
             location.reload();
+        });
+    });
+}
+
+// Set up event handlers for folder actions (delete)
+function setupFolderActionEventHandlers() {
+    document.querySelectorAll('.delete-folder-btn').forEach(btn => {
+        btn.addEventListener('click', async function () {
+            const folderId = this.dataset.folderId;
+            let resp = await fetch('/delete_folder', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ folder_id: folderId })
+            });
+            if (!resp.ok) {
+                alert('Failed to check folder');
+                return;
+            }
+            const data = await resp.json();
+            if (data.needs_confirm) {
+                let msg = `Folder is not empty. Delete ${data.file_count} file`;
+                msg += data.file_count === 1 ? '' : 's';
+                if (data.folder_count > 0) {
+                    msg += ` and ${data.folder_count} folder`;
+                    msg += data.folder_count === 1 ? '' : 's';
+                    if (data.subfolder_file_count > 0) {
+                        msg += ` containing ${data.subfolder_file_count} file`;
+                        msg += data.subfolder_file_count === 1 ? '' : 's';
+                    }
+                }
+                msg += ' as well?';
+                if (!confirm(msg)) {
+                    return;
+                }
+                resp = await fetch('/delete_folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folder_id: folderId, delete_contents: true })
+                });
+                if (!resp.ok) {
+                    alert('Failed to delete folder');
+                    return;
+                }
+            }
+            loadFiles();
         });
     });
 }
