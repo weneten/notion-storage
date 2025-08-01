@@ -534,9 +534,10 @@ document.addEventListener('DOMContentLoaded', function () {
 async function loadFiles() {
     try {
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
-        console.log('🔍 DIAGNOSTIC: Fetching file list from /api/files...');
+        const folderParam = window.currentFolder || '/';
+        console.log('🔍 DIAGNOSTIC: Fetching file list from /api/files?folder=' + folderParam);
 
-        const response = await fetch('/api/files');
+        const response = await fetch('/api/files?folder=' + encodeURIComponent(folderParam));
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }
@@ -544,22 +545,21 @@ async function loadFiles() {
         const data = await response.json();
         console.log('🔍 DIAGNOSTIC: API Response received:', data);
 
-        if (!data.files) {
+        if (!data.entries) {
             throw new Error('Invalid response format');
         }
 
-        console.log('🔍 DIAGNOSTIC: Files array length:', data.files.length);
-        if (data.files.length > 0) {
-            console.log('🔍 DIAGNOSTIC: First file structure:', data.files[0]);
+        console.log('🔍 DIAGNOSTIC: Entries array length:', data.entries.length);
+        if (data.entries.length > 0) {
+            console.log('🔍 DIAGNOSTIC: First entry structure:', data.entries[0]);
 
-            // Check what properties each file has for buttons
-            data.files.forEach((file, index) => {
-                console.log(`🔍 DIAGNOSTIC: File ${index + 1} - ${file.name}:`, {
-                    id: file.id,
-                    file_hash: file.file_hash,
-                    is_public: file.is_public,
-                    has_toggle_data: !!(file.id && file.file_hash !== undefined && file.is_public !== undefined),
-                    has_delete_data: !!file.id
+            // Check what properties each entry has for buttons
+            data.entries.forEach((entry, index) => {
+                console.log(`🔍 DIAGNOSTIC: Entry ${index + 1} - ${entry.name}:`, {
+                    id: entry.id,
+                    file_hash: entry.file_hash,
+                    is_public: entry.is_public,
+                    type: entry.type
                 });
             });
         }
@@ -570,7 +570,7 @@ async function loadFiles() {
             return;
         }
 
-        if (data.files.length === 0) {
+        if (data.entries.length === 0) {
             filesContainer.innerHTML = `
                 <div class="alert alert-info text-center">
                     <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
@@ -598,26 +598,38 @@ async function loadFiles() {
                     <tbody>
         `;
 
-        data.files.forEach(file => {
-            const fileId = file.id || '';
-            const fileHash = file.file_hash || '';
-            const saltedHash = file.salted_hash || fileHash;
-            const isPublic = file.is_public || false;
-            const fileInfo = getFileTypeInfo(file.name);
+        data.entries.forEach(entry => {
+            if (entry.type === 'folder') {
+                tableHTML += `
+                <tr class="folder-row" data-folder-path="${entry.full_path}">
+                    <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                    <td class="filesize-cell">-</td>
+                    <td>${entry.full_path}</td>
+                    <td></td>
+                    <td></td>
+                    <td>
+                        <a href="?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-folder-open mr-1"></i>Open
+                        </a>
+                    </td>
+                </tr>`;
+            } else {
+                const fileId = entry.id || '';
+                const fileHash = entry.file_hash || '';
+                const saltedHash = entry.salted_hash || fileHash;
+                const isPublic = entry.is_public || false;
+                const fileInfo = getFileTypeInfo(entry.name);
 
-            console.log(`✅ DIAGNOSTIC: Processing ${file.name} - Now includes toggle, delete, and view buttons!`);
-            
-            // Generate view button HTML if file is viewable
-            const viewButtonHTML = fileInfo.isViewable && fileHash ?
-                createViewButton(fileHash, fileInfo.type, file.name) : '';
+                const viewButtonHTML = fileInfo.isViewable && fileHash ?
+                    createViewButton(fileHash, fileInfo.type, entry.name) : '';
 
-            tableHTML += `
+                tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
                     <td>
                         <span style="margin-right: 8px;">${fileInfo.icon}</span>
-                        <strong>${file.name}</strong>
+                        <strong>${entry.name}</strong>
                     </td>
-                    <td class="filesize-cell">${formatFileSize(file.size)}</td>
+                    <td class="filesize-cell">${formatFileSize(entry.size)}</td>
                     <td>
                         ${saltedHash ?
                     `<a href="/d/${saltedHash}" target="_blank" class="public-link">
@@ -641,8 +653,8 @@ async function loadFiles() {
                             <i class="fas fa-trash-alt mr-1"></i>Delete
                         </button>
                     </td>
-                </tr>
-            `;
+                </tr>`;
+            }
         });
 
         tableHTML += `</tbody></table></div>`;
@@ -653,7 +665,7 @@ async function loadFiles() {
         console.log('✅ DIAGNOSTIC: CONFIRMED FIX - Created elements:', {
             toggleCount: toggles.length,
             deleteButtonCount: deleteButtons.length,
-            expectedCount: data.files.length,
+            expectedCount: data.entries.length,
             SUCCESS: 'All toggle switches and delete buttons created!'
         });
 

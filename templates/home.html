@@ -57,13 +57,17 @@
                     <tr class="folder-row" data-folder-path="{{ entry.full_path }}">
                         <td>
                             <i class="fas fa-folder mr-1"></i>
-                            <a href="{{ url_for('home', folder=entry.full_path) }}"><strong>{{ entry.name }}</strong></a>
+                            <strong>{{ entry.name }}</strong>
                         </td>
                         <td class="filesize-cell">-</td>
                         <td>{{ entry.full_path }}</td>
                         <td></td>
                         <td></td>
-                        <td></td>
+                        <td>
+                            <a href="{{ url_for('home', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
+                                <i class="fas fa-folder-open mr-1"></i>Open
+                            </a>
+                        </td>
                     </tr>
                     {% else %}
                     <tr data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}">
