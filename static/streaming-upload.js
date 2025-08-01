@@ -666,6 +666,11 @@ async function loadFiles() {
         // Set up event handlers for the new elements
         setupFileActionEventHandlers();
 
+        // Reinitialize file type icons for newly loaded content
+        if (typeof initializeFileTypeIcons === 'function') {
+            initializeFileTypeIcons();
+        }
+
         // Trigger content update event for modal system
         document.dispatchEvent(new CustomEvent('contentUpdated'));
 

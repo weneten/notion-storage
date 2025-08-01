@@ -239,6 +239,11 @@ async function loadFiles() {
         // Add event listeners to the buttons
         setupFileActionEventHandlers();
 
+        // Reinitialize file type icons for dynamically loaded files
+        if (typeof initializeFileTypeIcons === 'function') {
+            initializeFileTypeIcons();
+        }
+
         console.log('File list refreshed successfully');
     } catch (error) {
         console.error('Error loading files:', error);
