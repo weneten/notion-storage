@@ -979,7 +979,7 @@ def delete_folder():
         if to_delete and not delete_contents:
             return jsonify({
                 'needs_confirm': True,
-                'file_count': file_count_root + file_count_subfolders,
+                'file_count': file_count_root,
                 'folder_count': len(subfolder_ids),
                 'subfolder_file_count': file_count_subfolders
             })
