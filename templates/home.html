@@ -129,6 +129,33 @@
     </div>
 </div>
 
+<!-- Move File Modal -->
+<div class="modal fade" id="moveModal" tabindex="-1" role="dialog" aria-labelledby="moveModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="moveModalLabel">Move File</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div id="moveFolderPath" class="mb-2 font-weight-bold"></div>
+                <ul id="moveFolderList" class="list-group"></ul>
+                <div class="input-group mt-3">
+                    <input type="text" id="newFolderName" class="form-control" placeholder="New folder name">
+                    <div class="input-group-append">
+                        <button class="btn btn-secondary" id="createFolderInMove" type="button">Create</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-primary" id="confirmMoveBtn">Move Here</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
 <script src="{{ url_for('static', filename='streaming-upload.js') }}"></script>
 
@@ -281,19 +308,12 @@
             });
         });
 
-        document.querySelectorAll('.move-btn').forEach(btn => {
-            btn.addEventListener('click', async function () {
-                const fileId = this.dataset.fileId;
-                const newFolder = prompt('Move to folder:', window.currentFolder || '/');
-                if (newFolder === null) return;
-                await fetch('/update_file_metadata', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({file_id: fileId, folder_path: newFolder})
-                });
-                location.reload();
-            });
+    document.querySelectorAll('.move-btn').forEach(btn => {
+        btn.addEventListener('click', function () {
+            const fileId = this.dataset.fileId;
+            openMoveModal(fileId);
         });
+    });
 
         const createFolderBtn = document.getElementById('createFolderButton');
         if (createFolderBtn) {
@@ -350,6 +370,74 @@
                 location.reload();
             });
         });
+    });
+
+    // ==============================
+    // Move File Modal Functionality
+    // ==============================
+    let moveModalCurrentPath = '/';
+    let moveFileId = null;
+
+    async function openMoveModal(fileId) {
+        moveFileId = fileId;
+        await loadMoveFolder(window.currentFolder || '/');
+        $('#moveModal').modal('show');
+    }
+
+    async function loadMoveFolder(path) {
+        moveModalCurrentPath = path;
+        document.getElementById('moveFolderPath').textContent = 'Current folder: ' + path;
+
+        const resp = await fetch(`/api/entries?folder=${encodeURIComponent(path)}`);
+        const data = await resp.json();
+
+        const list = document.getElementById('moveFolderList');
+        list.innerHTML = '';
+
+        if (path !== '/') {
+            const upPath = path.split('/').slice(0, -1).join('/') || '/';
+            const li = document.createElement('li');
+            li.className = 'list-group-item';
+            li.textContent = '..';
+            li.dataset.path = upPath;
+            li.addEventListener('click', () => loadMoveFolder(li.dataset.path));
+            list.appendChild(li);
+        }
+
+        data.entries
+            .filter(e => e.type === 'folder')
+            .forEach(folder => {
+                const li = document.createElement('li');
+                li.className = 'list-group-item';
+                li.textContent = folder.name;
+                li.dataset.path = folder.full_path;
+                li.addEventListener('click', () => loadMoveFolder(folder.full_path));
+                list.appendChild(li);
+            });
+    }
+
+    document.getElementById('confirmMoveBtn').addEventListener('click', async function () {
+        if (!moveFileId) return;
+        await fetch('/update_file_metadata', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file_id: moveFileId, folder_path: moveModalCurrentPath})
+        });
+        $('#moveModal').modal('hide');
+        location.reload();
+    });
+
+    document.getElementById('createFolderInMove').addEventListener('click', async function () {
+        const nameInput = document.getElementById('newFolderName');
+        const folderName = nameInput.value.trim();
+        if (!folderName) return;
+        await fetch('/create_folder', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({folder_name: folderName, parent_path: moveModalCurrentPath})
+        });
+        nameInput.value = '';
+        await loadMoveFolder(moveModalCurrentPath);
     });
 
     // Helper function to show status messages

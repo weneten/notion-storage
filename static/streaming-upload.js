@@ -961,19 +961,80 @@ function setupFileActionEventHandlers() {
 
     // Add event handlers for move buttons
     document.querySelectorAll('.move-btn').forEach(btn => {
-        btn.addEventListener('click', async function () {
+        btn.addEventListener('click', function () {
             const fileId = this.dataset.fileId;
-            const newFolder = prompt('Move to folder:', window.currentFolder || '/');
-            if (newFolder === null) return;
-            await fetch('/update_file_metadata', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: fileId, folder_path: newFolder })
-            });
-            location.reload();
+            openMoveModal(fileId);
         });
     });
 }
+
+// ==============================
+// Move File Modal Functionality
+// ==============================
+let moveModalCurrentPath = '/';
+let moveFileId = null;
+
+async function openMoveModal(fileId) {
+    moveFileId = fileId;
+    await loadMoveFolder(window.currentFolder || '/');
+    $('#moveModal').modal('show');
+}
+
+async function loadMoveFolder(path) {
+    moveModalCurrentPath = path;
+    document.getElementById('moveFolderPath').textContent = 'Current folder: ' + path;
+
+    const resp = await fetch(`/api/entries?folder=${encodeURIComponent(path)}`);
+    const data = await resp.json();
+
+    const list = document.getElementById('moveFolderList');
+    list.innerHTML = '';
+
+    if (path !== '/') {
+        const upPath = path.split('/').slice(0, -1).join('/') || '/';
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = '..';
+        li.dataset.path = upPath;
+        li.addEventListener('click', () => loadMoveFolder(li.dataset.path));
+        list.appendChild(li);
+    }
+
+    data.entries
+        .filter(e => e.type === 'folder')
+        .forEach(folder => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item';
+            li.textContent = folder.name;
+            li.dataset.path = folder.full_path;
+            li.addEventListener('click', () => loadMoveFolder(folder.full_path));
+            list.appendChild(li);
+        });
+}
+
+document.getElementById('confirmMoveBtn').addEventListener('click', async function () {
+    if (!moveFileId) return;
+    await fetch('/update_file_metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: moveFileId, folder_path: moveModalCurrentPath })
+    });
+    $('#moveModal').modal('hide');
+    location.reload();
+});
+
+document.getElementById('createFolderInMove').addEventListener('click', async function () {
+    const nameInput = document.getElementById('newFolderName');
+    const folderName = nameInput.value.trim();
+    if (!folderName) return;
+    await fetch('/create_folder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ folder_name: folderName, parent_path: moveModalCurrentPath })
+    });
+    nameInput.value = '';
+    await loadMoveFolder(moveModalCurrentPath);
+});
 
 // Set up event handlers for folder actions (delete)
 function setupFolderActionEventHandlers() {
