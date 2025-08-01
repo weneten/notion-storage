@@ -637,6 +637,12 @@ async function loadFiles() {
                         <a href="/d/${saltedHash}" class="btn btn-primary btn-sm">
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
+                        <button class="btn btn-secondary btn-sm rename-btn" data-file-id="${fileId}">
+                            <i class="fas fa-edit mr-1"></i>Rename
+                        </button>
+                        <button class="btn btn-info btn-sm move-btn" data-file-id="${fileId}">
+                            <i class="fas fa-folder-open mr-1"></i>Move
+                        </button>
                         <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}">
                             <i class="fas fa-trash-alt mr-1"></i>Delete
                         </button>
@@ -914,6 +920,36 @@ function setupFileActionEventHandlers() {
                 this.checked = !isPublic; // Revert toggle on error
                 showStatus('Error updating public status: ' + error.message, 'error');
             }
+        });
+    });
+
+    // Add event handlers for rename buttons
+    document.querySelectorAll('.rename-btn').forEach(btn => {
+        btn.addEventListener('click', async function () {
+            const fileId = this.dataset.fileId;
+            const newName = prompt('New filename:');
+            if (!newName) return;
+            await fetch('/update_file_metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: fileId, filename: newName })
+            });
+            location.reload();
+        });
+    });
+
+    // Add event handlers for move buttons
+    document.querySelectorAll('.move-btn').forEach(btn => {
+        btn.addEventListener('click', async function () {
+            const fileId = this.dataset.fileId;
+            const newFolder = prompt('Move to folder:', window.currentFolder || '/');
+            if (newFolder === null) return;
+            await fetch('/update_file_metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ file_id: fileId, folder_path: newFolder })
+            });
+            location.reload();
         });
     });
 }
