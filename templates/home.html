@@ -67,6 +67,9 @@
                             <a href="{{ url_for('home', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
                                 <i class="fas fa-folder-open mr-1"></i>Open
                             </a>
+                            <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="{{ entry.id }}" data-folder-path="{{ entry.full_path }}">
+                                <i class="fas fa-trash-alt mr-1"></i>Delete
+                            </button>
                         </td>
                     </tr>
                     {% else %}
@@ -305,6 +308,37 @@
                 location.reload();
             });
         }
+
+        document.querySelectorAll('.delete-folder-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const folderId = this.dataset.folderId;
+                let resp = await fetch('/delete_folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({folder_id: folderId})
+                });
+                if (!resp.ok) {
+                    alert('Failed to check folder');
+                    return;
+                }
+                const data = await resp.json();
+                if (data.needs_confirm) {
+                    if (!confirm(`Folder is not empty. Delete ${data.count} items as well?`)) {
+                        return;
+                    }
+                    resp = await fetch('/delete_folder', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({folder_id: folderId, delete_contents: true})
+                    });
+                    if (!resp.ok) {
+                        alert('Failed to delete folder');
+                        return;
+                    }
+                }
+                location.reload();
+            });
+        });
     });
 
     // Helper function to show status messages
