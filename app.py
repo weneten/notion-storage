@@ -680,69 +680,67 @@ def stream_by_hash(salted_sha512_hash):
 @app.route('/api/files')
 @login_required
 def get_files_api():
-    """
-    API endpoint to get user's files (for AJAX requests) - WITH DIAGNOSTIC LOGGING
-    """
+    """Return files and folders for the current folder"""
     print("🔍 DIAGNOSTIC: /api/files endpoint called (used by streaming upload)")
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
+        current_folder = request.args.get('folder', '/')
         print(f"🔍 DIAGNOSTIC: User database ID: {user_database_id}")
-        
+        print(f"🔍 DIAGNOSTIC: Current folder: {current_folder}")
+
         if not user_database_id:
             print("🚨 DIAGNOSTIC: User database not found")
             return jsonify({'error': 'User database not found'}), 404
-        
+
         files_response = uploader.get_files_from_user_database(user_database_id)
         files = files_response.get('results', [])
-        
+
         print(f"🔍 DIAGNOSTIC: Raw files from database: {len(files)} files")
-        
-        # Format files for JSON response
-        formatted_files = []
+
+        entries = []
         for i, file_data in enumerate(files):
             file_props = file_data.get('properties', {})
-            
-            # Extract all properties with diagnostic logging
+
             file_id = file_data.get('id')
             name = file_props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown')
             size = file_props.get('filesize', {}).get('number', 0)
             file_hash = file_props.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
             is_public = file_props.get('is_public', {}).get('checkbox', False)
-            is_manifest = file_props.get('is_manifest', {}).get('checkbox', False)
             is_visible = file_props.get('is_visible', {}).get('checkbox', True)
             salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            is_folder = file_props.get('is_folder', {}).get('checkbox', False)
 
-            # Compute salted hash for download link if salt is present
             salted_hash = file_hash
             if salt and file_hash:
                 import hashlib
                 salted_hash = hashlib.sha512((file_hash + salt).encode('utf-8')).hexdigest()
 
-            print(f"🔍 DIAGNOSTIC: File {i+1} - {name}:")
-            print(f"  - ID: {file_id} (needed for delete button)")
-            print(f"  - Hash: {file_hash} (needed for toggle)")
-            print(f"  - Salt: {salt}")
-            print(f"  - Salted Hash: {salted_hash}")
-            print(f"  - Is Public: {is_public} (needed for toggle state)")
-            print(f"  - Size: {size}")
-            print(f"  - Has all button data: {bool(file_id and file_hash is not None and is_public is not None)}")
-            
-            if is_visible:
-                formatted_file = {
+            if not is_visible or folder_path != current_folder:
+                continue
+
+            if is_folder:
+                full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
+                entries.append({
+                    'type': 'folder',
+                    'name': name,
                     'id': file_id,
+                    'full_path': full_path
+                })
+            else:
+                entries.append({
+                    'type': 'file',
                     'name': name,
                     'size': size,
+                    'id': file_id,
                     'file_hash': file_hash,
                     'salted_hash': salted_hash,
-                    'is_public': is_public
-                }
-                formatted_files.append(formatted_file)
-        
-        print(f"🔍 DIAGNOSTIC: Returning {len(formatted_files)} formatted files to frontend")
-        if formatted_files:
-            print(f"🔍 DIAGNOSTIC: First file in response: {formatted_files[0]}")
-        
-        return jsonify({'files': formatted_files})
+                    'is_public': is_public,
+                    'folder': folder_path
+                })
+
+        print(f"🔍 DIAGNOSTIC: Returning {len(entries)} entries to frontend")
+        return jsonify({'entries': entries})
         
     except Exception as e:
         print(f"🚨 DIAGNOSTIC: Error in /api/files: {e}")
@@ -903,6 +901,18 @@ def create_folder():
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
             return jsonify({'error': 'User database not found'}), 404
+
+        # Ensure required properties exist in the user's database
+        uploader.ensure_database_property(
+            user_database_id,
+            'is_folder',
+            'checkbox'
+        )
+        uploader.ensure_database_property(
+            user_database_id,
+            'folder_path',
+            'rich_text'
+        )
 
         uploader.create_folder(user_database_id, folder_name, parent_path)
         return jsonify({'status': 'success'})

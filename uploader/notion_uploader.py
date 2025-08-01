@@ -1970,6 +1970,9 @@ class NotionFileUploader:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
+        # Ensure the is_folder property exists for this database
+        self.ensure_database_property(database_id, "is_folder", "checkbox")
+
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
         print(f"🔍 ADD_FILE_TO_DB: Parameter types - file_upload_id: {type(file_upload_id)}, database_id: {type(database_id)}")
@@ -2055,6 +2058,9 @@ class NotionFileUploader:
                         }
                     }
                 ]
+            },
+            "is_folder": {
+                "checkbox": False
             }
         }
         # Add is_manifest property if this is a manifest entry
