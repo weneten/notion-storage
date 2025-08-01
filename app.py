@@ -945,14 +945,38 @@ def delete_folder():
 
         all_entries = uploader.get_files_from_user_database(user_database_id)
         to_delete = []
+
+        file_count_root = 0
+        file_count_subfolders = 0
+        subfolder_ids = set()
+
+        prefix = folder_path.rstrip('/') + '/'
         for entry in all_entries.get('results', []):
             e_props = entry.get('properties', {})
             path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-            if path == folder_path or path.startswith(folder_path.rstrip('/') + '/'):
+            is_folder = e_props.get('is_folder', {}).get('checkbox', False)
+            is_visible = e_props.get('is_visible', {}).get('checkbox', True)
+            if path == folder_path or path.startswith(prefix):
                 to_delete.append(entry)
 
+                if path == folder_path:
+                    if is_folder:
+                        subfolder_ids.add(entry.get('id'))
+                    elif is_visible:
+                        file_count_root += 1
+                else:
+                    if is_folder and '/' not in path[len(prefix):]:
+                        subfolder_ids.add(entry.get('id'))
+                    if not is_folder and is_visible:
+                        file_count_subfolders += 1
+
         if to_delete and not delete_contents:
-            return jsonify({'needs_confirm': True, 'count': len(to_delete)})
+            return jsonify({
+                'needs_confirm': True,
+                'file_count': file_count_root + file_count_subfolders,
+                'folder_count': len(subfolder_ids),
+                'subfolder_file_count': file_count_subfolders
+            })
 
         # sort deepest first
         to_delete.sort(key=lambda e: e.get('properties', {}).get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/').count('/'), reverse=True)
