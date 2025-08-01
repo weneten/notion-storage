@@ -152,8 +152,7 @@ def home():
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
         current_folder = request.args.get('folder', '/')
-        files = []
-        folders = set()
+        entries = []
         if user_database_id:
             # Ensure 'is_public' and 'salt' properties exist in the user's database
 
@@ -170,23 +169,33 @@ def home():
                     # Only use file_data for file storage
                     file_data_files = properties.get('file_data', {}).get('files', [])
                     folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                    folders.add(folder_path)
+                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
                     is_visible = properties.get('is_visible', {}).get('checkbox', True)
                     if name and is_visible and folder_path == current_folder:
-                        files.append({
-                            "name": name,
-                            "size": size,
-                            "id": file_id,
-                            "is_public": is_public,
-                            "file_hash": file_hash,
-                            "salted_hash": "",
-                            "file_data": file_data_files,
-                            "folder": folder_path
-                        })
+                        if is_folder:
+                            full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
+                            entries.append({
+                                "type": "folder",
+                                "name": name,
+                                "id": file_id,
+                                "full_path": full_path
+                            })
+                        else:
+                            entries.append({
+                                "type": "file",
+                                "name": name,
+                                "size": size,
+                                "id": file_id,
+                                "is_public": is_public,
+                                "file_hash": file_hash,
+                                "salted_hash": "",
+                                "file_data": file_data_files,
+                                "folder": folder_path
+                            })
                 except Exception as e:
                     print(f"Error processing file data in home route: {e}")
                     continue
-        return render_template('home.html', files=files, folders=sorted(folders), current_folder=current_folder)
+        return render_template('home.html', entries=entries, current_folder=current_folder)
     except Exception as e:
         return f"Error loading home page: {str(e)}", 500
 
@@ -875,6 +884,27 @@ def update_file_metadata():
             return jsonify({'error': 'file_id required'}), 400
 
         uploader.update_file_metadata(file_id, filename=new_name, folder_path=new_folder)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/create_folder', methods=['POST'])
+@login_required
+def create_folder():
+    try:
+        data = request.get_json()
+        folder_name = data.get('folder_name')
+        parent_path = data.get('parent_path', '/')
+
+        if not folder_name:
+            return jsonify({'error': 'folder_name required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        uploader.create_folder(user_database_id, folder_name, parent_path)
         return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

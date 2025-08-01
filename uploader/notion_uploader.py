@@ -1846,6 +1846,9 @@ class NotionFileUploader:
                 "is_visible": {
                     "checkbox": {}
                 },
+                "is_folder": {
+                    "checkbox": {}
+                },
                 "folder_path": {
                     "rich_text": {}
                 },
@@ -2227,6 +2230,33 @@ class NotionFileUploader:
         response = requests.patch(url, json=payload, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Failed to update file metadata: {response.text}")
+        return response.json()
+
+    def create_folder(self, database_id: str, folder_name: str, parent_path: str = "/") -> Dict[str, Any]:
+        """Create a folder entry in the user's database."""
+        url = f"{self.base_url}/pages"
+
+        properties = {
+            "filename": {
+                "title": [
+                    {"text": {"content": folder_name}}
+                ]
+            },
+            "filesize": {"number": 0},
+            "filehash": {"rich_text": [{"text": {"content": ""}}]},
+            "file_data": {"files": []},
+            "is_public": {"checkbox": False},
+            "salt": {"rich_text": [{"text": {"content": ""}}]},
+            "folder_path": {"rich_text": [{"text": {"content": parent_path}}]},
+            "is_folder": {"checkbox": True}
+        }
+
+        payload = {"parent": {"database_id": database_id}, "properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to create folder: {response.text}")
         return response.json()
 
     def stream_file_from_notion(self, page_id: str, original_filename: str) -> Iterable[bytes]:
