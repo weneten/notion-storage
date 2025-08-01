@@ -536,7 +536,8 @@ async function loadFiles() {
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
         console.log('🔍 DIAGNOSTIC: Fetching file list from /api/files...');
 
-        const response = await fetch('/api/files');
+        const folderParam = encodeURIComponent(window.currentFolder || '/');
+        const response = await fetch(`/api/files?folder=${folderParam}`);
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }

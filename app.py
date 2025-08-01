@@ -693,6 +693,7 @@ def get_files_api():
             print("🚨 DIAGNOSTIC: User database not found")
             return jsonify({'error': 'User database not found'}), 404
         
+        current_folder = request.args.get('folder', '/')
         files_response = uploader.get_files_from_user_database(user_database_id)
         files = files_response.get('results', [])
         
@@ -711,6 +712,8 @@ def get_files_api():
             is_public = file_props.get('is_public', {}).get('checkbox', False)
             is_manifest = file_props.get('is_manifest', {}).get('checkbox', False)
             is_visible = file_props.get('is_visible', {}).get('checkbox', True)
+            is_folder = file_props.get('is_folder', {}).get('checkbox', False)
+            folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
 
             # Compute salted hash for download link if salt is present
@@ -728,7 +731,7 @@ def get_files_api():
             print(f"  - Size: {size}")
             print(f"  - Has all button data: {bool(file_id and file_hash is not None and is_public is not None)}")
             
-            if is_visible:
+            if is_visible and not is_folder and folder_path == current_folder:
                 formatted_file = {
                     'id': file_id,
                     'name': name,
@@ -764,6 +767,7 @@ def list_files_api():
         if not user_database_id:
             return jsonify({"error": "No user database ID found"}), 404
             
+        current_folder = request.args.get('folder', '/')
         # Query files from Notion database using uploader's method
         files_data = uploader.get_files_from_user_database(user_database_id)
         
@@ -777,8 +781,10 @@ def list_files_api():
                 file_id = file_data.get('id')  # Extract the Notion page ID
                 is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
                 file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
-                
-                if name:  # Only include files with names
+                is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+
+                if name and not is_folder and folder_path == current_folder:
                     files.append({
                         "name": name,
                         "size": size,
