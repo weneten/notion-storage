@@ -2254,7 +2254,8 @@ class NotionFileUploader:
             "is_public": {"checkbox": False},
             "salt": {"rich_text": [{"text": {"content": ""}}]},
             "folder_path": {"rich_text": [{"text": {"content": parent_path}}]},
-            "is_folder": {"checkbox": True}
+            "is_folder": {"checkbox": True},
+            "is_visible": {"checkbox": True}
         }
 
         payload = {"parent": {"database_id": database_id}, "properties": properties}

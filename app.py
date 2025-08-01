@@ -227,7 +227,8 @@ def login():
             # Check password
             if user.check_password(password):
                 login_user(user)
-                return redirect(url_for('home'))
+                # Explicitly set folder=/ so the URL shows the root folder
+                return redirect(url_for('home', folder='/'))
             else:
                 return "Ungültige Anmeldedaten", 401
 
