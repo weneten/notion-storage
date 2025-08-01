@@ -904,6 +904,13 @@ def create_folder():
         if not user_database_id:
             return jsonify({'error': 'User database not found'}), 404
 
+        # Ensure the 'is_folder' property exists in the user's database
+        uploader.ensure_database_property(
+            user_database_id,
+            'is_folder',
+            'checkbox'
+        )
+
         uploader.create_folder(user_database_id, folder_name, parent_path)
         return jsonify({'status': 'success'})
     except Exception as e:
