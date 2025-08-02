@@ -152,12 +152,19 @@ class NotionFileUploader:
             print(f"[delete_file_from_index] Could not retrieve salted_sha512_hash for file_page_id: {file_page_id}. Skipping Global File Index deletion.")
             return None
         return self.delete_file_from_global_index(salted_sha512_hash)
-    def stream_multi_part_file(self, manifest_page_id: str) -> Iterable[bytes]:
+    def stream_multi_part_file(self, manifest_page_id: str, start: int = 0, end: Optional[int] = None) -> Iterable[bytes]:
         """
         Streams a multi-part file described by a manifest JSON stored in Notion.
-        The manifest must have a 'parts' array, each with a 'file_hash', 'filename', and 'size'.
-        For each part, fetches the Notion page ID from the global index, then fetches a fresh S3 download URL, and streams the bytes.
-        Yields all bytes in order as a single stream.
+        Supports optional byte range streaming so clients can request only
+        specific portions of the file.
+
+        Args:
+            manifest_page_id: The Notion page ID containing the manifest JSON.
+            start: Starting byte position (inclusive).
+            end: Ending byte position (inclusive). If None, stream until the end.
+
+        Yields:
+            File bytes in the requested range.
         """
         import json
         # 1. Fetch the manifest JSON from Notion (as a file attachment)
@@ -180,22 +187,50 @@ class NotionFileUploader:
         parts = manifest.get('parts', [])
         if not parts:
             raise Exception(f"Manifest JSON does not contain 'parts' array")
-        # 2. For each part, stream the file in order
+
+        total_size = sum(part.get('size', 0) for part in parts)
+        if end is None or end >= total_size:
+            end = total_size - 1
+        if start < 0 or start > end:
+            raise Exception("Invalid byte range requested")
+
+        current_pos = 0
         for part in sorted(parts, key=lambda p: p.get('part_number', 0)):
+            part_size = part.get('size', 0)
+            part_end_pos = current_pos + part_size - 1
+            if part_end_pos < start:
+                current_pos += part_size
+                continue
+
             file_hash = part.get('file_hash')
             part_filename = part.get('filename')
             if not file_hash:
                 raise Exception(f"Part missing file_hash: {part}")
-            # Look up the part in the global index to get the Notion page ID
+
             index_entry = self.get_file_by_salted_sha512_hash(file_hash)
             if not index_entry:
                 raise Exception(f"File part with hash {file_hash} not found in global index")
             part_page_id = index_entry.get('properties', {}).get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
             if not part_page_id:
                 raise Exception(f"No File Page ID for part hash {file_hash}")
-            # Stream the part using the normal streaming method
-            for chunk in self.stream_file_from_notion(part_page_id, part_filename):
-                yield chunk
+
+            part_start = 0
+            part_end = part_size - 1
+            if start > current_pos:
+                part_start = start - current_pos
+            if end < part_end_pos:
+                part_end = end - current_pos
+
+            if part_start > 0 or part_end < part_size - 1:
+                for chunk in self.stream_file_from_notion_range(part_page_id, part_filename, part_start, part_end):
+                    yield chunk
+            else:
+                for chunk in self.stream_file_from_notion(part_page_id, part_filename):
+                    yield chunk
+
+            current_pos += part_size
+            if current_pos > end:
+                break
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
