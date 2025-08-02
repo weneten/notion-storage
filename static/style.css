@@ -951,10 +951,14 @@ input:checked + .slider:before {
     }
     /* Ensure overlays never block upload controls in portrait mode */
     @media (orientation: portrait) {
-        .modal-overlay {
+        /* Only hide inactive overlays so media viewer works properly */
+        .modal-overlay:not(.show) {
             z-index: 1 !important;
             pointer-events: none !important;
             opacity: 0 !important;
+        }
+        .modal-overlay.show {
+            z-index: 10002 !important;
         }
         .alert {
             z-index: 1 !important;
@@ -1158,6 +1162,7 @@ input:checked + .slider:before {
 .modal-view-link {
     cursor: pointer;
     transition: transform 0.2s ease, box-shadow 0.2s ease;
+    position: relative;
 }
 
 .modal-view-btn:hover,
@@ -1181,6 +1186,7 @@ tr[data-file-hash] .view-button-container .modal-view-link::before {
     z-index: -1;
     opacity: 0;
     transition: opacity 0.3s ease;
+    pointer-events: none;
 }
 
 tr[data-file-hash] .view-button-container .modal-view-btn:hover::before,
