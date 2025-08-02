@@ -495,16 +495,64 @@ def stream_by_hash(salted_sha512_hash):
             if file_user_db_id != current_user_db_id:
                 return "Access Denied: You do not have permission to view this file.", 403
 
+        # Check if this entry is actually a manifest JSON describing a multi-part file
+        is_manifest = original_filename.lower().endswith('.json')
+        if is_manifest:
+            try:
+                import requests, json, mimetypes
+
+                # Fetch manifest metadata and download the JSON
+                manifest_page = uploader.get_user_by_id(file_page_id)
+                file_property = manifest_page.get('properties', {}).get('file_data', {})
+                files_array = file_property.get('files', [])
+                manifest_file = files_array[0] if files_array else None
+
+                manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
+                manifest_metadata = uploader.get_file_download_metadata(file_page_id, manifest_filename)
+                manifest_url = manifest_metadata.get('url', '')
+                if not manifest_url:
+                    return "Manifest file not found", 404
+
+                resp = requests.get(manifest_url)
+                resp.raise_for_status()
+                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+
+                orig_name = manifest.get('original_filename', 'file')
+                total_size = manifest.get('total_size', 0)
+                mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
+
+                response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                if total_size > 0:
+                    response.headers['Content-Length'] = str(total_size)
+
+                # Add standard streaming headers
+                response.headers['Accept-Ranges'] = 'bytes'
+                response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
+                response.headers['X-Content-Type-Options'] = 'nosniff'
+                response.headers['Vary'] = 'Range, Accept-Encoding'
+
+                if mimetype.startswith('video/'):
+                    response.headers['Connection'] = 'keep-alive'
+                    response.headers['Content-Transfer-Encoding'] = 'binary'
+
+                return response
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
+                return "An error occurred during streaming.", 500
+
         # Get comprehensive file metadata including URL, size, and content type
         file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
-        
+
         if not file_metadata['url']:
             return "Stream link not available for this file", 500
-            
+
         file_size = file_metadata['file_size']
         notion_download_link = file_metadata['url']
         detected_content_type = file_metadata['content_type']
-            
+
         print(f"📊 Streaming file: {original_filename}, size: {file_size} bytes, type: {detected_content_type}")
 
         # Enhanced MIME type detection for media files
