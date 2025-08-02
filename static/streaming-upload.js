@@ -652,15 +652,16 @@ async function loadFiles() {
                         <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
-                        <button class="btn btn-secondary btn-sm rename-btn" data-file-id="${fileId}">
-                            <i class="fas fa-edit mr-1"></i>Rename
-                        </button>
-                        <button class="btn btn-info btn-sm move-btn" data-file-id="${fileId}">
-                            <i class="fas fa-folder-open mr-1"></i>Move
-                        </button>
-                        <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}">
-                            <i class="fas fa-trash-alt mr-1"></i>Delete
-                        </button>
+                        <div class="btn-group">
+                            <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                                <i class="fas fa-bars"></i>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-right">
+                                <button type="button" class="dropdown-item rename-btn" data-file-id="${fileId}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                                <button type="button" class="dropdown-item move-btn" data-file-id="${fileId}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                                <button type="button" class="dropdown-item delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                            </div>
+                        </div>
                     </td>
                 </tr>`;
             }
