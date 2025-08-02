@@ -1399,15 +1399,26 @@ class NotionFileUploader:
             print(f"Error updating file public status: {e}")
             raise
 
-    def stream_file_from_notion(self, notion_download_url: str) -> Iterable[bytes]:
-        """
-        Streams file content from a Notion signed download URL.
+    def stream_file_from_notion(self, notion_download_url: str, timeout: int = 60) -> Iterable[bytes]:
+        """Stream file content from a Notion signed download URL.
+
+        The timeout has been increased to give clients roughly twice as long to
+        retrieve the media before signalling failure, helping avoid premature
+        "Failed to load media content" errors.
+
+        Args:
+            notion_download_url: The pre-signed URL provided by Notion.
+            timeout: Total seconds to wait for the download stream before failing.
         """
         try:
-            with requests.get(notion_download_url, stream=True) as r:
-                r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-                for chunk in r.iter_content(chunk_size=8192): # 8KB chunks
+            # Increase timeout to give clients more time before the stream fails.
+            with requests.get(notion_download_url, stream=True, timeout=timeout) as r:
+                r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+                for chunk in r.iter_content(chunk_size=8192):  # 8KB chunks
                     yield chunk
+        except requests.exceptions.Timeout:
+            print(f"Timeout streaming file from Notion after {timeout} seconds")
+            raise Exception(f"Failed to stream file from Notion: timed out after {timeout} seconds")
         except requests.exceptions.RequestException as e:
             print(f"Error streaming file from Notion: {e}")
             raise Exception(f"Failed to stream file from Notion: {e}")
