@@ -951,7 +951,8 @@ input:checked + .slider:before {
     }
     /* Ensure overlays never block upload controls in portrait mode */
     @media (orientation: portrait) {
-        .modal-overlay {
+        /* Only hide inactive overlays so media viewer works properly */
+        .modal-overlay:not(.show) {
             z-index: 1 !important;
             pointer-events: none !important;
             opacity: 0 !important;
