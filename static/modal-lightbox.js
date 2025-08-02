@@ -846,9 +846,19 @@ function setupModalViewButtons() {
 
     const handleInteraction = (e) => {
         console.log('=== DEBUG: Click event triggered on:', e.target);
-        const viewButton = e.target.closest('.modal-view-btn') ||
-                           e.target.closest('a[href^="/v/"].btn-success') ||
-                           e.target.closest('.modal-view-link');
+
+        // Ensure we have an element to work with. Some browsers may fire
+        // events with a non-Element target (e.g. text nodes), which would
+        // cause errors when calling .closest().
+        let target = e.target;
+        if (!(target instanceof Element)) {
+            target = target.parentElement;
+        }
+        if (!target) {
+            return;
+        }
+
+        const viewButton = target.closest('.modal-view-btn, a[href^="/v/"].btn-success, .modal-view-link');
 
         if (!viewButton || !viewButton.href || !viewButton.href.includes('/v/')) {
             return;
