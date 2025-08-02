@@ -591,6 +591,7 @@ async function loadFiles() {
                         <tr>
                             <th><i class="fas fa-file mr-1"></i> Filename</th>
                             <th><i class="fas fa-weight mr-1"></i> Size</th>
+                            <th>Folder</th>
                             <th><i class="fas fa-link mr-1"></i> Public Link</th>
                             <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                             <th><i class="fas fa-cogs mr-1"></i> Actions</th>
