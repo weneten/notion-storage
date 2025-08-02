@@ -841,50 +841,43 @@ function setupModalViewButtons() {
         return; // Prevent duplicate listeners
     }
     window.modalListenersAttached = true;
-    
-    // Replace existing view button functionality with modal opening
-    document.addEventListener('click', (e) => {
+
+    let touchHandled = false;
+
+    const handleInteraction = (e) => {
         console.log('=== DEBUG: Click event triggered on:', e.target);
-        // Handle view buttons with modal-view-btn class or href pattern
-        const viewButton = e.target.closest('.modal-view-btn, a[href^="/v/"].btn-success, .modal-view-link');
-        if (viewButton && viewButton.href && viewButton.href.includes('/v/')) {
-            e.preventDefault();
-            
-            // Extract file information
-            const filename = getFilenameFromButton(viewButton);
-            const filesize = getFilesizeFromButton(viewButton);
-            const filetype = getFiletypeFromButton(viewButton);
-            const mediaUrl = viewButton.href;
-            
-            // Get media list for navigation
-            const mediaList = getMediaListFromPage();
-            const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
-            
-            // Open modal
-            if (mediaModal) {
-                mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
-            }
+        const viewButton = e.target.closest('.modal-view-btn') ||
+                           e.target.closest('a[href^="/v/"].btn-success') ||
+                           e.target.closest('.modal-view-link');
+
+        if (!viewButton || !viewButton.href || !viewButton.href.includes('/v/')) {
+            return;
         }
-        
-        // Handle any remaining view buttons that don't have modal classes
-        const legacyViewButton = e.target.closest('a[href^="/v/"].btn-success');
-        if (legacyViewButton && legacyViewButton.href && viewButton !== legacyViewButton) {
-            e.preventDefault();
-            
-            const filename = getFilenameFromButton(legacyViewButton);
-            const filesize = getFilesizeFromButton(legacyViewButton);
-            const filetype = getFiletypeFromButton(legacyViewButton);
-            const mediaUrl = legacyViewButton.href;
-            
-            // Get media list for navigation
-            const mediaList = getMediaListFromPage();
-            const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
-            
-            if (mediaModal) {
-                mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
-            }
+
+        if (e.type === 'touchend') {
+            touchHandled = true;
+        } else if (e.type === 'click' && touchHandled) {
+            touchHandled = false;
+            return;
         }
-    });
+
+        e.preventDefault();
+
+        const filename = getFilenameFromButton(viewButton);
+        const filesize = getFilesizeFromButton(viewButton);
+        const filetype = getFiletypeFromButton(viewButton);
+        const mediaUrl = viewButton.href;
+
+        const mediaList = getMediaListFromPage();
+        const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
+
+        if (mediaModal) {
+            mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
+        }
+    };
+
+    document.addEventListener('click', handleInteraction);
+    document.addEventListener('touchend', handleInteraction);
 }
 
 /**
