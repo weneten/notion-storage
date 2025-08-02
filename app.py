@@ -423,10 +423,47 @@ def download_by_hash(salted_sha512_hash):
                 # Use video mimetype if possible, fallback to octet-stream
                 import mimetypes
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
-                response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+
+                range_header = request.headers.get('Range')
+                if range_header and total_size > 0:
+                    range_value = range_header.strip().lower()
+                    if '=' not in range_value:
+                        return "Invalid range", 416
+                    units, range_spec = range_value.split('=', 1)
+                    if units != 'bytes':
+                        return "Invalid range unit", 416
+                    range_start, range_end = range_spec.split('-', 1)
+                    if range_start and range_end:
+                        start = int(range_start)
+                        end = int(range_end)
+                    elif range_start and not range_end:
+                        start = int(range_start)
+                        end = total_size - 1
+                    elif not range_start and range_end:
+                        suffix_length = int(range_end)
+                        start = max(0, total_size - suffix_length)
+                        end = total_size - 1
+                    else:
+                        return "Invalid range format", 416
+                    if start < 0 or end >= total_size or start > end:
+                        response = Response(status=416)
+                        response.headers['Content-Range'] = f'bytes */{total_size}'
+                        return response
+
+                    def stream_range():
+                        for chunk in uploader.stream_multi_part_file(file_page_id, start, end):
+                            yield chunk
+
+                    response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+                    response.headers['Content-Length'] = str(end - start + 1)
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+                else:
+                    response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+
                 response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
-                if total_size > 0:
-                    response.headers['Content-Length'] = str(total_size)
+                response.headers['Accept-Ranges'] = 'bytes'
                 return response
             except Exception as e:
                 import traceback
@@ -521,12 +558,45 @@ def stream_by_hash(salted_sha512_hash):
                 total_size = manifest.get('total_size', 0)
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
 
-                response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
-                response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
-                if total_size > 0:
-                    response.headers['Content-Length'] = str(total_size)
+                range_header = request.headers.get('Range')
+                if range_header and total_size > 0:
+                    range_value = range_header.strip().lower()
+                    if '=' not in range_value:
+                        return "Invalid range", 416
+                    units, range_spec = range_value.split('=', 1)
+                    if units != 'bytes':
+                        return "Invalid range unit", 416
+                    range_start, range_end = range_spec.split('-', 1)
+                    if range_start and range_end:
+                        start = int(range_start)
+                        end = int(range_end)
+                    elif range_start and not range_end:
+                        start = int(range_start)
+                        end = total_size - 1
+                    elif not range_start and range_end:
+                        suffix_length = int(range_end)
+                        start = max(0, total_size - suffix_length)
+                        end = total_size - 1
+                    else:
+                        return "Invalid range format", 416
+                    if start < 0 or end >= total_size or start > end:
+                        response = Response(status=416)
+                        response.headers['Content-Range'] = f'bytes */{total_size}'
+                        return response
 
-                # Add standard streaming headers
+                    def stream_range():
+                        for chunk in uploader.stream_multi_part_file(file_page_id, start, end):
+                            yield chunk
+
+                    response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+                    response.headers['Content-Length'] = str(end - start + 1)
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+                else:
+                    response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+
+                response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
                 response.headers['Accept-Ranges'] = 'bytes'
                 response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
                 response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -1651,10 +1721,47 @@ def download_multipart_by_page_id(manifest_page_id):
         total_size = manifest.get('total_size', 0)
         import mimetypes
         mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
-        response = Response(stream_with_context(uploader.stream_multi_part_file(manifest_page_id)), mimetype=mimetype)
+
+        range_header = request.headers.get('Range')
+        if range_header and total_size > 0:
+            range_value = range_header.strip().lower()
+            if '=' not in range_value:
+                return "Invalid range", 416
+            units, range_spec = range_value.split('=', 1)
+            if units != 'bytes':
+                return "Invalid range unit", 416
+            range_start, range_end = range_spec.split('-', 1)
+            if range_start and range_end:
+                start = int(range_start)
+                end = int(range_end)
+            elif range_start and not range_end:
+                start = int(range_start)
+                end = total_size - 1
+            elif not range_start and range_end:
+                suffix_length = int(range_end)
+                start = max(0, total_size - suffix_length)
+                end = total_size - 1
+            else:
+                return "Invalid range format", 416
+            if start < 0 or end >= total_size or start > end:
+                response = Response(status=416)
+                response.headers['Content-Range'] = f'bytes */{total_size}'
+                return response
+
+            def stream_range():
+                for chunk in uploader.stream_multi_part_file(manifest_page_id, start, end):
+                    yield chunk
+
+            response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+            response.headers['Content-Length'] = str(end - start + 1)
+            response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+        else:
+            response = Response(stream_with_context(uploader.stream_multi_part_file(manifest_page_id)), mimetype=mimetype)
+            if total_size > 0:
+                response.headers['Content-Length'] = str(total_size)
+
         response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
-        if total_size > 0:
-            response.headers['Content-Length'] = str(total_size)
+        response.headers['Accept-Ranges'] = 'bytes'
         return response
     except Exception as e:
         import traceback
