@@ -424,6 +424,14 @@ def download_by_hash(salted_sha512_hash):
                 import mimetypes
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
 
+                if request.method == 'HEAD':
+                    # Return headers without streaming the file
+                    response = Response(status=200, mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+                    response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                    return add_stream_headers(response, mimetype)
+
                 range_header = request.headers.get('Range')
                 if range_header and total_size > 0:
                     range_value = range_header.strip().lower()
@@ -497,10 +505,16 @@ def download_by_hash(salted_sha512_hash):
         return "An error occurred during download.", 500
 
 
-@app.route('/v/<salted_sha512_hash>')
+@app.route('/v/<salted_sha512_hash>', methods=['GET', 'HEAD'])
 def stream_by_hash(salted_sha512_hash):
-    """
-    Stream file by hash with HTTP Range Request support for inline media viewing
+    """Stream file by hash with HTTP Range Request support for inline media viewing
+
+    iOS Safari issues a ``HEAD`` request before attempting to play media.  The
+    original implementation relied on Flask's automatic ``HEAD`` handling which
+    executed the full GET logic.  This meant we attempted to stream the entire
+    file even though Safari only needed the headers, causing the browser to fail
+    with "Failed to load media".  We now explicitly handle ``HEAD`` requests and
+    return only the appropriate headers without streaming any data.
     """
     try:
         def add_stream_headers(resp, mimetype=''):
@@ -571,6 +585,13 @@ def stream_by_hash(salted_sha512_hash):
                 total_size = manifest.get('total_size', 0)
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
 
+                if request.method == 'HEAD':
+                    response = Response(status=200, mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+                    response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                    return add_stream_headers(response, mimetype)
+
                 range_header = request.headers.get('Range')
                 if range_header and total_size > 0:
                     range_value = range_header.strip().lower()
@@ -633,7 +654,6 @@ def stream_by_hash(salted_sha512_hash):
             return "Stream link not available for this file", 500
 
         file_size = file_metadata['file_size']
-        notion_download_link = file_metadata['url']
         detected_content_type = file_metadata['content_type']
 
         print(f"📊 Streaming file: {original_filename}, size: {file_size} bytes, type: {detected_content_type}")
@@ -697,6 +717,14 @@ def stream_by_hash(salted_sha512_hash):
         if mimetype == 'application/octet-stream':
             mimetype = get_enhanced_mimetype(original_filename)
 
+        if request.method == 'HEAD':
+            # Respond with headers only, no body
+            response = Response(status=200, mimetype=mimetype)
+            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+            if file_size > 0:
+                response.headers['Content-Length'] = str(file_size)
+            return add_stream_headers(response, mimetype)
+
         # Parse Range header for partial content requests
         range_header = request.headers.get('Range', '').strip()
         
@@ -743,7 +771,7 @@ def stream_by_hash(salted_sha512_hash):
                 
                 # Stream the requested range
                 def stream_range():
-                    for chunk in uploader.stream_file_from_notion_range(notion_download_link, start, end):
+                    for chunk in uploader.stream_file_from_notion_range(file_page_id, original_filename, start, end):
                         yield chunk
                 
                 # Create partial content response
