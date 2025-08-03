@@ -654,7 +654,6 @@ def stream_by_hash(salted_sha512_hash):
             return "Stream link not available for this file", 500
 
         file_size = file_metadata['file_size']
-        notion_download_link = file_metadata['url']
         detected_content_type = file_metadata['content_type']
 
         print(f"📊 Streaming file: {original_filename}, size: {file_size} bytes, type: {detected_content_type}")
@@ -772,7 +771,7 @@ def stream_by_hash(salted_sha512_hash):
                 
                 # Stream the requested range
                 def stream_range():
-                    for chunk in uploader.stream_file_from_notion_range(notion_download_link, start, end):
+                    for chunk in uploader.stream_file_from_notion_range(file_page_id, original_filename, start, end):
                         yield chunk
                 
                 # Create partial content response
