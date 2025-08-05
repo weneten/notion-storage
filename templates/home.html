@@ -14,6 +14,9 @@
         <button id="createFolderButton" class="btn btn-secondary btn-sm ml-2">
             <i class="fas fa-folder-plus mr-1"></i>Create Folder
         </button>
+        <button id="deleteSelectedButton" class="btn btn-danger btn-sm ml-2" style="display: none;">
+            <i class="fas fa-trash-alt mr-1"></i>Delete Selected
+        </button>
     </div>
     <form id="uploadForm" method="post" enctype="multipart/form-data">
         <div class="form-group">
@@ -43,6 +46,7 @@
             <table class="table">
                 <thead>
                     <tr>
+                        <th></th>
                         <th><i class="fas fa-file mr-1"></i> Filename</th>
                         <th><i class="fas fa-weight mr-1"></i> Size</th>
                         <th>Folder</th>
@@ -55,6 +59,7 @@
                     {% for entry in entries %}
                     {% if entry.type == 'folder' %}
                     <tr class="folder-row" data-folder-path="{{ entry.full_path }}">
+                        <td><input type="checkbox" class="select-item" data-type="folder" data-id="{{ entry.id }}"></td>
                         <td>
                             <i class="fas fa-folder mr-1"></i>
                             <strong>{{ entry.name }}</strong>
@@ -74,6 +79,7 @@
                     </tr>
                     {% else %}
                     <tr data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}">
+                        <td><input type="checkbox" class="select-item" data-type="file" data-id="{{ entry.id }}"></td>
                         <td>
                             <span class="file-type-icon" data-filename="{{ entry.name }}"></span>
                             <strong>{{ entry.name }}</strong>
@@ -307,6 +313,55 @@
                 });
                 location.reload();
             });
+        }
+
+        const deleteSelectedBtn = document.getElementById('deleteSelectedButton');
+
+        function updateDeleteSelectedButton() {
+            const anyChecked = document.querySelectorAll('.select-item:checked').length > 0;
+            deleteSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
+        }
+
+        if (deleteSelectedBtn) {
+            deleteSelectedBtn.addEventListener('click', async function () {
+                const selected = Array.from(document.querySelectorAll('.select-item:checked'));
+                if (selected.length === 0) return;
+                if (!confirm(`Delete ${selected.length} selected item${selected.length !== 1 ? 's' : ''}?`)) return;
+
+                const fileIds = [];
+                const folderIds = [];
+                selected.forEach(cb => {
+                    const id = cb.dataset.id;
+                    if (cb.dataset.type === 'file') fileIds.push(id);
+                    else if (cb.dataset.type === 'folder') folderIds.push(id);
+                });
+
+                try {
+                    const resp = await fetch('/delete_selected', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_ids: fileIds, folder_ids: folderIds })
+                    });
+                    if (!resp.ok) throw new Error('Failed to delete selected items');
+                    const result = await resp.json();
+                    if (result.status === 'success') {
+                        selected.forEach(cb => cb.closest('tr').remove());
+                        showStatus('Selected items deleted', 'success');
+                    } else {
+                        showStatus(result.error || 'Failed to delete selected items', 'error');
+                    }
+                } catch (err) {
+                    console.error('Mass delete error:', err);
+                    showStatus('Error deleting selected items: ' + err.message, 'error');
+                } finally {
+                    updateDeleteSelectedButton();
+                }
+            });
+
+            document.querySelectorAll('.select-item').forEach(cb => {
+                cb.addEventListener('change', updateDeleteSelectedButton);
+            });
+            updateDeleteSelectedButton();
         }
 
         document.querySelectorAll('.delete-folder-btn').forEach(btn => {
