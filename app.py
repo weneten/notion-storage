@@ -1220,6 +1220,58 @@ def delete_folder():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/delete_selected', methods=['POST'])
+@login_required
+def delete_selected():
+    try:
+        data = request.get_json() or {}
+        file_ids = data.get('file_ids', [])
+        folder_ids = data.get('folder_ids', [])
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        for file_id in file_ids:
+            try:
+                streaming_upload_manager.uploader.delete_file_entry(file_id, user_database_id)
+            except Exception as e:
+                print(f"Error deleting file {file_id}: {e}")
+
+        for folder_id in folder_ids:
+            try:
+                folder_entry = uploader.get_user_by_id(folder_id)
+                if not folder_entry:
+                    continue
+                props = folder_entry.get('properties', {})
+                folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                folder_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
+                all_entries = uploader.get_files_from_user_database(user_database_id)
+                to_delete = []
+                prefix = folder_path.rstrip('/') + '/'
+                for entry in all_entries.get('results', []):
+                    e_props = entry.get('properties', {})
+                    path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    if path == folder_path or path.startswith(prefix):
+                        to_delete.append(entry)
+                to_delete.sort(key=lambda e: e.get('properties', {}).get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/').count('/'), reverse=True)
+                for entry in to_delete:
+                    e_id = entry.get('id')
+                    is_folder = entry.get('properties', {}).get('is_folder', {}).get('checkbox', False)
+                    if is_folder:
+                        uploader.delete_file_from_user_database(e_id)
+                    else:
+                        streaming_upload_manager.uploader.delete_file_entry(e_id, user_database_id)
+                uploader.delete_file_from_user_database(folder_id)
+            except Exception as e:
+                print(f"Error deleting folder {folder_id}: {e}")
+
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # END FILE DOWNLOAD ROUTES
 # ============================================================================
