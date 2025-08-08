@@ -101,6 +101,19 @@ def format_bytes(bytes, decimals=2):
 
 app.jinja_env.filters['format_bytes'] = format_bytes
 
+def add_stream_headers(resp, mimetype=''):
+    """Apply common streaming headers for iOS/Safari compatibility."""
+    resp.headers.setdefault('Accept-Ranges', 'bytes')
+    resp.headers.setdefault('Cache-Control', 'public, max-age=3600, must-revalidate')
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('Vary', 'Range, Accept-Encoding')
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
+    if mimetype.startswith('video/'):
+        resp.headers.setdefault('Connection', 'keep-alive')
+        resp.headers.setdefault('Content-Transfer-Encoding', 'binary')
+    return resp
+
 # Initialize Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -517,19 +530,6 @@ def stream_by_hash(salted_sha512_hash):
     return only the appropriate headers without streaming any data.
     """
     try:
-        def add_stream_headers(resp, mimetype=''):
-            """Apply common streaming headers for iOS/Safari compatibility."""
-            resp.headers.setdefault('Accept-Ranges', 'bytes')
-            resp.headers.setdefault('Cache-Control', 'public, max-age=3600, must-revalidate')
-            resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
-            resp.headers.setdefault('Vary', 'Range, Accept-Encoding')
-            resp.headers['Access-Control-Allow-Origin'] = '*'
-            resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
-            if mimetype.startswith('video/'):
-                resp.headers.setdefault('Connection', 'keep-alive')
-                resp.headers.setdefault('Content-Transfer-Encoding', 'binary')
-            return resp
-
         # Find the file in the global file index using the hash
         index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
 
