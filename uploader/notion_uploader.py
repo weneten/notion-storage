@@ -194,6 +194,8 @@ class NotionFileUploader:
         if start < 0 or start > end:
             raise Exception("Invalid byte range requested")
 
+        # Build ordered list of parts with resolved page IDs and byte ranges
+        ordered_parts = []
         current_pos = 0
         for part in sorted(parts, key=lambda p: p.get('part_number', 0)):
             part_size = part.get('size', 0)
@@ -221,16 +223,59 @@ class NotionFileUploader:
             if end < part_end_pos:
                 part_end = end - current_pos
 
-            if part_start > 0 or part_end < part_size - 1:
-                for chunk in self.stream_file_from_notion_range(part_page_id, part_filename, part_start, part_end):
-                    yield chunk
-            else:
-                for chunk in self.stream_file_from_notion(part_page_id, part_filename):
-                    yield chunk
+            ordered_parts.append({
+                'page_id': part_page_id,
+                'filename': part_filename,
+                'size': part_size,
+                'start': part_start,
+                'end': part_end
+            })
 
             current_pos += part_size
             if current_pos > end:
                 break
+
+        if not ordered_parts:
+            return
+
+        # Prefetch download URLs one part ahead to reduce latency
+        def fetch_url(part_info: Dict[str, Any], container: Dict[str, str]):
+            container['url'] = self.get_notion_file_url_from_page_property(part_info['page_id'], part_info['filename'])
+
+        url_container = {}
+        fetch_url(ordered_parts[0], url_container)
+        prefetch_thread = None
+        next_container: Dict[str, str] = {}
+        if len(ordered_parts) > 1:
+            prefetch_thread = threading.Thread(target=fetch_url, args=(ordered_parts[1], next_container))
+            prefetch_thread.start()
+
+        for idx, part_info in enumerate(ordered_parts):
+            if idx == 0:
+                current_url = url_container.get('url')
+            else:
+                if prefetch_thread:
+                    prefetch_thread.join()
+                    current_url = next_container.get('url')
+                else:
+                    current_url = None
+
+                if idx + 1 < len(ordered_parts):
+                    next_container = {}
+                    prefetch_thread = threading.Thread(target=fetch_url, args=(ordered_parts[idx+1], next_container))
+                    prefetch_thread.start()
+                else:
+                    prefetch_thread = None
+
+            if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
+                for chunk in self.stream_file_from_notion_range(part_info['page_id'], part_info['filename'],
+                                                               part_info['start'], part_info['end'],
+                                                               download_url=current_url):
+                    yield chunk
+            else:
+                for chunk in self.stream_file_from_notion(part_info['page_id'], part_info['filename'],
+                                                          download_url=current_url):
+                    yield chunk
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
@@ -2326,39 +2371,46 @@ class NotionFileUploader:
             raise Exception(f"Failed to create folder: {response.text}")
         return response.json()
 
-    def stream_file_from_notion(self, page_id: str, original_filename: str) -> Iterable[bytes]:
-        """
-        Streams file content from a Notion file property using the AWS S3 signed URL.
+    def stream_file_from_notion(self, page_id: str, original_filename: str,
+                                download_url: Optional[str] = None) -> Iterable[bytes]:
+        """Stream file content from Notion.
+
         Args:
-            page_id: The Notion page ID where the file is stored
-            original_filename: The original filename to match in the file property
-        Returns:
-            Iterator yielding file content chunks
+            page_id: The Notion page ID where the file is stored.
+            original_filename: The original filename to match in the file property.
+            download_url: Optional pre-fetched download URL. If provided, the
+                method will skip fetching a new URL from Notion.
+
+        Yields:
+            Iterator of file content chunks.
         """
-        notion_download_url = self.get_notion_file_url_from_page_property(page_id, original_filename)
+        notion_download_url = download_url or self.get_notion_file_url_from_page_property(page_id, original_filename)
         if not notion_download_url:
             raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         try:
             with requests.get(notion_download_url, stream=True) as r:
-                r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-                for chunk in r.iter_content(chunk_size=8192): # 8KB chunks
+                r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+                for chunk in r.iter_content(chunk_size=8192):  # 8KB chunks
                     yield chunk
         except requests.exceptions.RequestException as e:
             print(f"Error streaming file from Notion S3 URL: {e}")
             raise Exception(f"Failed to stream file from Notion S3 URL: {e}")
 
-    def stream_file_from_notion_range(self, page_id: str, original_filename: str, start: int, end: int) -> Iterable[bytes]:
-        """
-        Streams a specific byte range of file content from a Notion file property using the AWS S3 signed URL.
+    def stream_file_from_notion_range(self, page_id: str, original_filename: str,
+                                      start: int, end: int, download_url: Optional[str] = None) -> Iterable[bytes]:
+        """Stream a specific byte range of file content from Notion.
+
         Args:
-            page_id: The Notion page ID where the file is stored
-            original_filename: The original filename to match in the file property
-            start: Starting byte position (inclusive)
-            end: Ending byte position (inclusive)
-        Returns:
-            Iterator yielding file content chunks for the requested range
+            page_id: The Notion page ID where the file is stored.
+            original_filename: The original filename to match in the file property.
+            start: Starting byte position (inclusive).
+            end: Ending byte position (inclusive).
+            download_url: Optional pre-fetched download URL.
+
+        Yields:
+            Iterator of file content chunks for the requested range.
         """
-        notion_download_url = self.get_notion_file_url_from_page_property(page_id, original_filename)
+        notion_download_url = download_url or self.get_notion_file_url_from_page_property(page_id, original_filename)
         if not notion_download_url:
             raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         headers = {
