@@ -238,43 +238,62 @@ class NotionFileUploader:
         if not ordered_parts:
             return
 
-        # Prefetch download URLs one part ahead to reduce latency
+        # Prefetch download URLs two parts ahead to reduce latency
         def fetch_url(part_info: Dict[str, Any], container: Dict[str, str]):
-            container['url'] = self.get_notion_file_url_from_page_property(part_info['page_id'], part_info['filename'])
+            container['url'] = self.get_notion_file_url_from_page_property(
+                part_info['page_id'], part_info['filename']
+            )
 
         url_container = {}
         fetch_url(ordered_parts[0], url_container)
-        prefetch_thread = None
-        next_container: Dict[str, str] = {}
-        if len(ordered_parts) > 1:
-            prefetch_thread = threading.Thread(target=fetch_url, args=(ordered_parts[1], next_container))
-            prefetch_thread.start()
+
+        prefetch_count = 2
+        prefetch_threads: List[threading.Thread] = []
+        prefetch_containers: List[Dict[str, str]] = []
+
+        # Start prefetching for up to two upcoming parts
+        for i in range(1, min(prefetch_count + 1, len(ordered_parts))):
+            container = {}
+            thread = threading.Thread(target=fetch_url, args=(ordered_parts[i], container))
+            thread.start()
+            prefetch_threads.append(thread)
+            prefetch_containers.append(container)
 
         for idx, part_info in enumerate(ordered_parts):
             if idx == 0:
                 current_url = url_container.get('url')
             else:
-                if prefetch_thread:
-                    prefetch_thread.join()
-                    current_url = next_container.get('url')
+                if prefetch_threads:
+                    prefetch_threads[0].join()
+                    current_url = prefetch_containers[0].get('url')
+                    prefetch_threads.pop(0)
+                    prefetch_containers.pop(0)
                 else:
                     current_url = None
 
-                if idx + 1 < len(ordered_parts):
-                    next_container = {}
-                    prefetch_thread = threading.Thread(target=fetch_url, args=(ordered_parts[idx+1], next_container))
-                    prefetch_thread.start()
-                else:
-                    prefetch_thread = None
+            # Maintain two prefetched parts ahead
+            next_idx = idx + 1 + len(prefetch_threads)
+            while len(prefetch_threads) < prefetch_count and next_idx < len(ordered_parts):
+                container = {}
+                thread = threading.Thread(target=fetch_url, args=(ordered_parts[next_idx], container))
+                thread.start()
+                prefetch_threads.append(thread)
+                prefetch_containers.append(container)
+                next_idx += 1
 
             if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
-                for chunk in self.stream_file_from_notion_range(part_info['page_id'], part_info['filename'],
-                                                               part_info['start'], part_info['end'],
-                                                               download_url=current_url):
+                for chunk in self.stream_file_from_notion_range(
+                    part_info['page_id'],
+                    part_info['filename'],
+                    part_info['start'],
+                    part_info['end'],
+                    download_url=current_url,
+                ):
                     yield chunk
             else:
-                for chunk in self.stream_file_from_notion(part_info['page_id'], part_info['filename'],
-                                                          download_url=current_url):
+                for chunk in self.stream_file_from_notion(
+                    part_info['page_id'], part_info['filename'], download_url=current_url
+                ):
                     yield chunk
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
