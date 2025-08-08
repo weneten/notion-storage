@@ -238,63 +238,65 @@ class NotionFileUploader:
         if not ordered_parts:
             return
 
-        # Prefetch download URLs two parts ahead to reduce latency
-        def fetch_url(part_info: Dict[str, Any], container: Dict[str, str]):
-            container['url'] = self.get_notion_file_url_from_page_property(
-                part_info['page_id'], part_info['filename']
-            )
+        # Fetch file parts concurrently without storing them in memory. Each
+        # part is streamed in a background thread and delivered through a small
+        # in-memory queue to minimize latency between parts while avoiding large
+        # buffering.
 
-        url_container = {}
-        fetch_url(ordered_parts[0], url_container)
+        prefetch_count = 2  # Number of parts to fetch concurrently
+        streams: List[Tuple[queue.Queue, threading.Thread]] = []
 
-        prefetch_count = 2
-        prefetch_threads: List[threading.Thread] = []
-        prefetch_containers: List[Dict[str, str]] = []
+        def start_prefetch(part_idx: int) -> None:
+            part_info = ordered_parts[part_idx]
+            q: queue.Queue = queue.Queue(maxsize=4)  # small buffer per part
 
-        # Start prefetching for up to two upcoming parts
-        for i in range(1, min(prefetch_count + 1, len(ordered_parts))):
-            container = {}
-            thread = threading.Thread(target=fetch_url, args=(ordered_parts[i], container))
-            thread.start()
-            prefetch_threads.append(thread)
-            prefetch_containers.append(container)
+            def worker():
+                try:
+                    if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
+                        iterator = self.stream_file_from_notion_range(
+                            part_info['page_id'],
+                            part_info['filename'],
+                            part_info['start'],
+                            part_info['end'],
+                        )
+                    else:
+                        iterator = self.stream_file_from_notion(
+                            part_info['page_id'], part_info['filename']
+                        )
+                    for chunk in iterator:
+                        q.put(chunk)
+                    q.put(None)  # Signal completion
+                except Exception as e:  # Propagate errors to consumer
+                    q.put(e)
 
-        for idx, part_info in enumerate(ordered_parts):
-            if idx == 0:
-                current_url = url_container.get('url')
-            else:
-                if prefetch_threads:
-                    prefetch_threads[0].join()
-                    current_url = prefetch_containers[0].get('url')
-                    prefetch_threads.pop(0)
-                    prefetch_containers.pop(0)
-                else:
-                    current_url = None
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            streams.append((q, t))
 
-            # Maintain two prefetched parts ahead
-            next_idx = idx + 1 + len(prefetch_threads)
-            while len(prefetch_threads) < prefetch_count and next_idx < len(ordered_parts):
-                container = {}
-                thread = threading.Thread(target=fetch_url, args=(ordered_parts[next_idx], container))
-                thread.start()
-                prefetch_threads.append(thread)
-                prefetch_containers.append(container)
-                next_idx += 1
+        # Kick off initial prefetches
+        for i in range(min(prefetch_count, len(ordered_parts))):
+            start_prefetch(i)
 
-            if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
-                for chunk in self.stream_file_from_notion_range(
-                    part_info['page_id'],
-                    part_info['filename'],
-                    part_info['start'],
-                    part_info['end'],
-                    download_url=current_url,
-                ):
-                    yield chunk
-            else:
-                for chunk in self.stream_file_from_notion(
-                    part_info['page_id'], part_info['filename'], download_url=current_url
-                ):
-                    yield chunk
+        current_index = 0
+        while current_index < len(ordered_parts):
+            q, t = streams[0]
+            while True:
+                chunk = q.get()
+                if chunk is None:
+                    break
+                if isinstance(chunk, Exception):
+                    raise chunk
+                yield chunk
+
+            # Remove completed stream
+            streams.pop(0)
+            t.join()
+            current_index += 1
+
+            # Start fetching next part to maintain the prefetch window
+            next_idx = current_index + len(streams)
+            if next_idx < len(ordered_parts):
+                start_prefetch(next_idx)
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
