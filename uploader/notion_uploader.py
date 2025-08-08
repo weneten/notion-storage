@@ -1908,15 +1908,40 @@ class NotionFileUploader:
         return result
 
     def get_files_from_user_database(self, database_id: str) -> Dict[str, Any]:
-        """Queries a user's Notion database for all file entries."""
+        """Queries a user's Notion database for all file entries.
+
+        The Notion API returns results in pages (maximum 100 per request).
+        Previously this method only fetched the first page which meant users
+        with more than 100 files couldn't see their entire collection. This
+        method now follows pagination cursors until all results have been
+        retrieved and returns a single combined response.
+        """
         url = f"{self.base_url}/databases/{database_id}/query"
         headers = {**self.headers, "Content-Type": "application/json"}
-        
+        all_results: List[Dict[str, Any]] = []
+        payload: Dict[str, Any] = {}
+
         try:
-            response = requests.post(url, headers=headers)
-            if response.status_code != 200:
-                raise Exception(f"Failed to query user database: {response.text}")
-            return response.json()
+            while True:
+                response = requests.post(url, headers=headers, json=payload)
+                if response.status_code != 200:
+                    raise Exception(f"Failed to query user database: {response.text}")
+
+                data = response.json()
+                all_results.extend(data.get('results', []))
+
+                if not data.get('has_more'):
+                    break
+
+                # Prepare next request with start_cursor
+                payload['start_cursor'] = data.get('next_cursor')
+
+            return {
+                "object": "list",
+                "results": all_results,
+                "next_cursor": None,
+                "has_more": False
+            }
         except Exception as e:
             print(f"Error querying user database {database_id}: {e}")
             raise
