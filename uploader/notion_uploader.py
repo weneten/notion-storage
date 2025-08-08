@@ -238,58 +238,63 @@ class NotionFileUploader:
         if not ordered_parts:
             return
 
-        # Prefetch actual file bytes two parts ahead to minimize client wait
-        def fetch_part_bytes(part_info: Dict[str, Any], container: Dict[str, bytes]):
-            url = self.get_notion_file_url_from_page_property(
+        # Prefetch download URLs two parts ahead to reduce latency
+        def fetch_url(part_info: Dict[str, Any], container: Dict[str, str]):
+            container['url'] = self.get_notion_file_url_from_page_property(
                 part_info['page_id'], part_info['filename']
             )
-            headers = {}
-            if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
-                headers['Range'] = f"bytes={part_info['start']}-{part_info['end']}"
-            with requests.get(url, headers=headers, stream=True) as r:
-                r.raise_for_status()
-                container['data'] = r.content
 
-        first_container: Dict[str, bytes] = {}
-        fetch_part_bytes(ordered_parts[0], first_container)
+        url_container = {}
+        fetch_url(ordered_parts[0], url_container)
 
         prefetch_count = 2
         prefetch_threads: List[threading.Thread] = []
-        prefetch_containers: List[Dict[str, bytes]] = []
+        prefetch_containers: List[Dict[str, str]] = []
 
         # Start prefetching for up to two upcoming parts
         for i in range(1, min(prefetch_count + 1, len(ordered_parts))):
-            container: Dict[str, bytes] = {}
-            thread = threading.Thread(target=fetch_part_bytes, args=(ordered_parts[i], container))
+            container = {}
+            thread = threading.Thread(target=fetch_url, args=(ordered_parts[i], container))
             thread.start()
             prefetch_threads.append(thread)
             prefetch_containers.append(container)
 
         for idx, part_info in enumerate(ordered_parts):
             if idx == 0:
-                current_data = first_container.get('data', b'')
+                current_url = url_container.get('url')
             else:
                 if prefetch_threads:
                     prefetch_threads[0].join()
-                    current_data = prefetch_containers[0].get('data', b'')
+                    current_url = prefetch_containers[0].get('url')
                     prefetch_threads.pop(0)
                     prefetch_containers.pop(0)
                 else:
-                    current_data = b''
+                    current_url = None
 
             # Maintain two prefetched parts ahead
             next_idx = idx + 1 + len(prefetch_threads)
             while len(prefetch_threads) < prefetch_count and next_idx < len(ordered_parts):
                 container = {}
-                thread = threading.Thread(target=fetch_part_bytes, args=(ordered_parts[next_idx], container))
+                thread = threading.Thread(target=fetch_url, args=(ordered_parts[next_idx], container))
                 thread.start()
                 prefetch_threads.append(thread)
                 prefetch_containers.append(container)
                 next_idx += 1
 
-            # Stream current data in chunks to the client
-            for i in range(0, len(current_data), 8192):
-                yield current_data[i:i + 8192]
+            if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
+                for chunk in self.stream_file_from_notion_range(
+                    part_info['page_id'],
+                    part_info['filename'],
+                    part_info['start'],
+                    part_info['end'],
+                    download_url=current_url,
+                ):
+                    yield chunk
+            else:
+                for chunk in self.stream_file_from_notion(
+                    part_info['page_id'], part_info['filename'], download_url=current_url
+                ):
+                    yield chunk
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
