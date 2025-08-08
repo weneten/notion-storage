@@ -11,6 +11,7 @@ import hashlib
 import uuid
 import secrets
 from typing import Optional, Callable, Dict, Any, List
+import concurrent.futures
 import requests
 from flask import Response
 from flask_socketio import SocketIO
@@ -115,28 +116,39 @@ class NotionStreamingUploader:
                 print(f"[DELETE] Raw manifest JSON for diagnosis: {file_data}")
 
         deleted_count = 0
-        # Delete all parts if any
-        for part in parts:
+
+        def _delete_part(part: Dict[str, Any]) -> bool:
             part_id = part.get('file_id')
             part_filename = part.get('filename')
             if not part_id:
                 print(f"[DELETE] Skipping part with missing file_id: {part}")
-                continue
+                return False
             print(f"[DELETE] Deleting part: {part_filename} (id={part_id})")
-            # Delete from user database
             try:
                 self.notion_uploader.delete_file_from_user_database(part_id)
                 print(f"[DELETE] Deleted part {part_id} from user DB.")
-                deleted_count += 1
+                if self.notion_uploader.global_file_index_db_id:
+                    try:
+                        self.notion_uploader.delete_file_from_index(part_id)
+                        print(f"[DELETE] Deleted part {part_id} from global index.")
+                    except Exception as e:
+                        print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+                return True
             except Exception as e:
                 print(f"[DELETE] Failed to delete part {part_id} from user DB: {e}")
-            # Delete from global index if enabled
-            if self.notion_uploader.global_file_index_db_id:
-                try:
-                    self.notion_uploader.delete_file_from_index(part_id)
-                    print(f"[DELETE] Deleted part {part_id} from global index.")
-                except Exception as e:
-                    print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+                return False
+
+        if parts:
+            max_workers = min(5, len(parts))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_delete_part, part) for part in parts]
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        if future.result():
+                            deleted_count += 1
+                    except Exception:
+                        pass
+
         if deleted_count == 0 and is_manifest:
             print(f"[DELETE] WARNING: No part files were deleted for manifest {file_db_id}.")
 
@@ -239,28 +251,38 @@ class NotionStreamingUploader:
             print(f"[DELETE] Raw manifest JSON for diagnosis: {file_data}")
 
         deleted_count = 0
-        # Only after successful JSON load, proceed to delete parts and manifest
-        for part in parts:
+
+        def _delete_part(part: Dict[str, Any]) -> bool:
             part_id = part.get('file_id')
             part_filename = part.get('filename')
             if not part_id:
                 print(f"[DELETE] Skipping part with missing file_id: {part}")
-                continue
+                return False
             print(f"[DELETE] Deleting part: {part_filename} (id={part_id})")
-            # Delete from user database
             try:
                 self.notion_uploader.delete_file_from_user_database(part_id)
                 print(f"[DELETE] Deleted part {part_id} from user DB.")
-                deleted_count += 1
+                if self.notion_uploader.global_file_index_db_id:
+                    try:
+                        self.notion_uploader.delete_file_from_index(part_id)
+                        print(f"[DELETE] Deleted part {part_id} from global index.")
+                    except Exception as e:
+                        print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+                return True
             except Exception as e:
                 print(f"[DELETE] Failed to delete part {part_id} from user DB: {e}")
-            # Delete from global index if enabled
-            if self.notion_uploader.global_file_index_db_id:
-                try:
-                    self.notion_uploader.delete_file_from_index(part_id)
-                    print(f"[DELETE] Deleted part {part_id} from global index.")
-                except Exception as e:
-                    print(f"[DELETE] Failed to delete part {part_id} from global index: {e}")
+                return False
+
+        if parts:
+            max_workers = min(5, len(parts))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_delete_part, part) for part in parts]
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        if future.result():
+                            deleted_count += 1
+                    except Exception:
+                        pass
 
         if deleted_count == 0:
             print(f"[DELETE] WARNING: No part files were deleted for manifest {manifest_db_id}.")
