@@ -1211,6 +1211,57 @@ def create_folder():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/rename_folder', methods=['POST'])
+@login_required
+def rename_folder():
+    try:
+        data = request.get_json()
+        folder_id = data.get('folder_id')
+        new_name = data.get('new_name')
+
+        if not folder_id or not new_name:
+            return jsonify({'error': 'folder_id and new_name required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        folder_entry = uploader.get_user_by_id(folder_id)
+        if not folder_entry:
+            return jsonify({'error': 'Folder not found'}), 404
+
+        props = folder_entry.get('properties', {})
+        old_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+        parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+
+        old_full_path = parent_path.rstrip('/') + '/' + old_name if parent_path != '/' else '/' + old_name
+        new_full_path = parent_path.rstrip('/') + '/' + new_name if parent_path != '/' else '/' + new_name
+
+        # Rename the folder itself
+        uploader.update_file_metadata(folder_id, filename=new_name)
+
+        # Update paths for items inside the folder
+        all_entries = uploader.get_files_from_user_database(user_database_id)
+        prefix = old_full_path + '/'
+        for entry in all_entries.get('results', []):
+            entry_id = entry.get('id')
+            if entry_id == folder_id:
+                continue
+            e_props = entry.get('properties', {})
+            path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            if path == old_full_path:
+                new_path = new_full_path
+            elif path.startswith(prefix):
+                new_path = new_full_path + path[len(old_full_path):]
+            else:
+                continue
+            uploader.update_file_metadata(entry_id, folder_path=new_path)
+
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/delete_folder', methods=['POST'])
 @login_required
 def delete_folder():

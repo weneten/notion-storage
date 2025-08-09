@@ -613,6 +613,9 @@ async function loadFiles() {
                         <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
                             <i class="fas fa-folder-open mr-1"></i>Open
                         </a>
+                        <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}">
+                            <i class="fas fa-edit mr-1"></i>Rename
+                        </button>
                         <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}">
                             <i class="fas fa-trash-alt mr-1"></i>Delete
                         </button>
@@ -970,8 +973,32 @@ function setupFileActionEventHandlers() {
     });
 }
 
-// Set up event handlers for folder actions (delete)
+// Set up event handlers for folder actions (rename, delete)
 function setupFolderActionEventHandlers() {
+    document.querySelectorAll('.rename-folder-btn').forEach(btn => {
+        btn.addEventListener('click', async function () {
+            const folderId = this.dataset.folderId;
+            const currentName = this.dataset.folderName || '';
+            const newName = prompt('New folder name:', currentName);
+            if (!newName) return;
+            try {
+                const resp = await fetch('/rename_folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folder_id: folderId, new_name: newName })
+                });
+                if (!resp.ok) {
+                    alert('Failed to rename folder');
+                    return;
+                }
+                loadFiles();
+            } catch (error) {
+                console.error('Rename folder error:', error);
+                alert('Error renaming folder: ' + error.message);
+            }
+        });
+    });
+
     document.querySelectorAll('.delete-folder-btn').forEach(btn => {
         btn.addEventListener('click', async function () {
             const folderId = this.dataset.folderId;
