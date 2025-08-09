@@ -311,11 +311,6 @@ class NotionFileUploader:
         self.global_file_index_db_id = global_file_index_db_id
         self.notion_space_id = notion_space_id or "c91485e6-ff71-811c-b300-000345011419"  # Default space ID
         
-        # URL caching for performance optimization
-        self.url_cache = {}  # file_page_id -> {url, expires_at, generated_at}
-        self.url_cache_lock = threading.Lock()
-        self.url_cache_duration = 3600  # 1 hour default cache duration
-        
         # Validation configuration
         self.validation_config = {
             'enabled': True,                    # Enable/disable validation entirely
@@ -532,44 +527,10 @@ class NotionFileUploader:
 
     def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
         """
-        Get download URL for a file, now prioritizing permanent URLs over temporary ones.
-        Returns permanent Notion signed attachment URLs when available.
+        Always fetch a fresh Notion download link for the given file.
         """
-        # This function is now deprecated and replaced by the always-fresh download link logic.
-        raise NotImplementedError("get_download_url_for_file legacy method is removed. Use the new always-fresh download link logic.")
-
-
-
-    def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
-        """
-        Always fetch a fresh Notion download link and cache it for 30 minutes.
-        """
-        with self.url_cache_lock:
-            cached_entry = self.url_cache.get(page_id)
-            current_time = time.time()
-            if cached_entry:
-                expires_at = cached_entry.get('expires_at', 0)
-                cached_url = cached_entry.get('url', '')
-                if current_time < expires_at and cached_url:
-                    print(f"[CACHE HIT] Using cached download URL for {page_id}")
-                    return cached_url
-                else:
-                    print(f"[CACHE EXPIRED] Cached URL expired for {page_id}")
-                    del self.url_cache[page_id]
-        # Always fetch a new download link from Notion
         print(f"[FETCH] Fetching new download URL for {page_id}")
-        new_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
-        if new_url:
-            cache_entry = {
-                'url': new_url,
-                'expires_at': current_time + self.url_cache_duration,
-                'generated_at': current_time,
-                'file_size': file_size,
-                'content_type': content_type
-            }
-            with self.url_cache_lock:
-                self.url_cache[page_id] = cache_entry
-            print(f"[CACHE STORE] New download URL cached for {page_id}")
+        new_url, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
         return new_url
 
     def _validate_cached_url(self, url: str, time_until_expiry: float = 0) -> bool:
@@ -812,92 +773,27 @@ class NotionFileUploader:
             return 'application/octet-stream'
 
 
-    def cache_file_metadata(self, page_id: str, url: str, file_size: int, content_type: str):
-        """Cache file metadata including size and content type."""
-        with self.url_cache_lock:
-            current_time = time.time()
-            cache_entry = {
-                'url': url,
-                'expires_at': current_time + self.url_cache_duration,
-                'generated_at': current_time,
-                'file_size': file_size,
-                'content_type': content_type
-            }
-            self.url_cache[page_id] = cache_entry
-            print(f"💾 CACHED: Metadata cached for {page_id} - size: {file_size} bytes, type: {content_type}")
-
-    def get_cached_file_metadata(self, page_id: str) -> tuple:
-        """
-        Get cached file metadata including size and content type.
-        
-        Args:
-            page_id: Notion page ID
-            
-        Returns:
-            tuple: (url, file_size, content_type) or (None, 0, None) if not cached or expired
-        """
-        with self.url_cache_lock:
-            cached_entry = self.url_cache.get(page_id)
-            if cached_entry:
-                current_time = time.time()
-                expires_at = cached_entry.get('expires_at', 0)
-                
-                if current_time < expires_at:
-                    url = cached_entry.get('url', '')
-                    file_size = cached_entry.get('file_size', 0)
-                    content_type = cached_entry.get('content_type', 'application/octet-stream')
-                    print(f"📊 Retrieved cached metadata for {page_id}: size={file_size}, type={content_type}")
-                    return url, file_size, content_type
-                else:
-                    print(f"📊 Cached metadata expired for {page_id}")
-                    
-            return None, 0, None
-
     def get_file_download_metadata(self, page_id: str, original_filename: str) -> Dict[str, Any]:
         """
-        Get comprehensive file metadata for download including URL, size, and content type.
-        
+        Get file download metadata including a fresh URL, size, and content type.
+
         Args:
             page_id: Notion page ID containing the file
             original_filename: Original filename for content type detection
-            
+
         Returns:
-            Dict containing url, file_size, content_type, and cached status
+            Dict containing url, file_size, content_type, and cached status (always False)
         """
         try:
-            # First try to get from cache
-            cached_url, cached_file_size, cached_content_type = self.get_cached_file_metadata(page_id)
-            
-            if cached_url:
-                return {
-                    'url': cached_url,
-                    'file_size': cached_file_size,
-                    'content_type': cached_content_type,
-                    'cached': True
-                }
-            
-            # Cache miss - fetch fresh data with metadata
             fresh_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
-            
-            if fresh_url:
-                # Cache the fresh metadata
-                self.cache_file_metadata(page_id, fresh_url, file_size, content_type)
-                
-                return {
-                    'url': fresh_url,
-                    'file_size': file_size,
-                    'content_type': content_type,
-                    'cached': False
-                }
-            
-            # Fallback
+
             return {
-                'url': '',
-                'file_size': 0,
-                'content_type': 'application/octet-stream',
+                'url': fresh_url or '',
+                'file_size': file_size,
+                'content_type': content_type or 'application/octet-stream',
                 'cached': False
             }
-            
+
         except Exception as e:
             print(f"Error getting file download metadata: {e}")
             return {
@@ -909,65 +805,9 @@ class NotionFileUploader:
 
     def get_notion_file_url_from_page_property(self, page_id: str, original_filename: str) -> str:
         """
-        Legacy method - now uses caching optimization.
+        Legacy wrapper that returns a fresh download URL for the given file.
         """
         return self.get_download_url_for_file(page_id, original_filename)
-
-    def clear_url_cache(self, page_id: str = None):
-        """
-        Clear URL cache entries. If page_id is provided, clear only that entry.
-        Otherwise, clear all cached URLs.
-        """
-        with self.url_cache_lock:
-            if page_id:
-                if page_id in self.url_cache:
-                    del self.url_cache[page_id]
-                    print(f"🗑️ CACHE CLEARED: Removed cached URL for {page_id}")
-            else:
-                cleared_count = len(self.url_cache)
-                self.url_cache.clear()
-                print(f"🗑️ CACHE CLEARED: Removed {cleared_count} cached URLs")
-
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the URL cache.
-        """
-        with self.url_cache_lock:
-            current_time = time.time()
-            valid_entries = 0
-            expired_entries = 0
-            
-            for page_id, entry in self.url_cache.items():
-                if current_time < entry.get('expires_at', 0):
-                    valid_entries += 1
-                else:
-                    expired_entries += 1
-            
-            return {
-                'total_entries': len(self.url_cache),
-                'valid_entries': valid_entries,
-                'expired_entries': expired_entries,
-                'cache_duration': self.url_cache_duration,
-                'current_time': current_time
-            }
-
-    def cleanup_expired_cache_entries(self):
-        """
-        Remove expired entries from the URL cache.
-        """
-        with self.url_cache_lock:
-            current_time = time.time()
-            expired_keys = []
-            
-            for page_id, entry in self.url_cache.items():
-                if current_time >= entry.get('expires_at', 0):
-                    expired_keys.append(page_id)
-            
-            for key in expired_keys:
-                del self.url_cache[key]
-            
-            if expired_keys:
-                print(f"🧹 CACHE CLEANUP: Removed {len(expired_keys)} expired entries")
 
     def configure_validation(self, **kwargs) -> Dict[str, Any]:
         """
