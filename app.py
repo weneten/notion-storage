@@ -256,6 +256,12 @@ def register():
         username = request.form.get('username')
         password = request.form.get('password')
 
+        existing = uploader.query_user_database_by_username(
+            NOTION_USER_DB_ID, username
+        ).get('results', [])
+        if existing:
+            return "Benutzername bereits vergeben", 400
+
         # Hash password
         # Encode hash as base64 string for safe storage
         hashed_bytes = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
