@@ -1011,6 +1011,37 @@ def get_entries_api():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/folders')
+@login_required
+def list_folders_api():
+    """Return list of all folders for the current user."""
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        files_response = uploader.get_files_from_user_database(user_database_id)
+        files = files_response.get('results', [])
+
+        folders = []
+        for file_data in files:
+            properties = file_data.get('properties', {})
+            is_folder = properties.get('is_folder', {}).get('checkbox', False)
+            if not is_folder:
+                continue
+            name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            parent_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            full_path = parent_path.rstrip('/') + '/' + name if parent_path != '/' else '/' + name
+            folders.append({'id': file_data.get('id'), 'path': full_path})
+
+        folders.sort(key=lambda f: f['path'])
+        folders.insert(0, {'id': None, 'path': '/'})
+        return jsonify({'folders': folders})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/files-api')
 @login_required
 def list_files_api():

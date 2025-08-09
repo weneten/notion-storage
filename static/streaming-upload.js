@@ -963,16 +963,9 @@ function setupFileActionEventHandlers() {
 
     // Add event handlers for move buttons
     document.querySelectorAll('.move-btn').forEach(btn => {
-        btn.addEventListener('click', async function () {
+        btn.addEventListener('click', function () {
             const fileId = this.dataset.fileId;
-            const newFolder = prompt('Move to folder:', window.currentFolder || '/');
-            if (newFolder === null) return;
-            await fetch('/update_file_metadata', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: fileId, folder_path: newFolder })
-            });
-            location.reload();
+            openMoveDialog(fileId);
         });
     });
 }
@@ -1021,6 +1014,58 @@ function setupFolderActionEventHandlers() {
         });
     });
 }
+
+// =============================================
+// Folder selection modal for moving files
+// =============================================
+let moveTargetFileId = null;
+
+async function openMoveDialog(fileId) {
+    moveTargetFileId = fileId;
+    const list = document.getElementById('folderList');
+    if (!list) {
+        return;
+    }
+    list.innerHTML = '';
+    try {
+        const resp = await fetch('/api/folders');
+        const data = await resp.json();
+        (data.folders || []).forEach(folder => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item folder-option';
+            li.textContent = folder.path;
+            li.dataset.path = folder.path;
+            list.appendChild(li);
+        });
+    } catch (error) {
+        console.error('🚨 DIAGNOSTIC: Error loading folders', error);
+        showStatus('Failed to load folders: ' + error.message, 'error');
+    }
+    $('#moveModal').modal('show');
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    const list = document.getElementById('folderList');
+    if (list) {
+        list.addEventListener('click', async function (e) {
+            const item = e.target.closest('.folder-option');
+            if (!item) return;
+            const path = item.dataset.path;
+            $('#moveModal').modal('hide');
+            try {
+                await fetch('/update_file_metadata', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ file_id: moveTargetFileId, folder_path: path })
+                });
+                location.reload();
+            } catch (error) {
+                console.error('🚨 DIAGNOSTIC: Error moving file', error);
+                showStatus('Error moving file: ' + error.message, 'error');
+            }
+        });
+    }
+});
 
 /**
  * Performance Improvements Explanation:

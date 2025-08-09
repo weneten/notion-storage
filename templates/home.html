@@ -135,6 +135,23 @@
     </div>
 </div>
 
+<!-- Folder selection modal for moving files -->
+<div class="modal fade" id="moveModal" tabindex="-1" role="dialog" aria-labelledby="moveModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="moveModalLabel">Select Destination Folder</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <ul class="list-group" id="folderList"></ul>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
 <script src="{{ url_for('static', filename='streaming-upload.js') }}"></script>
 
@@ -288,16 +305,9 @@
         });
 
         document.querySelectorAll('.move-btn').forEach(btn => {
-            btn.addEventListener('click', async function () {
+            btn.addEventListener('click', function () {
                 const fileId = this.dataset.fileId;
-                const newFolder = prompt('Move to folder:', window.currentFolder || '/');
-                if (newFolder === null) return;
-                await fetch('/update_file_metadata', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({file_id: fileId, folder_path: newFolder})
-                });
-                location.reload();
+                openMoveDialog(fileId);
             });
         });
 
@@ -598,6 +608,10 @@
         color: #03dac6 !important;
         display: flex;
         align-items: center;
+    }
+
+    .folder-option {
+        cursor: pointer;
     }
 </style>
 {% endblock %}
