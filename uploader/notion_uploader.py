@@ -1659,6 +1659,31 @@ class NotionFileUploader:
 
         return response.json()
 
+    def update_user_username(self, user_id: str, new_username: str) -> Dict[str, Any]:
+        """Update the username for a user in the Notion database"""
+        url = f"{self.base_url}/pages/{user_id}"
+
+        payload = {
+            "properties": {
+                "Name": {
+                    "title": [
+                        {
+                            "text": {"content": new_username}
+                        }
+                    ]
+                }
+            }
+        }
+
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        response = requests.patch(url, json=payload, headers=headers)
+
+        if response.status_code != 200:
+            raise Exception(f"Failed to update username: {response.text}")
+
+        return response.json()
+
     def get_user_by_id(self, user_id: str) -> Dict[str, Any]:
         """Get a user page by its ID with retry logic for temporary failures"""
         import time

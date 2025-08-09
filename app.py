@@ -343,6 +343,39 @@ def change_password():
     return render_template('change_password.html')
 
 
+@app.route('/change_username', methods=['GET', 'POST'])
+@login_required
+def change_username():
+    if request.method == 'POST':
+        current_password = request.form.get('current_password')
+        new_username = request.form.get('new_username')
+        confirm_username = request.form.get('confirm_username')
+
+        # Verify new username matches confirmation
+        if new_username != confirm_username:
+            return "New username and confirmation do not match", 400
+
+        # Verify current password
+        if not current_user.check_password(current_password):
+            return "Current password is incorrect", 401
+
+        # Check if username already exists
+        existing = uploader.query_user_database_by_username(
+            NOTION_USER_DB_ID, new_username
+        )
+        if existing.get('results'):
+            return "Username already exists", 400
+
+        try:
+            # Update username in Notion
+            uploader.update_user_username(current_user.id, new_username)
+            current_user.username = new_username
+            return redirect(url_for('home'))
+        except Exception as e:
+            return f"Error changing username: {str(e)}", 500
+
+    return render_template('change_username.html')
+
 # ============================================================================
 # FILE DOWNLOAD ROUTES
 # ============================================================================
