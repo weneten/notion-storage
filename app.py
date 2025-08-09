@@ -1637,44 +1637,6 @@ def get_system_health():
         return jsonify({'error': str(e), 'status': 'error'}), 500
 
 
-@app.route('/api/system/cache', methods=['GET', 'POST', 'DELETE'])
-@login_required
-def manage_url_cache():
-    """
-    Manage the download URL cache for performance optimization
-    """
-    try:
-        if request.method == 'GET':
-            # Get cache statistics
-            cache_stats = uploader.get_cache_stats()
-            return jsonify({
-                'status': 'success',
-                'cache_stats': cache_stats,
-                'message': f"Cache contains {cache_stats['total_entries']} entries, {cache_stats['valid_entries']} valid"
-            })
-        
-        elif request.method == 'POST':
-            # Cleanup expired entries
-            uploader.cleanup_expired_cache_entries()
-            cache_stats = uploader.get_cache_stats()
-            return jsonify({
-                'status': 'success',
-                'cache_stats': cache_stats,
-                'message': 'Expired cache entries cleaned up'
-            })
-        
-        elif request.method == 'DELETE':
-            # Clear all cache entries
-            uploader.clear_url_cache()
-            return jsonify({
-                'status': 'success',
-                'message': 'All cache entries cleared'
-            })
-    
-    except Exception as e:
-        print(f"Error managing URL cache: {e}")
-        return jsonify({'error': str(e)}), 500
-
 
 @app.route('/api/system/migrate-permanent-urls', methods=['POST'])
 @login_required
