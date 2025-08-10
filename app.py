@@ -78,7 +78,6 @@ socketio = SocketIO(
     ping_interval=25
 )
 
-
 # Initialize global upload state containers with thread synchronization
 app.upload_locks = {}
 app.upload_processors = {}
@@ -376,9 +375,7 @@ def change_username():
 
     return render_template('change_username.html')
 
-# ============================================================================
 # FILE DOWNLOAD ROUTES
-# ============================================================================
 
 @app.route('/download/<filename>')
 @login_required
@@ -1392,14 +1389,68 @@ def delete_selected():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/move_selected', methods=['POST'])
+@login_required
+def move_selected():
+    try:
+        data = request.get_json() or {}
+        file_ids = data.get('file_ids', [])
+        folder_ids = data.get('folder_ids', [])
+        destination = data.get('destination', '/')
 
-# ============================================================================
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        for file_id in file_ids:
+            try:
+                uploader.update_file_metadata(file_id, folder_path=destination)
+            except Exception as e:
+                print(f"Error moving file {file_id}: {e}")
+
+        all_entries = None
+        if folder_ids:
+            all_entries = uploader.get_files_from_user_database(user_database_id)
+
+        for folder_id in folder_ids:
+            try:
+                folder_entry = uploader.get_user_by_id(folder_id)
+                if not folder_entry:
+                    continue
+                props = folder_entry.get('properties', {})
+                folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                old_full_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
+                new_full_path = destination.rstrip('/') + '/' + folder_name if destination != '/' else '/' + folder_name
+
+                # Update folder's parent path
+                uploader.update_file_metadata(folder_id, folder_path=destination)
+
+                prefix = old_full_path + '/'
+                for entry in all_entries.get('results', []):
+                    entry_id = entry.get('id')
+                    if entry_id == folder_id:
+                        continue
+                    e_props = entry.get('properties', {})
+                    path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    if path == old_full_path:
+                        new_path = new_full_path
+                    elif path.startswith(prefix):
+                        new_path = new_full_path + path[len(old_full_path):]
+                    else:
+                        continue
+                    uploader.update_file_metadata(entry_id, folder_path=new_path)
+            except Exception as e:
+                print(f"Error moving folder {folder_id}: {e}")
+
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # END FILE DOWNLOAD ROUTES
-# ============================================================================
 
-# ============================================================================
 # STREAMING UPLOAD API ENDPOINTS
-# ============================================================================
 
 @app.route('/api/upload/create-session', methods=['POST'])
 @login_required
@@ -1945,9 +1996,7 @@ def download_multipart_by_page_id(manifest_page_id):
         print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
         return f"Error streaming multi-part file: {str(e)}", 500
 
-# ============================================================================
 # HELPER FUNCTIONS FOR LEGACY COMPATIBILITY
-# ============================================================================
 
 def cleanup_upload_session(upload_id):
     """
@@ -1975,13 +2024,9 @@ def process_websocket_chunk_robust(upload_id, part_number, chunk_data, is_last_c
         print(f"Error in legacy WebSocket chunk processing: {e}")
 
 
-# ============================================================================
 # END HELPER FUNCTIONS
-# ============================================================================
 
 # Start the cleanup task
 cleanup_old_sessions()
 
-# ============================================================================
 # END OF STREAMING UPLOAD API
-# ============================================================================
