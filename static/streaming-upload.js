@@ -968,7 +968,7 @@ function setupFileActionEventHandlers() {
     document.querySelectorAll('.move-btn').forEach(btn => {
         btn.addEventListener('click', function () {
             const fileId = this.dataset.fileId;
-            openMoveDialog(fileId);
+            openMoveDialog([fileId], []);
         });
     });
 }
@@ -1045,10 +1045,10 @@ function setupFolderActionEventHandlers() {
 // =============================================
 // Folder selection modal for moving files
 // =============================================
-let moveTargetFileId = null;
+let moveTargets = { fileIds: [], folderIds: [] };
 
-async function openMoveDialog(fileId) {
-    moveTargetFileId = fileId;
+async function openMoveDialog(fileIds = [], folderIds = []) {
+    moveTargets = { fileIds, folderIds };
     const list = document.getElementById('folderList');
     if (!list) {
         return;
@@ -1080,11 +1080,19 @@ document.addEventListener('DOMContentLoaded', function () {
             const path = item.dataset.path;
             $('#moveModal').modal('hide');
             try {
-                await fetch('/update_file_metadata', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ file_id: moveTargetFileId, folder_path: path })
-                });
+                if (moveTargets.folderIds.length === 0 && moveTargets.fileIds.length === 1) {
+                    await fetch('/update_file_metadata', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_id: moveTargets.fileIds[0], folder_path: path })
+                    });
+                } else {
+                    await fetch('/move_selected', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_ids: moveTargets.fileIds, folder_ids: moveTargets.folderIds, destination: path })
+                    });
+                }
                 location.reload();
             } catch (error) {
                 console.error('🚨 DIAGNOSTIC: Error moving file', error);
