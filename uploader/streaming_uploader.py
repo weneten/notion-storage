@@ -545,7 +545,8 @@ class NotionStreamingUploader:
                         salt=part_salt,
                         original_filename=filename,
                         file_url=file_url,
-                        folder_path=upload_session.get('folder_path', '/')
+                        # Store part entries at root to avoid orphaned parts when moving folders
+                        folder_path='/'
                     )
 
                     if self.notion_uploader.global_file_index_db_id:
