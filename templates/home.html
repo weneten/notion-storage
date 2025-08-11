@@ -361,7 +361,6 @@
             deleteSelectedBtn.addEventListener('click', async function () {
                 const selected = Array.from(document.querySelectorAll('.select-item:checked'));
                 if (selected.length === 0) return;
-                if (!confirm(`Delete ${selected.length} selected item${selected.length !== 1 ? 's' : ''}?`)) return;
 
                 const fileIds = [];
                 const folderIds = [];
@@ -372,6 +371,33 @@
                 });
 
                 try {
+                    const previewResp = await fetch('/delete_selected', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_ids: fileIds, folder_ids: folderIds, preview: true })
+                    });
+                    if (!previewResp.ok) throw new Error('Failed to get delete summary');
+                    const summary = await previewResp.json();
+
+                    let parts = [];
+                    if (summary.folder_count > 0) {
+                        let msg = `${summary.folder_count} folder${summary.folder_count !== 1 ? 's' : ''}`;
+                        if (summary.subfolder_count > 0 || summary.files_in_folders > 0) {
+                            if (summary.subfolder_count > 0) {
+                                msg += ` with ${summary.subfolder_count} subfolder${summary.subfolder_count !== 1 ? 's' : ''}`;
+                            }
+                            if (summary.files_in_folders > 0) {
+                                msg += ` containing ${summary.files_in_folders} file${summary.files_in_folders !== 1 ? 's' : ''}`;
+                            }
+                        }
+                        parts.push(msg);
+                    }
+                    if (summary.independent_file_count > 0) {
+                        parts.push(`${summary.independent_file_count} file${summary.independent_file_count !== 1 ? 's' : ''}`);
+                    }
+                    const confirmMsg = `Delete ${parts.join(' and ')}?`;
+                    if (!confirm(confirmMsg)) return;
+
                     const resp = await fetch('/delete_selected', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },

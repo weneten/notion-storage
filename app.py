@@ -1424,10 +1424,49 @@ def delete_selected():
         data = request.get_json() or {}
         file_ids = data.get('file_ids', [])
         folder_ids = data.get('folder_ids', [])
+        preview = data.get('preview', False)
 
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
             return jsonify({'error': 'User database not found'}), 404
+
+        all_entries = uploader.get_files_from_user_database(user_database_id)
+
+        if preview:
+            selected_file_ids = set(file_ids)
+            files_in_folders = set()
+            subfolders = set()
+
+            for folder_id in folder_ids:
+                folder_entry = uploader.get_user_by_id(folder_id)
+                if not folder_entry:
+                    continue
+                props = folder_entry.get('properties', {})
+                folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                folder_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
+                prefix = folder_path.rstrip('/') + '/'
+                for entry in all_entries.get('results', []):
+                    e_props = entry.get('properties', {})
+                    path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    if path == folder_path or path.startswith(prefix):
+                        e_id = entry.get('id')
+                        is_folder = entry.get('properties', {}).get('is_folder', {}).get('checkbox', False)
+                        if is_folder:
+                            if e_id not in folder_ids:
+                                subfolders.add(e_id)
+                        else:
+                            files_in_folders.add(e_id)
+
+            independent_files = selected_file_ids - files_in_folders
+
+            return jsonify({
+                'status': 'preview',
+                'folder_count': len(folder_ids),
+                'subfolder_count': len(subfolders),
+                'files_in_folders': len(files_in_folders),
+                'independent_file_count': len(independent_files)
+            })
 
         for file_id in file_ids:
             try:
@@ -1444,7 +1483,6 @@ def delete_selected():
                 folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
                 parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
                 folder_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
-                all_entries = uploader.get_files_from_user_database(user_database_id)
                 to_delete = []
                 prefix = folder_path.rstrip('/') + '/'
                 for entry in all_entries.get('results', []):
