@@ -22,6 +22,7 @@ import random
 import string
 import json
 from flask_socketio import emit
+from collections import defaultdict
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -193,18 +194,43 @@ def home():
         current_folder = request.args.get('folder', '/')
         entries = []
         if user_database_id:
-            # Ensure 'is_public' and 'salt' properties exist in the user's database
-
             files_data = uploader.get_files_from_user_database(user_database_id)
-            for file_data in files_data.get('results', []):
+            results = files_data.get('results', [])
+
+            # Pre-calculate cumulative sizes for all folders
+            folder_sizes = defaultdict(int)
+            for file_data in results:
+                try:
+                    properties = file_data.get('properties', {})
+                    name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                    size = properties.get('filesize', {}).get('number', 0)
+                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                    if name and is_visible and not is_folder:
+                        path = folder_path or '/'
+                        while True:
+                            folder_sizes[path] += size
+                            if path == '/' or path == '':
+                                break
+                            path = '/' + '/'.join(path.strip('/').split('/')[:-1])
+                            if path == '':
+                                path = '/'
+                except Exception as e:
+                    print(f"Error calculating folder sizes in home route: {e}")
+                    continue
+
+            # Build entries list including folder sizes
+            for file_data in results:
                 try:
                     properties = file_data.get('properties', {})
                     # The filename in title property is the original filename
                     name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
                     size = properties.get('filesize', {}).get('number', 0)
-                    file_id = file_data.get('id') # Extract the Notion page ID
-                    is_public = properties.get('is_public', {}).get('checkbox', False) # Get is_public status
-                    file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
+                    file_id = file_data.get('id')  # Extract the Notion page ID
+                    is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
+                    file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')  # Get filehash
                     # Only use file_data for file storage
                     file_data_files = properties.get('file_data', {}).get('files', [])
                     folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
@@ -217,7 +243,8 @@ def home():
                                 "type": "folder",
                                 "name": name,
                                 "id": file_id,
-                                "full_path": full_path
+                                "full_path": full_path,
+                                "size": folder_sizes.get(full_path, 0)
                             })
                         else:
                             entries.append({
@@ -990,6 +1017,30 @@ def get_entries_api():
         files_response = uploader.get_files_from_user_database(user_database_id)
         files = files_response.get('results', [])
 
+        # Pre-calculate cumulative sizes for all folders
+        folder_sizes = defaultdict(int)
+        for file_data in files:
+            try:
+                properties = file_data.get('properties', {})
+                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                size = properties.get('filesize', {}).get('number', 0)
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                if name and is_visible and not is_folder:
+                    path = folder_path or '/'
+                    while True:
+                        folder_sizes[path] += size
+                        if path == '/' or path == '':
+                            break
+                        path = '/' + '/'.join(path.strip('/').split('/')[:-1])
+                        if path == '':
+                            path = '/'
+            except Exception as e:
+                print(f"Error calculating folder sizes in get_entries_api: {e}")
+                continue
+
         entries = []
         for file_data in files:
             try:
@@ -1010,7 +1061,8 @@ def get_entries_api():
                             'type': 'folder',
                             'name': name,
                             'id': file_id,
-                            'full_path': full_path
+                            'full_path': full_path,
+                            'size': folder_sizes.get(full_path, 0)
                         })
                     else:
                         entries.append({
