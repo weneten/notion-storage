@@ -89,6 +89,33 @@ app.upload_metadata = {}
 app.upload_session_lock = threading.Lock()  # Master lock for upload session operations
 app.id_validation_lock = threading.Lock()   # Lock for ID validation operations
 
+def ensure_folder_structure(user_database_id: str, folder_path: str):
+    """Ensure that all folders in folder_path exist in the user's database."""
+    try:
+        if not folder_path or folder_path == '/':
+            return
+
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        existing_paths = set()
+        for entry in files_data.get('results', []):
+            props = entry.get('properties', {})
+            if props.get('is_folder', {}).get('checkbox'):
+                parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
+                existing_paths.add(path)
+
+        parts = folder_path.strip('/').split('/')
+        current = '/'
+        for part in parts:
+            next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
+            if next_path not in existing_paths:
+                uploader.create_folder(user_database_id, part, current)
+                existing_paths.add(next_path)
+            current = next_path
+    except Exception as e:
+        print(f"Error ensuring folder structure: {e}")
+
 def format_bytes(bytes, decimals=2):
     if bytes == 0:
         return '0 Bytes'
@@ -1481,7 +1508,10 @@ def create_streaming_upload_session():
             return jsonify({'error': 'User database not found'}), 404
         
         print(f"DEBUG: User database ID: {user_database_id}")
-        
+
+        # Ensure folder hierarchy exists
+        ensure_folder_structure(user_database_id, folder_path)
+
         # Create upload session
         upload_id = streaming_upload_manager.create_upload_session(
             filename=filename,
