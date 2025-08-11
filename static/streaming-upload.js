@@ -107,8 +107,9 @@ class StreamingFileUploader {
      * @param {File} file - The file to upload
      * @param {Function} progressCallback - Progress callback function
      * @param {Function} statusCallback - Status update callback function
+     * @param {string} folderPath - Target folder path for this file
      * @returns {Promise} Upload result
-     */    async uploadFile(file, progressCallback, statusCallback) {
+     */    async uploadFile(file, progressCallback, statusCallback, folderPath = window.currentFolder || '/') {
         const uploadId = this.generateUploadId();
         this.failedUpload = null;
 
@@ -127,7 +128,7 @@ class StreamingFileUploader {
                     filename: file.name,
                     fileSize: file.size,
                     contentType: file.type || 'application/octet-stream',
-                    folderPath: window.currentFolder || '/'
+                    folderPath: folderPath
                 })
             });
 
@@ -422,63 +423,71 @@ const uploadFile = async () => {
     }
 
     const fileInput = document.getElementById('fileInput');
-    const file = fileInput.files[0];
+    const files = Array.from(fileInput.files || []);
 
-    if (!file) {
-        showStatus('Please select a file to upload.', 'error');
+    if (files.length === 0) {
+        showStatus('Please select files or folders to upload.', 'error');
         return;
     }
 
-    // Show progress bar
     const progressContainer = document.getElementById('progressBarContainer');
     if (progressContainer) {
         progressContainer.style.display = 'block';
     }
 
-    // Progress callback
-    const progressCallback = (progress, bytesUploaded) => {
-        updateProgressBar(
-            Math.floor(progress),
-            `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`
-        );
-    };
+    for (const file of files) {
+        updateProgressBar(0, 'Preparing upload...');
 
-    // Status callback
-    const statusCallback = (message, type) => {
-        showStatus(message, type);
-    };
+        const progressCallback = (progress, bytesUploaded) => {
+            updateProgressBar(
+                Math.floor(progress),
+                `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`
+            );
+        };
 
-    try {
-        const result = await streamingUploader.uploadFile(file, progressCallback, statusCallback);
+        const statusCallback = (message, type) => {
+            showStatus(message, type);
+        };
 
-        // Reset form and refresh file list
-        const uploadForm = document.getElementById('uploadForm');
-        if (uploadForm) {
-            uploadForm.reset();
-        }
-
-        // Refresh file list using existing function
-        if (typeof refreshFileList === 'function') {
-            refreshFileList();
-        } else if (typeof loadFiles === 'function') {
-            loadFiles();
-        }
-
-        showStatus(`File "${file.name}" uploaded successfully!`, 'success');
-
-    } catch (error) {
-        console.error('Upload error:', error);
-        showStatus(`Upload failed: ${error.message}`, 'error');
-        showRetryButton();
-    } finally {
-        // Hide progress bar after a delay
-        setTimeout(() => {
-            const progressContainer = document.getElementById('progressBarContainer');
-            if (progressContainer) {
-                progressContainer.style.display = 'none';
+        // Determine target folder path for this file
+        let folderPath = window.currentFolder || '/';
+        if (file.webkitRelativePath) {
+            const parts = file.webkitRelativePath.split('/');
+            parts.pop(); // remove filename
+            const relativeFolder = parts.join('/');
+            if (relativeFolder) {
+                const base = (window.currentFolder && window.currentFolder !== '/') ? window.currentFolder.replace(/\/$/, '/') : '/';
+                folderPath = base === '/' ? `/${relativeFolder}`.replace(/\/\//g, '/') : `${base}${relativeFolder}`;
             }
-        }, 3000);
+        }
+
+        try {
+            await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
+            showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+        } catch (error) {
+            console.error('Upload error:', error);
+            showStatus(`Upload failed: ${error.message}`, 'error');
+            showRetryButton();
+            break;
+        }
     }
+
+    const uploadForm = document.getElementById('uploadForm');
+    if (uploadForm) {
+        uploadForm.reset();
+    }
+
+    if (typeof refreshFileList === 'function') {
+        refreshFileList();
+    } else if (typeof loadFiles === 'function') {
+        loadFiles();
+    }
+
+    setTimeout(() => {
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
+    }, 3000);
 };
 
 async function resumeFailedUpload() {
