@@ -557,8 +557,8 @@ const uploadFile = async () => {
         uploadState.socket = io('/ws/upload', socketConfig);
         uploadState.socket.binaryType = 'arraybuffer';
 
-        // Determine if this is a large file (over 1GB)
-        const isLargeFile = fileSize > 1024 * 1024 * 1024;
+        // Determine if this is a large file (over 500MB)
+        const isLargeFile = fileSize > 500 * 1024 * 1024;
 
         // Chunk size and timing
         const chunkSize = 5 * 1024 * 1024; // 5MB chunks for Notion API

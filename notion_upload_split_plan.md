@@ -10,11 +10,11 @@
 
 
 ### 2.1. File Size Check and Splitting Logic
-- **Splitting threshold:** 1 GiB (1,073,741,824 bytes)
+- **Splitting threshold:** 500 MiB (524,288,000 bytes)
 - **Upload type threshold:** 20 MiB (20,971,520 bytes)
 
-- **If file > 1 GiB:**
-  1. **Split file** into parts, each ≤1 GiB (e.g., 1.2 GiB → 1 GiB part + 0.2 GiB part).
+- **If file > 500 MiB:**
+  1. **Split file** into parts, each ≤500 MiB (e.g., 1.2 GiB → 500 MiB + 500 MiB + 0.2 GiB).
   2. **Upload each part:**
      - If part > 20 MiB: upload as multipart.
      - If part ≤ 20 MiB: upload as single-part.
@@ -30,13 +30,13 @@
 
   **Example:**
   - For a 1.2 GiB file:
-    - Split into 1 GiB part and 0.2 GiB part
-    - 1 GiB part → upload as multipart
+    - Split into two 500 MiB parts and one 0.2 GiB part
+    - Each 500 MiB part → upload as multipart
     - 0.2 GiB part → upload as single-part
     - Each part gets its own DB entry with `is_visible` unchecked
     - After all parts, upload a JSON metadata file and create a DB entry with `is_visible` checked
 
-- **If file ≤ 1 GiB:**
+- **If file ≤ 500 MiB:**
   - If file > 20 MiB: upload as multipart
   - If file ≤ 20 MiB: upload as single-part
   - Create a single DB entry:
