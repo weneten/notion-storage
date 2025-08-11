@@ -628,7 +628,7 @@ async function loadFiles() {
                 tableHTML += `
                 <tr class="folder-row" data-folder-path="${entry.full_path}">
                     <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
-                    <td class="filesize-cell">-</td>
+                    <td class="filesize-cell">${formatFileSize(entry.size)}</td>
                     <td>${entry.full_path}</td>
                     <td></td>
                     <td></td>
