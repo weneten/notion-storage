@@ -2150,3 +2150,7 @@ def process_websocket_chunk_robust(upload_id, part_number, chunk_data, is_last_c
 cleanup_old_sessions()
 
 # END OF STREAMING UPLOAD API
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 80))
+    socketio.run(app, host="0.0.0.0", port=port)
