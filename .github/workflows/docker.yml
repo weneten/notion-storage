@@ -30,6 +30,4 @@ jobs:
 
     # Push Docker image to Docker Hub
     - name: Push Docker image
-      run: |
-        docker push weneten/notion-storage:${{ github.sha }}
-        docker push weneten/notion-storage:latest
+      run: docker push weneten/notion-storage:latest
