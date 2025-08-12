@@ -460,8 +460,12 @@ const uploadFile = async () => {
             parts.pop(); // remove filename
             const relativeFolder = parts.join('/');
             if (relativeFolder) {
-                const base = (window.currentFolder && window.currentFolder !== '/') ? window.currentFolder.replace(/\/$/, '/') : '/';
-                folderPath = base === '/' ? `/${relativeFolder}`.replace(/\/\//g, '/') : `${base}${relativeFolder}`;
+                // Ensure base path always ends with a single slash before appending subfolder
+                const base = (window.currentFolder && window.currentFolder !== '/')
+                    ? window.currentFolder.replace(/\/$/, '') + '/'
+                    : '/';
+                // Join base and relative folder, collapsing any accidental double slashes
+                folderPath = `${base}${relativeFolder}`.replace(/\/+/g, '/');
             }
         }
 
