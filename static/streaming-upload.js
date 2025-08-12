@@ -439,13 +439,21 @@ const uploadFile = async () => {
         progressContainer.style.display = 'block';
     }
 
-    const MAX_PARALLEL_UPLOADS = 3;
-    const SMALL_FILE_LIMIT = 20 * 1024 * 1024; // 20 MiB
-    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-    let totalBytesUploaded = 0;
-    const fileProgress = new Map();
+    for (const file of files) {
+        updateProgressBar(0, 'Preparing upload...');
 
-    const getFolderPath = (file) => {
+        const progressCallback = (progress, bytesUploaded) => {
+            updateProgressBar(
+                Math.floor(progress),
+                `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`
+            );
+        };
+
+        const statusCallback = (message, type) => {
+            showStatus(message, type);
+        };
+
+        // Determine target folder path for this file
         let folderPath = window.currentFolder || '/';
         if (file.webkitRelativePath) {
             const parts = file.webkitRelativePath.split('/');
@@ -456,46 +464,16 @@ const uploadFile = async () => {
                 folderPath = base === '/' ? `/${relativeFolder}`.replace(/\/\//g, '/') : `${base}${relativeFolder}`;
             }
         }
-        return folderPath;
-    };
 
-    const createProgressCallback = (file) => {
-        return (progress, bytesUploaded) => {
-            const prev = fileProgress.get(file) || 0;
-            const delta = bytesUploaded - prev;
-            fileProgress.set(file, bytesUploaded);
-            totalBytesUploaded += delta;
-            const percentage = totalSize > 0 ? (totalBytesUploaded / totalSize) * 100 : 0;
-            updateProgressBar(
-                Math.floor(percentage),
-                `Uploading: ${streamingUploader.formatFileSize(totalBytesUploaded)}/${streamingUploader.formatFileSize(totalSize)}`
-            );
-        };
-    };
-
-    const uploadSingle = async (file) => {
-        const progressCallback = createProgressCallback(file);
-        const statusCallback = (message, type) => { showStatus(message, type); };
-        const folderPath = getFolderPath(file);
-        await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
-        showStatus(`File "${file.name}" uploaded successfully!`, 'success');
-    };
-
-    const smallFiles = files.filter(f => f.size <= SMALL_FILE_LIMIT);
-    const largeFiles = files.filter(f => f.size > SMALL_FILE_LIMIT);
-
-    try {
-        for (let i = 0; i < smallFiles.length; i += MAX_PARALLEL_UPLOADS) {
-            const batch = smallFiles.slice(i, i + MAX_PARALLEL_UPLOADS).map(uploadSingle);
-            await Promise.all(batch);
+        try {
+            await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
+            showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+        } catch (error) {
+            console.error('Upload error:', error);
+            showStatus(`Upload failed: ${error.message}`, 'error');
+            showRetryButton();
+            break;
         }
-        for (const file of largeFiles) {
-            await uploadSingle(file);
-        }
-    } catch (error) {
-        console.error('Upload error:', error);
-        showStatus(`Upload failed: ${error.message}`, 'error');
-        showRetryButton();
     }
 
     const uploadForm = document.getElementById('uploadForm');
