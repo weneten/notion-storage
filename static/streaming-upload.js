@@ -95,6 +95,38 @@ function updateProgressBar(percentage, statusText) {
     }
 }
 
+function createFileProgressBar(file) {
+    const container = document.getElementById('fileProgressContainer');
+    if (!container) return () => {};
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'progress-bar-container';
+
+    const bar = document.createElement('div');
+    bar.className = 'progress-bar';
+
+    const text = document.createElement('span');
+    text.className = 'progress-text';
+    text.textContent = '0%';
+    bar.appendChild(text);
+    wrapper.appendChild(bar);
+
+    const subText = document.createElement('p');
+    subText.className = 'progress-subtext';
+    subText.textContent = `${file.name}: 0/${streamingUploader.formatFileSize(file.size)}`;
+    wrapper.appendChild(subText);
+
+    container.appendChild(wrapper);
+
+    return (percentage, statusText) => {
+        bar.style.width = percentage + '%';
+        text.textContent = percentage + '%';
+        if (statusText) {
+            subText.textContent = statusText;
+        }
+    };
+}
+
 class StreamingFileUploader {
     constructor() {
         this.activeUploads = new Map();
@@ -434,26 +466,23 @@ const uploadFile = async () => {
         return;
     }
 
+    const fileProgressContainer = document.getElementById('fileProgressContainer');
+    if (fileProgressContainer) {
+        fileProgressContainer.innerHTML = '';
+    }
+
     const progressContainer = document.getElementById('progressBarContainer');
     if (progressContainer) {
         progressContainer.style.display = 'block';
     }
 
-    for (const file of files) {
-        updateProgressBar(0, 'Preparing upload...');
+    const MAX_PARALLEL_UPLOADS = 3;
+    const SMALL_FILE_LIMIT = 20 * 1024 * 1024; // 20 MiB
+    const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+    let totalBytesUploaded = 0;
+    const fileProgress = new Map();
 
-        const progressCallback = (progress, bytesUploaded) => {
-            updateProgressBar(
-                Math.floor(progress),
-                `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`
-            );
-        };
-
-        const statusCallback = (message, type) => {
-            showStatus(message, type);
-        };
-
-        // Determine target folder path for this file
+    const getFolderPath = (file) => {
         let folderPath = window.currentFolder || '/';
         if (file.webkitRelativePath) {
             const parts = file.webkitRelativePath.split('/');
@@ -464,16 +493,52 @@ const uploadFile = async () => {
                 folderPath = base === '/' ? `/${relativeFolder}`.replace(/\/\//g, '/') : `${base}${relativeFolder}`;
             }
         }
+        return folderPath;
+    };
 
-        try {
-            await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
-            showStatus(`File "${file.name}" uploaded successfully!`, 'success');
-        } catch (error) {
-            console.error('Upload error:', error);
-            showStatus(`Upload failed: ${error.message}`, 'error');
-            showRetryButton();
-            break;
+    const createProgressCallback = (file) => {
+        const updateFileBar = createFileProgressBar(file);
+        return (progress, bytesUploaded) => {
+            const prev = fileProgress.get(file) || 0;
+            const delta = bytesUploaded - prev;
+            fileProgress.set(file, bytesUploaded);
+            totalBytesUploaded += delta;
+            const percentage = totalSize > 0 ? (totalBytesUploaded / totalSize) * 100 : 0;
+            updateProgressBar(
+                Math.floor(percentage),
+                `Uploading: ${streamingUploader.formatFileSize(totalBytesUploaded)}/${streamingUploader.formatFileSize(totalSize)}`
+            );
+            const filePercentage = file.size > 0 ? (bytesUploaded / file.size) * 100 : 0;
+            updateFileBar(
+                Math.floor(filePercentage),
+                `${file.name}: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`
+            );
+        };
+    };
+
+    const uploadSingle = async (file) => {
+        const progressCallback = createProgressCallback(file);
+        const statusCallback = (message, type) => { showStatus(message, type); };
+        const folderPath = getFolderPath(file);
+        await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
+        showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+    };
+
+    const smallFiles = files.filter(f => f.size <= SMALL_FILE_LIMIT);
+    const largeFiles = files.filter(f => f.size > SMALL_FILE_LIMIT);
+
+    try {
+        for (let i = 0; i < smallFiles.length; i += MAX_PARALLEL_UPLOADS) {
+            const batch = smallFiles.slice(i, i + MAX_PARALLEL_UPLOADS).map(uploadSingle);
+            await Promise.all(batch);
         }
+        for (const file of largeFiles) {
+            await uploadSingle(file);
+        }
+    } catch (error) {
+        console.error('Upload error:', error);
+        showStatus(`Upload failed: ${error.message}`, 'error');
+        showRetryButton();
     }
 
     const uploadForm = document.getElementById('uploadForm');
