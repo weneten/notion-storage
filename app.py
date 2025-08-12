@@ -3,6 +3,7 @@ from flask_login import LoginManager, UserMixin, login_user, login_required, log
 from flask_socketio import SocketIO
 from flask_cors import CORS
 from uploader import NotionFileUploader, ChunkProcessor
+from uploader.streaming_uploader import StreamingUploadManager
 from dotenv import load_dotenv
 import os
 import secrets
@@ -19,41 +20,48 @@ import time
 import uuid
 import random
 import string
-import psutil  # Add psutil for memory monitoring
+import json
+from flask_socketio import emit
+from collections import defaultdict
 
-# Function to get current memory usage
-def get_memory_usage():
-    """Get current memory usage of the process in MB"""
+# Function to clean up old upload sessions periodically
+def cleanup_old_sessions():
+    """Clean up old upload sessions every minute"""
     try:
-        process = psutil.Process(os.getpid())
-        memory_info = process.memory_info()
-        memory_mb = memory_info.rss / (1024 * 1024)  # Convert to MB
-        return memory_mb
-    except Exception as e:
-        print(f"Error getting memory usage: {e}")
-        return 0
-
-# Function to log memory usage periodically
-def log_memory_usage():
-    """Log memory usage every minute"""
-    try:
-        memory_mb = get_memory_usage()
-        cached_chunks_count = 0
-        cached_chunks_size = 0
+        current_time = time.time()
         
         if hasattr(app, 'upload_processors'):
+            # Clean up old upload sessions (older than 30 minutes)
+            expired_sessions = []
             for upload_id, upload_data in app.upload_processors.items():
-                cached_chunks = upload_data.get('cached_chunks', {})
-                cached_chunks_count += len(cached_chunks)
-                cached_chunks_size += sum(len(chunk) for chunk in cached_chunks.values())
+                last_activity = upload_data.get('last_activity', 0)
+                if current_time - last_activity > 1800:  # 30 minutes
+                    expired_sessions.append(upload_id)
+            
+            # Clean up expired sessions
+            for upload_id in expired_sessions:
+                print(f"Cleaning up expired upload session: {upload_id}")
+                cleanup_upload_session(upload_id)
         
-        cached_chunks_mb = cached_chunks_size / (1024 * 1024)
-        print(f"MEMORY: Process using {memory_mb:.2f} MB | Cached chunks: {cached_chunks_count} ({cached_chunks_mb:.2f} MB)")
+        # Clean up old metadata entries
+        if hasattr(app, 'upload_metadata'):
+            expired_metadata = []
+            for session_id, metadata in app.upload_metadata.items():
+                if current_time - metadata.get('timestamp', 0) > 300:  # 5 minutes
+                    expired_metadata.append(session_id)
+            
+            for session_id in expired_metadata:
+                del app.upload_metadata[session_id]
+                print(f"Cleaned up expired metadata for session: {session_id}")
+        
+        active_sessions = len(app.upload_processors) if hasattr(app, 'upload_processors') else 0
+        print(f"SESSION_CLEANUP: Active sessions: {active_sessions}")
+        
     except Exception as e:
-        print(f"Error in memory logging: {e}")
+        print(f"Error in session cleanup: {e}")
         
     # Schedule next check
-    threading.Timer(60, log_memory_usage).start()
+    threading.Timer(60, cleanup_old_sessions).start()
     
 # Load environment variables from .env file
 load_dotenv()
@@ -61,11 +69,53 @@ load_dotenv()
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY')  # Default secret key for development
 CORS(app)  # Enable CORS for all routes
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    binary=True,
+    async_mode='eventlet',
+    max_http_buffer_size=5 * 1024 * 1024,  # Reduce to 5MB buffer
+    ping_timeout=60,
+    ping_interval=25
+)
 
-# Initialize global upload state containers
+# Initialize global upload state containers with thread synchronization
 app.upload_locks = {}
 app.upload_processors = {}
+
+# Add global metadata store
+app.upload_metadata = {}
+
+# CRITICAL FIX 3: Thread Synchronization - Global locks for upload session management
+app.upload_session_lock = threading.Lock()  # Master lock for upload session operations
+app.id_validation_lock = threading.Lock()   # Lock for ID validation operations
+
+def ensure_folder_structure(user_database_id: str, folder_path: str):
+    """Ensure that all folders in folder_path exist in the user's database."""
+    try:
+        if not folder_path or folder_path == '/':
+            return
+
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        existing_paths = set()
+        for entry in files_data.get('results', []):
+            props = entry.get('properties', {})
+            if props.get('is_folder', {}).get('checkbox'):
+                parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
+                existing_paths.add(path)
+
+        parts = folder_path.strip('/').split('/')
+        current = '/'
+        for part in parts:
+            next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
+            if next_path not in existing_paths:
+                uploader.create_folder(user_database_id, part, current)
+                existing_paths.add(next_path)
+            current = next_path
+    except Exception as e:
+        print(f"Error ensuring folder structure: {e}")
 
 def format_bytes(bytes, decimals=2):
     if bytes == 0:
@@ -78,6 +128,19 @@ def format_bytes(bytes, decimals=2):
 
 app.jinja_env.filters['format_bytes'] = format_bytes
 
+def add_stream_headers(resp, mimetype=''):
+    """Apply common streaming headers for iOS/Safari compatibility."""
+    resp.headers.setdefault('Accept-Ranges', 'bytes')
+    resp.headers.setdefault('Cache-Control', 'public, max-age=3600, must-revalidate')
+    resp.headers.setdefault('X-Content-Type-Options', 'nosniff')
+    resp.headers.setdefault('Vary', 'Range, Accept-Encoding')
+    resp.headers['Access-Control-Allow-Origin'] = '*'
+    resp.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
+    if mimetype.startswith('video/'):
+        resp.headers.setdefault('Connection', 'keep-alive')
+        resp.headers.setdefault('Content-Transfer-Encoding', 'binary')
+    return resp
+
 # Initialize Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -87,8 +150,17 @@ login_manager.login_view = 'login'
 NOTION_API_TOKEN = os.environ.get('NOTION_API_TOKEN')
 NOTION_USER_DB_ID = os.environ.get('NOTION_USER_DB_ID')
 GLOBAL_FILE_INDEX_DB_ID = os.environ.get('GLOBAL_FILE_INDEX_DB_ID')
+NOTION_SPACE_ID = os.environ.get('NOTION_SPACE_ID')  # Add space ID configuration
 
-uploader = NotionFileUploader(api_token=NOTION_API_TOKEN, socketio=socketio, global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID)
+uploader = NotionFileUploader(
+    api_token=NOTION_API_TOKEN,
+    socketio=socketio,
+    global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID,
+    notion_space_id=NOTION_SPACE_ID
+)
+
+# Initialize streaming upload manager
+streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, socketio=socketio, notion_uploader=uploader)
 
 # User class for Flask-Login
 class User(UserMixin):
@@ -119,34 +191,77 @@ def load_user(user_id):
 def home():
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
-        files = []
+        current_folder = request.args.get('folder', '/')
+        entries = []
         if user_database_id:
-            # Ensure 'is_public' and 'salt' properties exist in the user's database
-
             files_data = uploader.get_files_from_user_database(user_database_id)
-            for file_data in files_data.get('results', []):
+            results = files_data.get('results', [])
+
+            # Pre-calculate cumulative sizes for all folders
+            folder_sizes = defaultdict(int)
+            for file_data in results:
+                try:
+                    properties = file_data.get('properties', {})
+                    name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                    size = properties.get('filesize', {}).get('number', 0)
+                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                    if name and is_visible and not is_folder:
+                        path = folder_path or '/'
+                        while True:
+                            folder_sizes[path] += size
+                            if path == '/' or path == '':
+                                break
+                            path = '/' + '/'.join(path.strip('/').split('/')[:-1])
+                            if path == '':
+                                path = '/'
+                except Exception as e:
+                    print(f"Error calculating folder sizes in home route: {e}")
+                    continue
+
+            # Build entries list including folder sizes
+            for file_data in results:
                 try:
                     properties = file_data.get('properties', {})
                     # The filename in title property is the original filename
                     name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                    
                     size = properties.get('filesize', {}).get('number', 0)
-                    file_id = file_data.get('id') # Extract the Notion page ID
-                    is_public = properties.get('is_public', {}).get('checkbox', False) # Get is_public status
-                    file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
-                    
-                    if name:
-                        files.append({
-                            "name": name,  # This is already the original filename
-                            "size": size,
-                            "id": file_id, # Add the file_id to the dictionary
-                            "is_public": is_public, # Add is_public status
-                            "file_hash": file_hash # Add file_hash
-                        })
+                    file_id = file_data.get('id')  # Extract the Notion page ID
+                    is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
+                    file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')  # Get filehash
+                    # Only use file_data for file storage
+                    file_data_files = properties.get('file_data', {}).get('files', [])
+                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
+                    if name and is_visible and folder_path == current_folder:
+                        if is_folder:
+                            full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
+                            entries.append({
+                                "type": "folder",
+                                "name": name,
+                                "id": file_id,
+                                "full_path": full_path,
+                                "size": folder_sizes.get(full_path, 0)
+                            })
+                        else:
+                            entries.append({
+                                "type": "file",
+                                "name": name,
+                                "size": size,
+                                "id": file_id,
+                                "is_public": is_public,
+                                "file_hash": file_hash,
+                                "salted_hash": "",
+                                "file_data": file_data_files,
+                                "folder": folder_path
+                            })
                 except Exception as e:
                     print(f"Error processing file data in home route: {e}")
                     continue
-        return render_template('home.html', files=files)
+        return render_template('home.html', entries=entries, current_folder=current_folder)
     except Exception as e:
         return f"Error loading home page: {str(e)}", 500
 
@@ -178,7 +293,8 @@ def login():
             # Check password
             if user.check_password(password):
                 login_user(user)
-                return redirect(url_for('home'))
+                # Explicitly set folder=/ so the URL shows the root folder
+                return redirect(url_for('home', folder='/'))
             else:
                 return "Ungültige Anmeldedaten", 401
 
@@ -192,6 +308,12 @@ def register():
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
+
+        existing = uploader.query_user_database_by_username(
+            NOTION_USER_DB_ID, username
+        ).get('results', [])
+        if existing:
+            return "Benutzername bereits vergeben", 400
 
         # Hash password
         # Encode hash as base64 string for safe storage
@@ -244,321 +366,6 @@ def logout():
     return redirect(url_for('login'))
 
 
-@app.route('/upload_file', methods=['POST'])
-@login_required
-def upload_file():
-    print("DEBUG: Chunk upload request received from", request.remote_addr)
-    
-    # Debug the request form and files
-    print("DEBUG: Request form data:")
-    for key, value in request.form.items():
-        print(f"DEBUG: - {key}: {value}")
-    
-    print("DEBUG: Request files:")
-    for key, file in request.files.items():
-        print(f"DEBUG: - {key}: {file.filename}")
-    
-    try:
-        # Extract parameters from the request
-        upload_id = request.form.get('upload_id')
-        part_number = int(request.form.get('part_number'))
-        total_size = int(request.form.get('total_size', 0))
-        filename = request.form.get('filename', 'file.txt')
-        original_filename = request.form.get('original_filename', filename)
-        salt = request.form.get('salt', '')
-        is_last_chunk = request.form.get('is_last_chunk', 'False').lower() == 'true'
-        is_multipart = request.form.get('is_multipart', 'False').lower() == 'true'
-        
-        # Log received parameters for debugging
-        print("DEBUG: Received parameters:")
-        print(f"DEBUG: upload_id: {upload_id}")
-        print(f"DEBUG: part_number: {part_number}")
-        print(f"DEBUG: total_size: {total_size}")
-        print(f"DEBUG: filename: {filename}")
-        print(f"DEBUG: original_filename: {original_filename}")
-        print(f"DEBUG: salt: {salt}")
-        print(f"DEBUG: is_last_chunk: {is_last_chunk}")
-        print(f"DEBUG: is_multipart: {is_multipart}")
-        
-        # Check if we have all required parameters
-        if not upload_id or not part_number:
-            return jsonify({"error": "Missing required parameters"}), 400
-            
-        # Get the chunk data from the request - support both 'file' and 'chunk' for backward compatibility
-        chunk_file = request.files.get('file') or request.files.get('chunk')
-        if not chunk_file:
-            return jsonify({"error": "No file provided - expected 'file' field in form data"}), 400
-            
-        # Read the chunk data
-        chunk_data = chunk_file.read()
-        chunk_size = len(chunk_data)
-        
-        # Determine total parts based on upload metadata
-        total_parts = 0
-        
-        # Ensure upload_locks and upload_processors are initialized
-        if not hasattr(app, 'upload_locks'):
-            app.upload_locks = {}
-            
-        if not hasattr(app, 'upload_processors'):
-            app.upload_processors = {}
-        
-        # Create a lock for this upload if it doesn't exist
-        if upload_id not in app.upload_locks:
-            app.upload_locks[upload_id] = threading.Lock()
-            
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            # Get or create the processor for this upload
-            if upload_id not in app.upload_processors:
-                print(f"DEBUG: Created new chunk processor for upload {upload_id}")
-                app.upload_processors[upload_id] = {
-                    'hasher': hashlib.sha512(salt.encode()),
-                    'total_size': total_size,
-                    'filename': filename,
-                    'original_filename': original_filename,
-                    'salt': salt,
-                    'bytes_uploaded': 0,
-                    'completed_parts': set(),
-                    'pending_parts': set(),
-                    'upload_threads': {},
-                    'total_parts': 0,
-                    'cached_chunks': {},  # Add chunk caching for retries
-                    'last_activity': time.time(),
-                    'is_multipart': is_multipart,  # Store whether this is a multipart upload
-                }
-            
-            # Get the processor for this upload
-            upload_data = app.upload_processors[upload_id]
-            
-            # Update last activity timestamp
-            upload_data['last_activity'] = time.time()
-            
-            # Update total parts if needed
-            if is_last_chunk and part_number > upload_data.get('total_parts', 0):
-                upload_data['total_parts'] = part_number
-                
-            # Or if we already know the total parts from a previous request
-            total_parts = upload_data.get('total_parts', 0)
-            
-            # Update part info even if processing may be delayed
-            upload_data['original_filename'] = original_filename
-            upload_data['filename'] = filename
-            upload_data['salt'] = salt
-            upload_data['is_multipart'] = is_multipart  # Update multipart flag
-            
-            # Check if part is already processed or in progress
-            if part_number in upload_data['completed_parts']:
-                print(f"DEBUG: Part {part_number} already processed, skipping")
-                return jsonify({
-                    "message": f"Part {part_number} already processed",
-                    "upload_id": upload_id,
-                    "part_number": part_number,
-                    "bytes_uploaded": upload_data['bytes_uploaded'],
-                    "total_size": total_size,
-                    "status": "success"
-                })
-                
-            if part_number in upload_data['pending_parts']:
-                print(f"DEBUG: Part {part_number} upload already in progress, waiting for completion...")
-                # Wait for ongoing upload to complete (up to 30 seconds)
-                wait_count = 0
-                while (part_number in upload_data['pending_parts'] and 
-                       part_number not in upload_data['completed_parts'] and 
-                       wait_count < 30):
-                    time.sleep(1)
-                    wait_count += 1
-                    
-                if part_number in upload_data['completed_parts']:
-                    return jsonify({
-                        "message": f"Part {part_number} completed while waiting",
-                        "upload_id": upload_id,
-                        "part_number": part_number,
-                        "bytes_uploaded": upload_data['bytes_uploaded'],
-                        "total_size": total_size,
-                        "status": "success"
-                    })
-                    
-                # If we're still pending after timeout, something went wrong
-                if part_number in upload_data['pending_parts']:
-                    return jsonify({
-                        "error": f"Part {part_number} upload timed out",
-                        "upload_id": upload_id,
-                        "part_number": part_number,
-                        "status": "error"
-                    }), 500
-                    
-            # Mark this part as pending
-            upload_data['pending_parts'].add(part_number)
-            
-            # Always cache chunk data for retries (regardless of file size)
-            max_chunk_cache_size = 10 * 1024 * 1024  # Max cache size per chunk
-            
-            # Always cache the chunk, regardless of size or part number
-            # This will be used for retries and deleted after successful upload
-            upload_data['cached_chunks'][part_number] = chunk_data
-            print(f"DEBUG: Cached chunk data for part {part_number} ({chunk_size} bytes)")
-            
-        # Process this part
-        print(f"DEBUG: Processing part {part_number} of {total_parts}, is_last_part={is_last_chunk}")
-        
-        # Get user database ID
-        user_database_id = uploader.get_user_database_id(current_user.id)
-        if not user_database_id:
-            return jsonify({"error": "User database not found"}), 404
-        
-        # Calculate hash for this chunk (note: we're using SHA-512 instead of MD5)
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            upload_data = app.upload_processors[upload_id]
-            upload_data['hasher'].update(chunk_data)
-            bytes_uploaded_so_far = upload_data['bytes_uploaded']
-        
-        # Get session ID before spawning thread (to avoid request context issues)
-        session_id = str(uuid.uuid4())
-        if hasattr(request, 'sid'):
-            session_id = request.sid
-            
-        # Execute the upload in a new thread so we don't block
-        def upload_thread_func(upload_id, part_number, chunk_data, filename, salt, is_last_chunk, bytes_uploaded_so_far, session_id):
-            try:
-                content_type = 'text/plain'  # Default for Notion uploads
-                
-                # Convert part number to int to ensure correct sorting
-                part_number = int(part_number)
-                
-                # Calculate chunk size in MiB for logging
-                chunk_size_mb = len(chunk_data) / (1024 * 1024)
-                print(f"Uploading part {part_number} of {total_parts} ({chunk_size_mb:.3f} MiB)")
-                
-                # Implement retry logic with exponential backoff
-                max_retries = 3  # Set to 3 retries max
-                retry_delay = 1  # Start with 1 second delay
-                
-                for retry_attempt in range(max_retries + 1):
-                    try:
-                        # Start the upload - use the session_id passed to the thread
-                        response = uploader.send_file_part(
-                            upload_id, 
-                            part_number, 
-                        chunk_data,
-                            filename, 
-                            content_type,
-                            bytes_uploaded_so_far,
-                        total_size,
-                            total_parts,
-                            session_id
-                        )
-                        
-                        # If we got here, the upload was successful
-                        break
-                        
-                    except Exception as upload_error:
-                        error_message = str(upload_error)
-                        
-                        # Check if this is a retry-able error (network issues, server errors)
-                        is_retryable = any(s in error_message.lower() for s in [
-                            "timeout", "connection", "network", "socket", "gateway", 
-                            "cloudflare", "503", "502", "500", "429", "too many requests"
-                        ])
-                        
-                        # If we've run out of retries or this isn't retryable, delete cached chunk and re-raise the error
-                        if retry_attempt >= max_retries or not is_retryable:
-                            print(f"ERROR: Part {part_number} upload failed after {retry_attempt} retries: {error_message}")
-                            
-                            # Delete chunk from cache after max retries to free memory
-                            with app.upload_locks.get(upload_id, threading.Lock()):
-                                if upload_id in app.upload_processors:
-                                    if part_number in app.upload_processors[upload_id]['cached_chunks']:
-                                        del app.upload_processors[upload_id]['cached_chunks'][part_number]
-                                        print(f"DEBUG: Removed failed chunk {part_number} from cache after max retries")
-                            
-                            raise
-
-                        # Log the error and retry
-                        wait_time = retry_delay * (2 ** retry_attempt)  # Exponential backoff
-                        print(f"WARNING: Upload for part {part_number} failed (attempt {retry_attempt+1}/{max_retries+1}): {error_message}")
-                        print(f"Retrying in {wait_time} seconds...")
-                        time.sleep(wait_time)
-                
-                # Update the upload data atomically
-                with app.upload_locks.get(upload_id, threading.Lock()):
-                    if upload_id in app.upload_processors:
-                        upload_data = app.upload_processors[upload_id]
-                        
-                        # Mark part as completed
-                        upload_data['completed_parts'].add(part_number)
-                        print(f"DEBUG: Marked part {part_number} as completed. Completed parts: {sorted(list(upload_data['completed_parts']))}")
-                        
-                        # Update bytes uploaded
-                        upload_data['bytes_uploaded'] += len(chunk_data)
-                        print(f"DEBUG: Updated bytes uploaded to {upload_data['bytes_uploaded']} / {total_size} ({upload_data['bytes_uploaded']/total_size*100:.1f}%)")
-                        
-                        # Remove from pending parts
-                        if part_number in upload_data['pending_parts']:
-                            upload_data['pending_parts'].remove(part_number)
-                            print(f"DEBUG: Removed part {part_number} from pending parts. Pending parts: {sorted(list(upload_data['pending_parts']))}")
-                            
-                        # Remove this thread from tracking
-                        if part_number in upload_data['upload_threads']:
-                            del upload_data['upload_threads'][part_number]
-                            
-                        # Remove cached chunk data to free memory
-                        if part_number in upload_data['cached_chunks']:
-                            del upload_data['cached_chunks'][part_number]
-                            print(f"DEBUG: Freed memory by removing cached data for part {part_number}")
-                            
-                        # Update total_parts from is_last_chunk
-                        if is_last_chunk and part_number > upload_data.get('total_parts', 0):
-                            upload_data['total_parts'] = part_number
-                            print(f"DEBUG: Updated total parts to {upload_data['total_parts']} based on last chunk")
-                            
-                print(f"Successfully uploaded part {part_number} of {total_parts}")
-                
-            except Exception as e:
-                print(f"ERROR in upload thread for part {part_number}: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                
-                # Update state atomically to remove pending status
-                with app.upload_locks.get(upload_id, threading.Lock()):
-                    if upload_id in app.upload_processors:
-                        upload_data = app.upload_processors[upload_id]
-                        if part_number in upload_data['pending_parts']:
-                            upload_data['pending_parts'].remove(part_number)
-                        if part_number in upload_data['upload_threads']:
-                            del upload_data['upload_threads'][part_number]
-        
-        # Start the upload thread and register it
-        upload_thread = threading.Thread(
-            target=upload_thread_func,
-            args=(upload_id, part_number, chunk_data, filename, salt, is_last_chunk, bytes_uploaded_so_far, session_id)
-        )
-        upload_thread.daemon = True  # Make sure thread doesn't block process exit
-        
-        # Store the thread reference
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            upload_data = app.upload_processors[upload_id]
-            upload_data['upload_threads'][part_number] = upload_thread
-        
-        # Start the thread
-        print(f"Started upload thread for part {part_number} of {total_parts}")
-        upload_thread.start()
-        
-        # Return early success response
-        return jsonify({
-            "message": f"Part {part_number} processing started",
-            "upload_id": upload_id,
-            "part_number": part_number,
-            "chunk_size": chunk_size,
-            "total_size": total_size,
-            "status": "success"
-        })
-
-    except Exception as e:
-        print(f"ERROR in upload_file: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/change_password', methods=['GET', 'POST'])
 @login_required
 def change_password():
@@ -588,55 +395,48 @@ def change_password():
 
     return render_template('change_password.html')
 
-# @app.route('/files')
-# @login_required
-# def list_files():
-#     return render_template('files.html')
 
-@app.route('/files-api')
+@app.route('/change_username', methods=['GET', 'POST'])
 @login_required
-def list_files_api():
-    try:
-        # Get user's database ID
-        user_database_id = uploader.get_user_database_id(current_user.id)
-        if not user_database_id:
-            return jsonify({"error": "No user database ID found"}), 404
-            
-        # Query files from Notion database using uploader's method
-        files_data = uploader.get_files_from_user_database(user_database_id)
-        
-        # Format files for API response
-        files = []
-        for file_data in files_data.get('results', []):
-            try:
-                properties = file_data.get('properties', {})
-                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                size = properties.get('filesize', {}).get('number', 0)
-                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
-                
-                if name:  # Only include files with names
-                    files.append({
-                        "name": name,
-                        "size": size,
-                        "file_hash": file_hash # Add file_hash
-                    })
-            except Exception as e:
-                print(f"Error processing file data: {e}")
-                continue
-                
-        return jsonify({
-            "files": files,
-            "debug": {
-                "user_database_id": user_database_id,
-                "results_count": len(files)
-            }
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+def change_username():
+    if request.method == 'POST':
+        current_password = request.form.get('current_password')
+        new_username = request.form.get('new_username')
+        confirm_username = request.form.get('confirm_username')
+
+        # Verify new username matches confirmation
+        if new_username != confirm_username:
+            return "New username and confirmation do not match", 400
+
+        # Verify current password
+        if not current_user.check_password(current_password):
+            return "Current password is incorrect", 401
+
+        # Check if username already exists
+        existing = uploader.query_user_database_by_username(
+            NOTION_USER_DB_ID, new_username
+        )
+        if existing.get('results'):
+            return "Username already exists", 400
+
+        try:
+            # Update username in Notion
+            uploader.update_user_username(current_user.id, new_username)
+            current_user.username = new_username
+            return redirect(url_for('home'))
+        except Exception as e:
+            return f"Error changing username: {str(e)}", 500
+
+    return render_template('change_username.html')
+
+# FILE DOWNLOAD ROUTES
 
 @app.route('/download/<filename>')
 @login_required
 def download_file(filename):
+    """
+    Download file by filename (authenticated route) - redirects to hash-based download
+    """
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
@@ -644,13 +444,17 @@ def download_file(filename):
 
         files_data = uploader.get_files_from_user_database(user_database_id)
         file_hash = None
+        manifest_page_id = None
         for file_data in files_data.get('results', []):
             properties = file_data.get('properties', {})
             name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
             if name == filename:
                 file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                manifest_page_id = file_data.get('id')
                 break
 
+        if filename.lower().endswith('.json') and manifest_page_id:
+            return redirect(url_for('download_multipart_by_page_id', manifest_page_id=manifest_page_id))
         if file_hash:
             return redirect(url_for('download_by_hash', salted_sha512_hash=file_hash))
         else:
@@ -658,10 +462,14 @@ def download_file(filename):
     except Exception as e:
         return str(e), 500
 
+
 @app.route('/d/<salted_sha512_hash>')
 def download_by_hash(salted_sha512_hash):
+    """
+    Download file by hash (public/private route with access control)
+    """
     try:
-        # get_file_by_salted_sha512_hash now returns the index_entry from the Global File Index
+        # Find the file in the global file index using the hash
         index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
 
         if not index_entry:
@@ -681,15 +489,7 @@ def download_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
 
-        file_details_properties = file_details.get('properties', {})
-        # Explicitly retrieve a new signed S3 URL from Notion
-        notion_download_link = uploader.get_notion_file_url_from_page_property(file_page_id, original_filename)
-
-        # The download link is no longer stored in the database, as it's ephemeral.
-        # The file is streamed directly using the notion_download_link.
-        if not notion_download_link:
-            print(f"Warning: Could not retrieve a new download link for file_page_id: {file_page_id}")
-
+        # Check access control
         if not is_public:
             if not current_user.is_authenticated:
                 return redirect(url_for('login', next=request.url))
@@ -699,15 +499,106 @@ def download_by_hash(salted_sha512_hash):
             if file_user_db_id != current_user_db_id:
                 return "Access Denied: You do not have permission to download this file.", 403
 
-        if not notion_download_link:
+        # Check if this is a manifest JSON (multi-part file)
+        is_manifest = original_filename.lower().endswith('.json')
+        if is_manifest:
+            # Stream all parts as a single file
+            try:
+                # Download manifest JSON to get original filename and total size
+                import requests, json
+                manifest_page = uploader.get_user_by_id(file_page_id)
+                file_property = manifest_page.get('properties', {}).get('file_data', {})
+                files_array = file_property.get('files', [])
+                manifest_file = files_array[0] if files_array else None
+
+                # Use NotionFileUploader's method to get a fresh signed URL for the manifest JSON
+                manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
+                manifest_metadata = uploader.get_file_download_metadata(file_page_id, manifest_filename)
+                manifest_url = manifest_metadata.get('url', '')
+                if not manifest_url:
+                    return "Manifest file not found", 404
+
+                resp = requests.get(manifest_url)
+                resp.raise_for_status()
+                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+                orig_name = manifest.get('original_filename', 'download')
+                total_size = manifest.get('total_size', 0)
+                # Use video mimetype if possible, fallback to octet-stream
+                import mimetypes
+                mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
+
+                if request.method == 'HEAD':
+                    # Return headers without streaming the file
+                    response = Response(status=200, mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+                    response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                    return add_stream_headers(response, mimetype)
+
+                range_header = request.headers.get('Range')
+                if range_header and total_size > 0:
+                    range_value = range_header.strip().lower()
+                    if '=' not in range_value:
+                        return "Invalid range", 416
+                    units, range_spec = range_value.split('=', 1)
+                    if units != 'bytes':
+                        return "Invalid range unit", 416
+                    range_start, range_end = range_spec.split('-', 1)
+                    if range_start and range_end:
+                        start = int(range_start)
+                        end = int(range_end)
+                    elif range_start and not range_end:
+                        start = int(range_start)
+                        end = total_size - 1
+                    elif not range_start and range_end:
+                        suffix_length = int(range_end)
+                        start = max(0, total_size - suffix_length)
+                        end = total_size - 1
+                    else:
+                        return "Invalid range format", 416
+                    if start < 0 or end >= total_size or start > end:
+                        response = Response(status=416)
+                        response.headers['Content-Range'] = f'bytes */{total_size}'
+                        return response
+
+                    def stream_range():
+                        for chunk in uploader.stream_multi_part_file(file_page_id, start, end):
+                            yield chunk
+
+                    response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+                    response.headers['Content-Length'] = str(end - start + 1)
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+                else:
+                    response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+
+                response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
+                response.headers['Accept-Ranges'] = 'bytes'
+                return response
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
+                return f"Error streaming multi-part file: {str(e)}", 500
+        # Otherwise, normal single file download
+        file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
+        if not file_metadata['url']:
             return "Download link not available for this file", 500
-
-        mimetype, _ = mimetypes.guess_type(original_filename)
-        if not mimetype:
-            mimetype = 'application/octet-stream'
-
-        response = Response(stream_with_context(uploader.stream_file_from_notion(notion_download_link)), mimetype=mimetype)
+        mimetype = file_metadata['content_type']
+        if mimetype == 'application/octet-stream':
+            import mimetypes
+            detected_type, _ = mimetypes.guess_type(original_filename)
+            if detected_type:
+                mimetype = detected_type
+        response = Response(stream_with_context(uploader.stream_file_from_notion(file_page_id, original_filename)), mimetype=mimetype)
         response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
+        if file_metadata['file_size'] > 0:
+            response.headers['Content-Length'] = str(file_metadata['file_size'])
+            # Avoid printing Unicode emoji to stdout to prevent UnicodeEncodeError in some environments
+            print(f"Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
+        else:
+            print(f"No file size available for Content-Length header for {original_filename}")
         return response
 
     except Exception as e:
@@ -715,710 +606,1551 @@ def download_by_hash(salted_sha512_hash):
         error_trace = traceback.format_exc()
         print(f"DEBUG: Error in /d/<hash> route: {str(e)}\n{error_trace}")
         return "An error occurred during download.", 500
-@app.route('/delete_file', methods=['POST'])
-@login_required
-def delete_file():
-    print("DEBUG: /delete_file route accessed.")
+
+
+@app.route('/v/<salted_sha512_hash>', methods=['GET', 'HEAD'])
+def stream_by_hash(salted_sha512_hash):
+    """Stream file by hash with HTTP Range Request support for inline media viewing
+
+    iOS Safari issues a ``HEAD`` request before attempting to play media.  The
+    original implementation relied on Flask's automatic ``HEAD`` handling which
+    executed the full GET logic.  This meant we attempted to stream the entire
+    file even though Safari only needed the headers, causing the browser to fail
+    with "Failed to load media".  We now explicitly handle ``HEAD`` requests and
+    return only the appropriate headers without streaming any data.
+    """
     try:
-        data = request.get_json()
-        print(f"DEBUG: Received JSON data: {data}")
-        file_id = data.get('file_id')
-        file_hash = data.get('file_hash') # Get the file hash from the request
-        print(f"DEBUG: Extracted file_id: {file_id}, file_hash: {file_hash}")
+        # Find the file in the global file index using the hash
+        index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
 
-        if not file_id:
-            print("DEBUG: File ID is missing from request.")
-            return jsonify({"error": "No file ID provided"}), 400
+        if not index_entry:
+            return "File not found", 404
+
+        properties = index_entry.get('properties', {})
         
-        if not file_hash:
-            print("DEBUG: File hash is missing from request.")
-            return jsonify({"error": "No file hash provided"}), 400
+        # Extract properties from the index_entry
+        is_public = properties.get('Is Public', {}).get('checkbox', False)
+        file_page_id = properties.get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        file_user_db_id = properties.get('User Database ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        original_filename = properties.get('Original Filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'video')
 
-        # Call the new function in notion_uploader.py to delete the file
-        # Pass the file_hash to allow deletion from the global index
-        uploader.delete_file_from_db(file_id) # The delete_file_from_db now handles fetching the hash internally
-        print(f"DEBUG: File with ID {file_id} successfully deleted from user DB and global index.")
+        # Now fetch the actual file details from the user's specific database using file_page_id
+        file_details = uploader.get_user_by_id(file_page_id)
+        if not file_details:
+            return "File details not found in user database.", 404
 
-        return jsonify({"status": "success", "message": "File deleted successfully"}), 200
+        # Check access control (same logic as download route)
+        if not is_public:
+            if not current_user.is_authenticated:
+                return redirect(url_for('login', next=request.url))
+
+            current_user_db_id = uploader.get_user_database_id(current_user.id)
+
+            if file_user_db_id != current_user_db_id:
+                return "Access Denied: You do not have permission to view this file.", 403
+
+        # Check if this entry is actually a manifest JSON describing a multi-part file
+        is_manifest = original_filename.lower().endswith('.json')
+        if is_manifest:
+            try:
+                import requests, json, mimetypes
+
+                # Fetch manifest metadata and download the JSON
+                manifest_page = uploader.get_user_by_id(file_page_id)
+                file_property = manifest_page.get('properties', {}).get('file_data', {})
+                files_array = file_property.get('files', [])
+                manifest_file = files_array[0] if files_array else None
+
+                manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
+                manifest_metadata = uploader.get_file_download_metadata(file_page_id, manifest_filename)
+                manifest_url = manifest_metadata.get('url', '')
+                if not manifest_url:
+                    return "Manifest file not found", 404
+
+                resp = requests.get(manifest_url)
+                resp.raise_for_status()
+                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+
+                orig_name = manifest.get('original_filename', 'file')
+                total_size = manifest.get('total_size', 0)
+                mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
+
+                if request.method == 'HEAD':
+                    response = Response(status=200, mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+                    response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                    return add_stream_headers(response, mimetype)
+
+                range_header = request.headers.get('Range')
+                if range_header and total_size > 0:
+                    range_value = range_header.strip().lower()
+                    if '=' not in range_value:
+                        return "Invalid range", 416
+                    units, range_spec = range_value.split('=', 1)
+                    if units != 'bytes':
+                        return "Invalid range unit", 416
+                    range_start, range_end = range_spec.split('-', 1)
+                    if range_start and range_end:
+                        start = int(range_start)
+                        end = int(range_end)
+                    elif range_start and not range_end:
+                        start = int(range_start)
+                        end = total_size - 1
+                    elif not range_start and range_end:
+                        suffix_length = int(range_end)
+                        start = max(0, total_size - suffix_length)
+                        end = total_size - 1
+                    else:
+                        return "Invalid range format", 416
+                    if start < 0 or end >= total_size or start > end:
+                        response = Response(status=416)
+                        response.headers['Content-Range'] = f'bytes */{total_size}'
+                        return response
+
+                    def stream_range():
+                        for chunk in uploader.stream_multi_part_file(file_page_id, start, end):
+                            yield chunk
+
+                    response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+                    response.headers['Content-Length'] = str(end - start + 1)
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+                else:
+                    response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                    if total_size > 0:
+                        response.headers['Content-Length'] = str(total_size)
+
+                response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                response.headers['Accept-Ranges'] = 'bytes'
+                response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
+                response.headers['X-Content-Type-Options'] = 'nosniff'
+                response.headers['Vary'] = 'Range, Accept-Encoding'
+
+                if mimetype.startswith('video/'):
+                    response.headers['Connection'] = 'keep-alive'
+                    response.headers['Content-Transfer-Encoding'] = 'binary'
+
+                return add_stream_headers(response, mimetype)
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
+                return "An error occurred during streaming.", 500
+
+        # Get comprehensive file metadata including URL, size, and content type
+        file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
+
+        if not file_metadata['url']:
+            return "Stream link not available for this file", 500
+
+        file_size = file_metadata['file_size']
+        detected_content_type = file_metadata['content_type']
+
+        print(f"📊 Streaming file: {original_filename}, size: {file_size} bytes, type: {detected_content_type}")
+
+        # Enhanced MIME type detection for media files
+        def get_enhanced_mimetype(filename):
+            """Enhanced MIME type detection for common media formats"""
+            import mimetypes
+            
+            # Get MIME type from filename
+            mimetype, _ = mimetypes.guess_type(filename)
+            
+            if mimetype:
+                return mimetype
+            
+            # Fallback based on file extension for common media types
+            extension = filename.lower().split('.')[-1] if '.' in filename else ''
+            
+            media_types = {
+                # Video formats
+                'mp4': 'video/mp4',
+                'webm': 'video/webm',
+                'avi': 'video/x-msvideo',
+                'mov': 'video/quicktime',
+                'mkv': 'video/x-matroska',
+                'wmv': 'video/x-ms-wmv',
+                'flv': 'video/x-flv',
+                'm4v': 'video/x-m4v',
+                
+                # Audio formats
+                'mp3': 'audio/mpeg',
+                'wav': 'audio/wav',
+                'ogg': 'audio/ogg',
+                'aac': 'audio/aac',
+                'flac': 'audio/flac',
+                'm4a': 'audio/mp4',
+                'wma': 'audio/x-ms-wma',
+                
+                # Image formats
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'webp': 'image/webp',
+                'svg': 'image/svg+xml',
+                'bmp': 'image/bmp',
+                'tiff': 'image/tiff',
+                
+                # Document formats
+                'pdf': 'application/pdf',
+                'txt': 'text/plain',
+                'html': 'text/html',
+                'css': 'text/css',
+                'js': 'application/javascript'
+            }
+            
+            return media_types.get(extension, 'application/octet-stream')
+
+        # Use detected content type from metadata, with enhanced fallback
+        mimetype = detected_content_type
+        if mimetype == 'application/octet-stream':
+            mimetype = get_enhanced_mimetype(original_filename)
+
+        if request.method == 'HEAD':
+            # Respond with headers only, no body
+            response = Response(status=200, mimetype=mimetype)
+            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+            if file_size > 0:
+                response.headers['Content-Length'] = str(file_size)
+            return add_stream_headers(response, mimetype)
+
+        # Parse Range header for partial content requests
+        range_header = request.headers.get('Range', '').strip()
+        
+        if range_header:
+            # Parse Range header (e.g., "bytes=0-1023", "bytes=1024-", "bytes=-500")
+            if not range_header.startswith('bytes='):
+                return "Invalid range header", 416
+            
+            try:
+                range_spec = range_header[6:]  # Remove "bytes="
+                
+                if '-' not in range_spec:
+                    return "Invalid range format", 416
+                
+                range_start, range_end = range_spec.split('-', 1)
+                
+                # Handle different range formats
+                if range_start and range_end:
+                    # bytes=start-end
+                    start = int(range_start)
+                    end = int(range_end)
+                elif range_start and not range_end:
+                    # bytes=start-
+                    start = int(range_start)
+                    end = file_size - 1
+                elif not range_start and range_end:
+                    # bytes=-suffix (last N bytes)
+                    suffix_length = int(range_end)
+                    start = max(0, file_size - suffix_length)
+                    end = file_size - 1
+                else:
+                    return "Invalid range format", 416
+                
+                # Validate range - handle cases where file_size might be 0
+                if file_size > 0:
+                    if start < 0 or end >= file_size or start > end:
+                        response = Response(status=416)
+                        response.headers['Content-Range'] = f'bytes */{file_size}'
+                        return response
+                else:
+                    # If file size is unknown, we can't validate the range properly
+                    # But we can still try to serve the requested range
+                    print(f"⚠️ File size unknown, attempting to serve range {start}-{end} anyway")
+                
+                # Stream the requested range
+                def stream_range():
+                    for chunk in uploader.stream_file_from_notion_range(file_page_id, original_filename, start, end):
+                        yield chunk
+                
+                # Create partial content response
+                response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+                response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+                response.headers['Content-Length'] = str(end - start + 1)
+                
+                # Include total file size in Content-Range if known
+                if file_size > 0:
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+                    print(f"📊 Range response: bytes {start}-{end}/{file_size}")
+                else:
+                    response.headers['Content-Range'] = f'bytes {start}-{end}/*'
+                    print(f"📊 Range response: bytes {start}-{end}/* (size unknown)")
+                    
+                response.headers['Accept-Ranges'] = 'bytes'
+                
+                # iOS Safari optimized headers for partial content
+                response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
+                response.headers['X-Content-Type-Options'] = 'nosniff'
+                response.headers['Vary'] = 'Range, Accept-Encoding'
+                
+                # Additional iOS streaming optimizations for partial content
+                if mimetype.startswith('video/'):
+                    response.headers['Connection'] = 'keep-alive'
+                    response.headers['Content-Transfer-Encoding'] = 'binary'
+
+                return add_stream_headers(response, mimetype)
+                
+            except (ValueError, TypeError) as e:
+                return "Invalid range values", 416
+        
+        else:
+            # Full content request
+            response = Response(stream_with_context(uploader.stream_file_from_notion(file_page_id, original_filename)), mimetype=mimetype)
+            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+            
+            # Add Content-Length header if file size is available
+            if file_size > 0:
+                response.headers['Content-Length'] = str(file_size)
+                print(f"📊 Full content response includes Content-Length: {file_size} bytes for {original_filename}")
+            else:
+                print(f"⚠️ No file size available for Content-Length header for {original_filename}")
+                
+            response.headers['Accept-Ranges'] = 'bytes'
+            
+            # iOS Safari optimized headers
+            response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
+            response.headers['X-Content-Type-Options'] = 'nosniff'
+            response.headers['Vary'] = 'Range, Accept-Encoding'
+            
+            # Additional iOS streaming optimizations
+            if mimetype.startswith('video/'):
+                response.headers['Connection'] = 'keep-alive'
+                response.headers['Content-Transfer-Encoding'] = 'binary'
+
+            return add_stream_headers(response, mimetype)
 
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
-        print(f"DEBUG: File deletion failed with error: {str(e)}\n{error_trace}")
+        print(f"DEBUG: Error in /v/<hash> route: {str(e)}\n{error_trace}")
+        return "An error occurred during streaming.", 500
+
+
+@app.route('/api/files')
+@login_required
+def get_files_api():
+    """
+    API endpoint to get user's files (for AJAX requests) - WITH DIAGNOSTIC LOGGING
+    """
+    print("🔍 DIAGNOSTIC: /api/files endpoint called (used by streaming upload)")
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        print(f"🔍 DIAGNOSTIC: User database ID: {user_database_id}")
+        
+        if not user_database_id:
+            print("🚨 DIAGNOSTIC: User database not found")
+            return jsonify({'error': 'User database not found'}), 404
+        
+        current_folder = request.args.get('folder', '/')
+        files_response = uploader.get_files_from_user_database(user_database_id)
+        files = files_response.get('results', [])
+        
+        print(f"🔍 DIAGNOSTIC: Raw files from database: {len(files)} files")
+        
+        # Format files for JSON response
+        formatted_files = []
+        for i, file_data in enumerate(files):
+            file_props = file_data.get('properties', {})
+            
+            # Extract all properties with diagnostic logging
+            file_id = file_data.get('id')
+            name = file_props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown')
+            size = file_props.get('filesize', {}).get('number', 0)
+            file_hash = file_props.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            is_public = file_props.get('is_public', {}).get('checkbox', False)
+            is_manifest = file_props.get('is_manifest', {}).get('checkbox', False)
+            is_visible = file_props.get('is_visible', {}).get('checkbox', True)
+            is_folder = file_props.get('is_folder', {}).get('checkbox', False)
+            folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+
+            # Compute salted hash for download link if salt is present
+            salted_hash = file_hash
+            if salt and file_hash:
+                import hashlib
+                salted_hash = hashlib.sha512((file_hash + salt).encode('utf-8')).hexdigest()
+
+            print(f"🔍 DIAGNOSTIC: File {i+1} - {name}:")
+            print(f"  - ID: {file_id} (needed for delete button)")
+            print(f"  - Hash: {file_hash} (needed for toggle)")
+            print(f"  - Salt: {salt}")
+            print(f"  - Salted Hash: {salted_hash}")
+            print(f"  - Is Public: {is_public} (needed for toggle state)")
+            print(f"  - Size: {size}")
+            print(f"  - Has all button data: {bool(file_id and file_hash is not None and is_public is not None)}")
+            
+            if is_visible and not is_folder and folder_path == current_folder:
+                formatted_file = {
+                    'id': file_id,
+                    'name': name,
+                    'size': size,
+                    'file_hash': file_hash,
+                    'salted_hash': salted_hash,
+                    'is_public': is_public
+                }
+                formatted_files.append(formatted_file)
+        
+        print(f"🔍 DIAGNOSTIC: Returning {len(formatted_files)} formatted files to frontend")
+        if formatted_files:
+            print(f"🔍 DIAGNOSTIC: First file in response: {formatted_files[0]}")
+        
+        return jsonify({'files': formatted_files})
+
+    except Exception as e:
+        print(f"🚨 DIAGNOSTIC: Error in /api/files: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/entries')
+@login_required
+def get_entries_api():
+    """Return files and folders for the current user/folder (matches home route logic)."""
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        current_folder = request.args.get('folder', '/')
+        files_response = uploader.get_files_from_user_database(user_database_id)
+        files = files_response.get('results', [])
+
+        # Pre-calculate cumulative sizes for all folders
+        folder_sizes = defaultdict(int)
+        for file_data in files:
+            try:
+                properties = file_data.get('properties', {})
+                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                size = properties.get('filesize', {}).get('number', 0)
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                if name and is_visible and not is_folder:
+                    path = folder_path or '/'
+                    while True:
+                        folder_sizes[path] += size
+                        if path == '/' or path == '':
+                            break
+                        path = '/' + '/'.join(path.strip('/').split('/')[:-1])
+                        if path == '':
+                            path = '/'
+            except Exception as e:
+                print(f"Error calculating folder sizes in get_entries_api: {e}")
+                continue
+
+        entries = []
+        for file_data in files:
+            try:
+                properties = file_data.get('properties', {})
+                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                size = properties.get('filesize', {}).get('number', 0)
+                file_id = file_data.get('id')
+                is_public = properties.get('is_public', {}).get('checkbox', False)
+                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                if name and is_visible and folder_path == current_folder:
+                    if is_folder:
+                        full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
+                        entries.append({
+                            'type': 'folder',
+                            'name': name,
+                            'id': file_id,
+                            'full_path': full_path,
+                            'size': folder_sizes.get(full_path, 0)
+                        })
+                    else:
+                        entries.append({
+                            'type': 'file',
+                            'name': name,
+                            'size': size,
+                            'id': file_id,
+                            'is_public': is_public,
+                            'file_hash': file_hash,
+                            'folder': folder_path
+                        })
+            except Exception as e:
+                print(f"Error processing file data in get_entries_api: {e}")
+                continue
+
+        return jsonify({'entries': entries})
+
+    except Exception as e:
+        print(f"Error in /api/entries: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/folders')
+@login_required
+def list_folders_api():
+    """Return list of all folders for the current user."""
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        files_response = uploader.get_files_from_user_database(user_database_id)
+        files = files_response.get('results', [])
+
+        folders = []
+        for file_data in files:
+            properties = file_data.get('properties', {})
+            is_folder = properties.get('is_folder', {}).get('checkbox', False)
+            if not is_folder:
+                continue
+            name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            parent_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            full_path = parent_path.rstrip('/') + '/' + name if parent_path != '/' else '/' + name
+            folders.append({'id': file_data.get('id'), 'path': full_path})
+
+        folders.sort(key=lambda f: f['path'])
+        folders.insert(0, {'id': None, 'path': '/'})
+        return jsonify({'folders': folders})
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/files-api')
+@login_required
+def list_files_api():
+    """
+    Legacy API endpoint to get user's files (matches old code implementation)
+    """
+    try:
+        # Get user's database ID
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({"error": "No user database ID found"}), 404
+            
+        current_folder = request.args.get('folder', '/')
+        # Query files from Notion database using uploader's method
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        
+        # Format files for API response (matches old code format)
+        files = []
+        for file_data in files_data.get('results', []):
+            try:
+                properties = file_data.get('properties', {})
+                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                size = properties.get('filesize', {}).get('number', 0)
+                file_id = file_data.get('id')  # Extract the Notion page ID
+                is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
+                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
+                is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+
+                if name and not is_folder and folder_path == current_folder:
+                    files.append({
+                        "name": name,
+                        "size": size,
+                        "id": file_id,  # Add the file_id to the dictionary
+                        "is_public": is_public,  # Add is_public status
+                        "file_hash": file_hash  # Add file_hash
+                    })
+            except Exception as e:
+                print(f"Error processing file data: {e}")
+                continue
+                
+        return jsonify({
+            "files": files,
+            "debug": {
+                "user_database_id": user_database_id,
+                "results_count": len(files)
+            }
+        })
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/delete_file', methods=['POST'])
+@login_required
+def delete_file():
+    """
+    Delete a file from user's database and global index
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        file_id = data.get('file_id')
+        file_hash = data.get('file_hash')
+        
+        if not file_id:
+            return jsonify({'error': 'file_id is required'}), 400
+        
+        print(f"Deleting file: ID={file_id}, Hash={file_hash}")
+        
+        # Use unified deletion logic from StreamingUploadManager
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+        streaming_upload_manager.uploader.delete_file_entry(file_id, user_database_id)
+        return jsonify({
+            'status': 'success',
+            'message': 'File deleted successfully'
+        })
+        
+    except Exception as e:
+        print(f"Error deleting file: {e}")
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/toggle_public_access', methods=['POST'])
 @login_required
 def toggle_public_access():
+    """
+    Toggle public access status for a file - matches old code implementation
+    """
     print("DEBUG: /toggle_public_access route accessed.")
     try:
         data = request.get_json()
         print(f"DEBUG: Received JSON data: {data}")
+        
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
         file_id = data.get('file_id')
         is_public = data.get('is_public')
-        salted_sha512_hash = data.get('salted_sha512_hash') # Get the hash to update index
-
+        salted_sha512_hash = data.get('salted_sha512_hash')  # Get the hash to update index
+        
         if not file_id or is_public is None or not salted_sha512_hash:
             print("DEBUG: Missing file_id, is_public, or salted_sha512_hash from request.")
             return jsonify({"error": "File ID, public status, and hash are required"}), 400
-
+        
+        print(f"DEBUG: File with ID {file_id} public status set to {is_public}.")
+        
         # Call the function in notion_uploader.py to update the public status
         uploader.update_file_public_status(file_id, is_public, salted_sha512_hash)
         print(f"DEBUG: File with ID {file_id} public status set to {is_public}.")
-
+        
         return jsonify({"status": "success", "message": "File public status updated successfully"}), 200
-
+        
     except Exception as e:
         import traceback
         error_trace = traceback.format_exc()
         print(f"DEBUG: Toggling public access failed with error: {str(e)}\n{error_trace}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/init_upload', methods=['POST'])
+
+@app.route('/update_file_metadata', methods=['POST'])
 @login_required
-def init_upload():
-    """Initialize a new upload session."""
-    print(f"DEBUG: Upload initialization request received from {request.remote_addr}")
-    
+def update_file_metadata():
     try:
-        data = request.json
-        filename = data.get('filename', 'file.txt')
-        
-        # If the filename is missing or empty, use a default
-        if not filename or filename.strip() == '':
-            filename = 'file.txt'
-            
-        file_size = data.get('fileSize', 0)
-        
-        # Generate a sanitized filename for Notion storage
-        # Notion has specific requirements for filenames
-        original_filename = filename
-        
-        # Sanitize filename for Notion (only allow alphanumeric, underscore, dash, period)
-        import re
-        sanitized_filename = re.sub(r'[^a-zA-Z0-9_\-.]', '', filename)
-        
-        # If the sanitization removed everything, use a default
-        if not sanitized_filename:
-            sanitized_filename = 'file.txt'
-        
-        # Ensure the filename has an extension Notion can handle
-        # For simplicity, we'll use .txt for everything as Notion supports it
-        if not sanitized_filename.endswith('.txt'):
-            print(f"DEBUG: Sanitizing filename: '{filename}' to '{sanitized_filename}.txt' (for Notion storage)")
-            sanitized_filename = sanitized_filename + '.txt'
-            
-        print(f"DEBUG: Sanitized filename: {sanitized_filename} (original: {original_filename})")
-        
-        # Generate a salt for the file hash
-        salt = ''.join(random.choices(string.ascii_lowercase + string.digits, k=32))
-        
-        # Calculate chunk size and number of parts for multipart upload
-        # Notion requires parts to be between 5MB and 20MB except for the last part
-        target_chunk_size = 5 * 1024 * 1024  # 5MB chunks
-        
-        # Calculate number of parts
-        total_parts = (file_size + target_chunk_size - 1) // target_chunk_size
-        
-        # Determine if this should be a multipart upload
-        is_multipart = total_parts > 1 or file_size >= 20 * 1024 * 1024  # Use multipart for files > 20MB regardless
-        
-        if is_multipart:
-            # For multipart uploads, log the part breakdown
-            last_part_size = file_size % target_chunk_size
-            if last_part_size == 0:
-                last_part_size = target_chunk_size
-                
-            # Calculate how many full parts
-            full_parts = total_parts - 1 if last_part_size < target_chunk_size else total_parts
-            
-            # Log the part breakdown
-            print(f"DEBUG: Splitting file ({file_size/(1024*1024):.2f} MiB) into {total_parts} parts:")
-            print(f"DEBUG: - {full_parts} parts of exactly {target_chunk_size/(1024*1024):.2f} MiB each")
-            print(f"DEBUG: - Final part is {last_part_size/(1024*1024):.2f} MiB")
-            
-            # Notion requires multi_part mode for files over 20MB
-            print(f"Creating multipart upload for {original_filename} (stored as {sanitized_filename}) with {total_parts} parts and content type: text/plain...")
-            print(f"NOTE: All parts except the last must be EXACTLY 5 MiB as required by Notion's API")
-            
-            # Create multipart upload
-            result = uploader.create_file_upload(
-                content_type="text/plain",  # Always use text/plain for Notion compatibility
-                filename=sanitized_filename,  # The sanitized filename for Notion
-                mode="multi_part",  # Must be "multi_part" for multipart uploads
-                number_of_parts=total_parts  # Required for multipart uploads
-            )
-        else:
-            # For small files, use single_part mode
-            print(f"Creating single-part upload for {original_filename} (stored as {sanitized_filename}) with content type: text/plain")
-            print(f"DEBUG: Small file ({file_size} bytes), using single-part upload")
-            
-            # Create single-part upload
-            result = uploader.create_file_upload(
-                content_type="text/plain",  # Always use text/plain for Notion compatibility
-                filename=sanitized_filename  # The sanitized filename for Notion
-                # Single part is the default mode, no need to specify
-            )
-        
-        if not result or 'id' not in result:
-            return jsonify({"error": "Failed to create upload: " + str(result)}), 500
-            
-        # Add the salt to the response
-        result['salt'] = salt
-        result['original_filename'] = original_filename
-        result['sanitized_filename'] = sanitized_filename
-        result['total_parts'] = total_parts
-        result['is_multipart'] = is_multipart
-        
-        return jsonify(result)
-        
+        data = request.get_json()
+        file_id = data.get('file_id')
+        new_name = data.get('filename')
+        new_folder = data.get('folder_path')
+
+        if not file_id:
+            return jsonify({'error': 'file_id required'}), 400
+
+        uploader.update_file_metadata(file_id, filename=new_name, folder_path=new_folder)
+        return jsonify({'status': 'success'})
     except Exception as e:
-        print(f"ERROR in init_upload: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({'error': str(e)}), 500
 
-# Add cleanup thread for idle upload sessions
-def cleanup_idle_upload_sessions():
-    """
-    Periodically clean up idle upload sessions to prevent memory leaks.
-    An idle session is one that hasn't been accessed in the last 30 minutes.
-    """
-    print("DEBUG: Starting upload session cleanup thread")
-    
-    while True:
-        try:
-            # Sleep for 10 minutes before checking
-            time.sleep(600)
-            
-            # Ensure app has the required attributes
-            if not hasattr(app, 'upload_processors'):
-                print("DEBUG: No upload_processors attribute found, skipping cleanup")
-                continue
-                
-            if not hasattr(app, 'upload_locks'):
-                print("DEBUG: No upload_locks attribute found, skipping cleanup")
-                continue
-                
-            idle_upload_ids = []
-            now = time.time()
-            max_idle_time = 1800  # 30 minutes in seconds
-            
-            # Find idle upload sessions
-            for upload_id, upload_data in app.upload_processors.items():
-                # Check last activity time
-                last_activity = upload_data.get('last_activity', 0)
-                if now - last_activity > max_idle_time:
-                    print(f"DEBUG: Upload {upload_id} has been idle for {(now - last_activity) // 60} minutes, marking for cleanup")
-                    idle_upload_ids.append(upload_id)
-            
-            # Remove idle sessions
-            for upload_id in idle_upload_ids:
-                try:
-                    with app.upload_locks.get(upload_id, threading.Lock()):
-                        if upload_id in app.upload_processors:
-                            print(f"DEBUG: Cleaning up idle upload session: {upload_id}")
-                            # Check if this upload has any pending parts before deleting
-                            upload_data = app.upload_processors[upload_id]
-                            if upload_data.get('pending_parts'):
-                                print(f"DEBUG: Upload {upload_id} still has pending parts, deferring cleanup")
-                                continue
-                                
-                            del app.upload_processors[upload_id]
-                        if upload_id in app.upload_locks:
-                            del app.upload_locks[upload_id]
-                except Exception as e:
-                    print(f"ERROR: Failed to clean up upload session {upload_id}: {e}")
-        except Exception as e:
-            print(f"ERROR in cleanup thread: {e}")
 
-# Start the cleanup thread when the app starts
-cleanup_thread = threading.Thread(target=cleanup_idle_upload_sessions, daemon=True)
-cleanup_thread.start()
-
-@app.route('/finalize_upload', methods=['POST'])
+@app.route('/create_folder', methods=['POST'])
 @login_required
-def finalize_upload():
+def create_folder():
     try:
-        data = request.json
-        upload_id = data.get('upload_id')
+        data = request.get_json()
+        folder_name = data.get('folder_name')
+        parent_path = data.get('parent_path', '/')
+
+        if not folder_name:
+            return jsonify({'error': 'folder_name required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        # Ensure the 'is_folder' property exists in the user's database
+        uploader.ensure_database_property(
+            user_database_id,
+            'is_folder',
+            'checkbox'
+        )
+
+        uploader.create_folder(user_database_id, folder_name, parent_path)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/rename_folder', methods=['POST'])
+@login_required
+def rename_folder():
+    try:
+        data = request.get_json()
+        folder_id = data.get('folder_id')
+        new_name = data.get('new_name')
+
+        if not folder_id or not new_name:
+            return jsonify({'error': 'folder_id and new_name required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        folder_entry = uploader.get_user_by_id(folder_id)
+        if not folder_entry:
+            return jsonify({'error': 'Folder not found'}), 404
+
+        props = folder_entry.get('properties', {})
+        old_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+        parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+
+        old_full_path = parent_path.rstrip('/') + '/' + old_name if parent_path != '/' else '/' + old_name
+        new_full_path = parent_path.rstrip('/') + '/' + new_name if parent_path != '/' else '/' + new_name
+
+        # Rename the folder itself
+        uploader.update_file_metadata(folder_id, filename=new_name)
+
+        # Update paths for items inside the folder
+        all_entries = uploader.get_files_from_user_database(user_database_id)
+        prefix = old_full_path + '/'
+        for entry in all_entries.get('results', []):
+            entry_id = entry.get('id')
+            if entry_id == folder_id:
+                continue
+            e_props = entry.get('properties', {})
+            path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            if path == old_full_path:
+                new_path = new_full_path
+            elif path.startswith(prefix):
+                new_path = new_full_path + path[len(old_full_path):]
+            else:
+                continue
+            uploader.update_file_metadata(entry_id, folder_path=new_path)
+
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/delete_folder', methods=['POST'])
+@login_required
+def delete_folder():
+    try:
+        data = request.get_json()
+        folder_id = data.get('folder_id')
+        delete_contents = data.get('delete_contents', False)
+
+        if not folder_id:
+            return jsonify({'error': 'folder_id required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        folder_entry = uploader.get_user_by_id(folder_id)
+        if not folder_entry:
+            return jsonify({'error': 'Folder not found'}), 404
+
+        props = folder_entry.get('properties', {})
+        folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+        parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+
+        folder_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
+
+        all_entries = uploader.get_files_from_user_database(user_database_id)
+        to_delete = []
+
+        file_count_root = 0
+        file_count_subfolders = 0
+        subfolder_ids = set()
+
+        prefix = folder_path.rstrip('/') + '/'
+        for entry in all_entries.get('results', []):
+            e_props = entry.get('properties', {})
+            path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            is_folder = e_props.get('is_folder', {}).get('checkbox', False)
+            is_visible = e_props.get('is_visible', {}).get('checkbox', True)
+            if path == folder_path or path.startswith(prefix):
+                to_delete.append(entry)
+
+                if path == folder_path:
+                    if is_folder:
+                        subfolder_ids.add(entry.get('id'))
+                    elif is_visible:
+                        file_count_root += 1
+                else:
+                    if is_folder and '/' not in path[len(prefix):]:
+                        subfolder_ids.add(entry.get('id'))
+                    if not is_folder and is_visible:
+                        file_count_subfolders += 1
+
+        if to_delete and not delete_contents:
+            return jsonify({
+                'needs_confirm': True,
+                'file_count': file_count_root,
+                'folder_count': len(subfolder_ids),
+                'subfolder_file_count': file_count_subfolders
+            })
+
+        # sort deepest first
+        to_delete.sort(key=lambda e: e.get('properties', {}).get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/').count('/'), reverse=True)
+
+        for entry in to_delete:
+            e_id = entry.get('id')
+            is_folder = entry.get('properties', {}).get('is_folder', {}).get('checkbox', False)
+            if is_folder:
+                uploader.delete_file_from_user_database(e_id)
+            else:
+                streaming_upload_manager.uploader.delete_file_entry(e_id, user_database_id)
+
+        uploader.delete_file_from_user_database(folder_id)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/delete_selected', methods=['POST'])
+@login_required
+def delete_selected():
+    try:
+        data = request.get_json() or {}
+        file_ids = data.get('file_ids', [])
+        folder_ids = data.get('folder_ids', [])
+        preview = data.get('preview', False)
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        all_entries = uploader.get_files_from_user_database(user_database_id)
+
+        if preview:
+            selected_file_ids = set(file_ids)
+            files_in_folders = set()
+            subfolders = set()
+
+            for folder_id in folder_ids:
+                folder_entry = uploader.get_user_by_id(folder_id)
+                if not folder_entry:
+                    continue
+                props = folder_entry.get('properties', {})
+                folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                folder_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
+                prefix = folder_path.rstrip('/') + '/'
+                for entry in all_entries.get('results', []):
+                    e_props = entry.get('properties', {})
+                    path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    if path == folder_path or path.startswith(prefix):
+                        e_id = entry.get('id')
+                        is_folder = entry.get('properties', {}).get('is_folder', {}).get('checkbox', False)
+                        if is_folder:
+                            if e_id not in folder_ids:
+                                subfolders.add(e_id)
+                        else:
+                            files_in_folders.add(e_id)
+
+            independent_files = selected_file_ids - files_in_folders
+
+            return jsonify({
+                'status': 'preview',
+                'folder_count': len(folder_ids),
+                'subfolder_count': len(subfolders),
+                'files_in_folders': len(files_in_folders),
+                'independent_file_count': len(independent_files)
+            })
+
+        for file_id in file_ids:
+            try:
+                streaming_upload_manager.uploader.delete_file_entry(file_id, user_database_id)
+            except Exception as e:
+                print(f"Error deleting file {file_id}: {e}")
+
+        for folder_id in folder_ids:
+            try:
+                folder_entry = uploader.get_user_by_id(folder_id)
+                if not folder_entry:
+                    continue
+                props = folder_entry.get('properties', {})
+                folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                folder_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
+                to_delete = []
+                prefix = folder_path.rstrip('/') + '/'
+                for entry in all_entries.get('results', []):
+                    e_props = entry.get('properties', {})
+                    path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    if path == folder_path or path.startswith(prefix):
+                        to_delete.append(entry)
+                to_delete.sort(key=lambda e: e.get('properties', {}).get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/').count('/'), reverse=True)
+                for entry in to_delete:
+                    e_id = entry.get('id')
+                    is_folder = entry.get('properties', {}).get('is_folder', {}).get('checkbox', False)
+                    if is_folder:
+                        uploader.delete_file_from_user_database(e_id)
+                    else:
+                        streaming_upload_manager.uploader.delete_file_entry(e_id, user_database_id)
+                uploader.delete_file_from_user_database(folder_id)
+            except Exception as e:
+                print(f"Error deleting folder {folder_id}: {e}")
+
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/move_selected', methods=['POST'])
+@login_required
+def move_selected():
+    try:
+        data = request.get_json() or {}
+        file_ids = data.get('file_ids', [])
+        folder_ids = data.get('folder_ids', [])
+        destination = data.get('destination', '/')
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        for file_id in file_ids:
+            try:
+                uploader.update_file_metadata(file_id, folder_path=destination)
+            except Exception as e:
+                print(f"Error moving file {file_id}: {e}")
+
+        all_entries = None
+        if folder_ids:
+            all_entries = uploader.get_files_from_user_database(user_database_id)
+
+        for folder_id in folder_ids:
+            try:
+                folder_entry = uploader.get_user_by_id(folder_id)
+                if not folder_entry:
+                    continue
+                props = folder_entry.get('properties', {})
+                folder_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                parent_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                old_full_path = parent_path.rstrip('/') + '/' + folder_name if parent_path != '/' else '/' + folder_name
+                new_full_path = destination.rstrip('/') + '/' + folder_name if destination != '/' else '/' + folder_name
+
+                # Update folder's parent path
+                uploader.update_file_metadata(folder_id, folder_path=destination)
+
+                prefix = old_full_path + '/'
+                for entry in all_entries.get('results', []):
+                    entry_id = entry.get('id')
+                    if entry_id == folder_id:
+                        continue
+                    e_props = entry.get('properties', {})
+                    path = e_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    if path == old_full_path:
+                        new_path = new_full_path
+                    elif path.startswith(prefix):
+                        new_path = new_full_path + path[len(old_full_path):]
+                    else:
+                        continue
+                    uploader.update_file_metadata(entry_id, folder_path=new_path)
+            except Exception as e:
+                print(f"Error moving folder {folder_id}: {e}")
+
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# END FILE DOWNLOAD ROUTES
+
+# STREAMING UPLOAD API ENDPOINTS
+
+@app.route('/api/upload/create-session', methods=['POST'])
+@login_required
+def create_streaming_upload_session():
+    """
+    Create a new streaming upload session
+    """
+    try:
+        print("DEBUG: Streaming upload session creation called")
+        data = request.get_json()
+        print(f"DEBUG: Request data: {data}")
         
-        print(f"DEBUG: Finalizing upload {upload_id}")
+        filename = data.get('filename')
+        file_size = data.get('fileSize')
+        content_type = data.get('contentType', 'text/plain')  # Default to text/plain for Notion compatibility
+        folder_path = data.get('folderPath', '/')
         
-        if not upload_id:
-            return jsonify({"error": "Missing upload ID"}), 400
-            
-        # Make sure we have the upload processor for this ID
-        if not hasattr(app, 'upload_processors'):
-            print(f"DEBUG: No upload_processors found on app object")
-            return jsonify({"error": "Upload session tracking not initialized"}), 500
-            
-        if upload_id not in app.upload_processors:
-            print(f"DEBUG: Upload ID {upload_id} not found in upload_processors")
-            return jsonify({"error": "Upload session not found or expired"}), 404
+        print(f"DEBUG: Creating session for {filename}, size: {file_size}")
         
-        # Ensure upload_locks is initialized
-        if not hasattr(app, 'upload_locks'):
-            print(f"DEBUG: No upload_locks found on app object, initializing")
-            app.upload_locks = {}
-            
-        if upload_id not in app.upload_locks:
-            print(f"DEBUG: No lock found for upload ID {upload_id}, creating one")
-            app.upload_locks[upload_id] = threading.Lock()
-            
+        if not filename or not file_size:
+            print("DEBUG: Missing filename or fileSize")
+            return jsonify({'error': 'Missing filename or fileSize'}), 400
+        
         # Get user database ID
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
-            return jsonify({"error": "User database not found"}), 404
+            print("DEBUG: User database not found")
+            return jsonify({'error': 'User database not found'}), 404
         
-        # First check if all parts are fully uploaded
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            # Check if we have the upload processor
-            if upload_id not in app.upload_processors:
-                return jsonify({"error": "Upload session not found or expired"}), 404
-                
-            upload_data = app.upload_processors[upload_id]
-            completed_parts = upload_data['completed_parts']
-            print(f"DEBUG: Upload {upload_id} has completed parts: {sorted(list(completed_parts))}")
-            
-            pending_parts = upload_data['pending_parts']
-            if pending_parts:
-                print(f"DEBUG: Upload {upload_id} still has pending parts: {sorted(list(pending_parts))}")
-            
-            salted_hasher = upload_data.get('hasher')
-            if not salted_hasher:
-                return jsonify({"error": "Upload hash not found"}), 500
-                
-            filename = upload_data.get('filename', 'file.txt')
-            salt = upload_data.get('salt', '')
-            original_filename = upload_data.get('original_filename', filename)
-            total_size = upload_data.get('total_size', 0)
-            total_parts = upload_data.get('total_parts', 0)
-            is_multipart = upload_data.get('is_multipart', False)
-            
-            # Get hash
-            salted_file_hash = salted_hasher.hexdigest()
-            
-            print(f"DEBUG: Upload info: filename={filename}, original_filename={original_filename}")
-            print(f"DEBUG: Upload info: total_size={total_size}, total_parts={total_parts}")
-            print(f"DEBUG: Upload info: is_multipart={is_multipart}")
-            print(f"DEBUG: Upload info: salted_file_hash={salted_file_hash}")
-            
-        # Verify all parts are uploaded
-        all_parts = set(range(1, total_parts + 1))
-        missing_parts = all_parts - completed_parts
-        
-        if missing_parts:
-            print(f"WARNING: Missing parts when finalizing: {sorted(list(missing_parts))}")
-            
-            # Instead of failing immediately, try to retry the missing parts
-            retry_count = 0
-            retry_success = False
-            
-            # Only retry if there aren't too many missing parts (< 50% of total parts)
-            if len(missing_parts) <= total_parts / 2:
-                print(f"Attempting to retry {len(missing_parts)} missing parts...")
-                
-                # Try to retry each missing part
-                retried_parts = []
-                for part_number in missing_parts:
-                    if retry_missing_part(upload_id, part_number):
-                        retried_parts.append(part_number)
-                
-                if retried_parts:
-                    # Wait for retries to complete (up to 30 seconds)
-                    print(f"Waiting for {len(retried_parts)} retried parts to complete...")
-                    retry_wait_time = 0
-                    max_retry_wait = 30  # seconds
-                    
-                    while retry_wait_time < max_retry_wait:
-                        # Check if all retried parts are now complete
-                        with app.upload_locks.get(upload_id, threading.Lock()):
-                            if upload_id not in app.upload_processors:
-                                break
-                                
-                            # Check which parts are still missing
-                            upload_data = app.upload_processors[upload_id]
-                            completed_parts = upload_data['completed_parts']
-                            still_missing = all_parts - completed_parts
-                            
-                            if not still_missing:
-                                print(f"All retried parts completed successfully!")
-                                retry_success = True
-                                break
-                                
-                            # Check if we're making progress
-                            parts_still_retrying = [p for p in retried_parts if p in still_missing]
-                            if not parts_still_retrying:
-                                # All retried parts either succeeded or failed permanently
-                                break
-                                
-                        # Wait a bit and check again
-                        time.sleep(1)
-                        retry_wait_time += 1
-                        
-                        if retry_wait_time % 5 == 0:
-                            print(f"Still waiting for retried parts... ({retry_wait_time}s)")
-                
-                # Check if we have all parts now
-                with app.upload_locks.get(upload_id, threading.Lock()):
-                    if upload_id not in app.upload_processors:
-                        return jsonify({"error": "Upload session expired during retry"}), 404
-                        
-                    completed_parts = app.upload_processors[upload_id]['completed_parts']
-                    still_missing = all_parts - completed_parts
-                    
-                    if still_missing:
-                        print(f"WARNING: After retries, still missing parts: {sorted(list(still_missing))}")
-                        return jsonify({
-                            "error": "Cannot finalize upload - missing parts even after retry",
-                            "missing_parts": sorted(list(still_missing)),
-                            "completed_parts": sorted(list(completed_parts)),
-                            "total_parts": total_parts
-                        }), 400
-            else:
-                print(f"Too many missing parts ({len(missing_parts)}/{total_parts}) to retry automatically.")
-                return jsonify({
-                    "error": "Cannot finalize upload - too many missing parts to retry automatically",
-                    "missing_parts": sorted(list(missing_parts)),
-                    "completed_parts": sorted(list(completed_parts)),
-                    "total_parts": total_parts
-                }), 400
-        
-        # Only wait if there are pending parts or if parts were completed very recently
-        pending_parts = set()
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            if upload_id in app.upload_processors:
-                pending_parts = app.upload_processors[upload_id]['pending_parts']
-                
-        if pending_parts:
-            # Wait a bit to ensure all background threads have finished
-            print(f"All parts appear to be complete, but there are still {len(pending_parts)} pending parts. Waiting 2 seconds to ensure all uploads are done...")
-            time.sleep(2)
-        else:
-            print(f"All parts are successfully uploaded and no pending operations. Proceeding to finalize without delay.")
-        
-        # Double-check that all parts are still complete (in case of race conditions)
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            if upload_id not in app.upload_processors:
-                return jsonify({"error": "Upload session expired during wait"}), 404
-                
-            completed_parts = app.upload_processors[upload_id]['completed_parts']
-            print(f"DEBUG: After wait, completed parts: {sorted(list(completed_parts))}")
-            
-            missing_parts = all_parts - completed_parts
-            
-            if missing_parts:
-                print(f"WARNING: Parts disappeared during wait: {sorted(list(missing_parts))}")
-                return jsonify({
-                    "error": "Upload state changed during finalization",
-                    "missing_parts": sorted(list(missing_parts))
-                }), 400
-        
-        # All parts are complete, finalize the upload
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            try:
-                print(f"DEBUG: Attempt {attempt}/{max_attempts} to complete upload ID: {upload_id}")
-                
-                # For multipart uploads, we need to call the complete API
-                # For single-part uploads, Notion already marks them as "uploaded" after the first part
-                if is_multipart:
-                    print(f"DEBUG: Completing multipart upload for {upload_id}")
-                    # Complete the multipart upload - no need for ETags as Notion tracks them internally
-                    upload_result = uploader.complete_multipart_upload(upload_id)
-                else:
-                    print(f"DEBUG: Single-part upload for {upload_id}, skipping 'complete' call")
-                    # No need to call complete for single-part uploads
-                    upload_result = {"status": "success"}
-                
-                # Add the file to the user's database
-                print(f"DEBUG: Adding file to user database ID: {user_database_id}")
-                add_file_result = uploader.add_file_to_user_database(
-                    user_database_id,
-                    "file.txt",  # Always use file.txt for Notion
-                    total_size,
-                    salted_file_hash,
-                    upload_id,
-                    is_public=False,
-                    salt=salt,
-                    original_filename=original_filename
-                )
-                
-                # Get page ID and add to global index
-                page_id = add_file_result.get('id')
-                print(f"DEBUG: Adding file to global index with page ID: {page_id}")
-                uploader.add_file_to_index(
-                    salted_sha512_hash=salted_file_hash,
-                    file_page_id=page_id,
-                    user_database_id=user_database_id,
-                    original_filename=original_filename,
-                    is_public=False
-                )
-                
-                # Clean up processor
-                with app.upload_locks.get(upload_id, threading.Lock()):
-                    if upload_id in app.upload_processors:
-                        del app.upload_processors[upload_id]
-                        print(f"DEBUG: Removed upload processor for {upload_id}")
-                    if upload_id in app.upload_locks:
-                        del app.upload_locks[upload_id]
-                        print(f"DEBUG: Removed upload lock for {upload_id}")
-                
-                print(f"DEBUG: Removed chunk processor for completed upload {upload_id}")
-                
-                # Notify client of completion
-                socketio.emit('upload_complete', {
-                    'status': 'success',
-                    'filename': filename,
-                    'file_id': page_id,
-                    'is_public': False,
-                    'file_hash': salted_file_hash,
-                    'original_filename': original_filename
-                })
-                
-                # Return success with file ID
-                return jsonify({
-                    'status': 'success',
-                    'message': 'File uploaded successfully and database updated.',
-                    'file_id': page_id,
-                    'file_hash': salted_file_hash,
-                    'original_filename': original_filename
-                })
+        print(f"DEBUG: User database ID: {user_database_id}")
 
-            except Exception as e:
-                print(f"ERROR during upload finalization attempt {attempt}/{max_attempts}: {str(e)}")
-                
-                # For single-part uploads, if we get an error about already being in 'uploaded' status,
-                # it means the file is already uploaded and we can proceed with adding it to the database
-                if not is_multipart and "status of `uploaded`" in str(e):
-                    print(f"DEBUG: Single-part upload already marked as 'uploaded', continuing with database update")
-                    try:
-                        # Add the file to the user's database
-                        print(f"DEBUG: Adding file to user database ID: {user_database_id}")
-                        add_file_result = uploader.add_file_to_user_database(
-                            user_database_id,
-                            "file.txt",  # Always use file.txt for Notion
-                            total_size,
-                            salted_file_hash,
-                            upload_id,
-                            is_public=False,
-                            salt=salt,
-                            original_filename=original_filename
-                        )
-                        
-                        # Get page ID and add to global index
-                        page_id = add_file_result.get('id')
-                        print(f"DEBUG: Adding file to global index with page ID: {page_id}")
-                        uploader.add_file_to_index(
-                            salted_sha512_hash=salted_file_hash,
-                            file_page_id=page_id,
-                            user_database_id=user_database_id,
-                            original_filename=original_filename,
-                            is_public=False
-                        )
-                        
-                        # Clean up processor
-                        with app.upload_locks.get(upload_id, threading.Lock()):
-                            if upload_id in app.upload_processors:
-                                del app.upload_processors[upload_id]
-                                print(f"DEBUG: Removed upload processor for {upload_id}")
-                            if upload_id in app.upload_locks:
-                                del app.upload_locks[upload_id]
-                                print(f"DEBUG: Removed upload lock for {upload_id}")
-                        
-                        # Notify client of completion
-                        socketio.emit('upload_complete', {
-                            'status': 'success',
-                            'filename': filename,
-                            'file_id': page_id,
-                            'is_public': False,
-                            'file_hash': salted_file_hash,
-                            'original_filename': original_filename
-                        })
-                        
-                        # Return success with file ID
-                        return jsonify({
-                            'status': 'success',
-                            'message': 'File uploaded successfully and database updated.',
-                            'file_id': page_id,
-                            'file_hash': salted_file_hash,
-                            'original_filename': original_filename
-                        })
-                    except Exception as inner_e:
-                        print(f"ERROR during alternative single-part processing: {str(inner_e)}")
-                        # Continue with normal retry logic
-                
-                # If this isn't the last attempt, wait and try again
-                if attempt < max_attempts:
-                    wait_time = 2 * attempt
-                    print(f"Waiting {wait_time} seconds before retrying...")
-                    time.sleep(wait_time)
-                else:
-                    # If this is the last attempt and it failed, give up and return an error
-                    
-                    # If Notion indicates missing parts, extract that information
-                    if "Expected" in str(e) and "parts" in str(e):
-                        import re
-                        match = re.search(r'Send part number (\d+) next', str(e))
-                        if match:
-                            expected_part = int(match.group(1))
-                            # Return error with missing parts info
-                            return jsonify({
-                                "error": f"Upload incomplete. Parts missing. Notion expects part {expected_part} next.",
-                                "expected_part": expected_part,
-                                "upload_id": upload_id
-                            }), 400
-                    
-                    # Clean up on error
-                    with app.upload_locks.get(upload_id, threading.Lock()):
-                        if upload_id in app.upload_processors:
-                            del app.upload_processors[upload_id]
-                            print(f"DEBUG: Removed upload processor for {upload_id} after error")
-                        if upload_id in app.upload_locks:
-                            del app.upload_locks[upload_id]
-                            print(f"DEBUG: Removed upload lock for {upload_id} after error")
-                    
-                    # Return error
-                    return jsonify({"error": f"Failed to finalize upload after {max_attempts} attempts: {str(e)}"}), 500
-            
+        # Ensure folder hierarchy exists
+        ensure_folder_structure(user_database_id, folder_path)
+
+        # Create upload session
+        upload_id = streaming_upload_manager.create_upload_session(
+            filename=filename,
+            file_size=file_size,
+            user_database_id=user_database_id,
+            progress_callback=None,  # Will use SocketIO for progress updates
+            folder_path=folder_path
+        )
+        
+        print(f"DEBUG: Created upload session with ID: {upload_id}")
+        
+        response = {
+            'upload_id': upload_id,
+            'status': 'ready',
+            'filename': filename,
+            'file_size': file_size,
+            'is_multipart': file_size > streaming_upload_manager.uploader.SINGLE_PART_THRESHOLD
+        }
+        
+        print(f"DEBUG: Returning response: {response}")
+        return jsonify(response)
+        
     except Exception as e:
-        print(f"ERROR in finalize_upload: {str(e)}")
+        print(f"Error creating upload session: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        return jsonify({'error': str(e)}), 500
 
-def retry_missing_part(upload_id, part_number):
+
+@app.route('/api/upload/stream/<upload_id>', methods=['POST'])
+@login_required
+def stream_file_upload(upload_id):
     """
-    Retries uploading a specific missing part.
-    
-    Args:
-        upload_id: The ID of the multipart upload
-        part_number: The part number to retry
-    
-    Returns:
-        True if successful, False otherwise
+    Handle streaming file upload with enhanced resilience, resource management, and circuit breaker protection
     """
-    print(f"Attempting to retry upload of missing part {part_number} for upload {upload_id}")
+    # Import circuit breaker for reliability
+    try:
+        from uploader.circuit_breaker import upload_circuit_breaker, CircuitBreakerOpenError
+    except ImportError:
+        upload_circuit_breaker = None
     
     try:
-        # Make sure we have the upload state
-        if not hasattr(app, 'upload_processors') or upload_id not in app.upload_processors:
-            print(f"ERROR: Cannot retry part {part_number} - upload state not found")
-            return False
+        # CRITICAL FIX 3: Thread Synchronization - Protect upload session access
+        with app.upload_session_lock:
+            print(f"🚀 Streaming upload initiated for upload_id: {upload_id}")
+            print(f"🔒 THREAD SAFETY: Acquired upload session lock for {upload_id}")
             
-        # Get the upload data under lock
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            if upload_id not in app.upload_processors:
-                print(f"ERROR: Upload {upload_id} disappeared during retry")
-                return False
-                
-            upload_data = app.upload_processors[upload_id]
+            # Get upload session with thread safety
+            upload_session = streaming_upload_manager.get_upload_status(upload_id)
+            if not upload_session:
+                print(f"❌ Upload session {upload_id} not found")
+                return jsonify({'error': 'Upload session not found'}), 404
             
-            # Skip if this part is already completed
-            if part_number in upload_data['completed_parts']:
-                print(f"Part {part_number} is already completed, skipping retry")
-                return True
-                
-            # Check if this part is already pending
-            if part_number in upload_data['pending_parts']:
-                print(f"Part {part_number} is already being retried, skipping")
-                return False
-                
-            # Mark this part as pending
-            upload_data['pending_parts'].add(part_number)
-            
-            # Get metadata needed for the upload
-            filename = upload_data.get('filename', 'file.txt')
-            salt = upload_data.get('salt', '')
-            original_filename = upload_data.get('original_filename', filename)
-            total_size = upload_data.get('total_size', 0)
-            total_parts = upload_data.get('total_parts', 0)
-            bytes_uploaded_so_far = upload_data.get('bytes_uploaded', 0)
-            
-            # For the last part, we need to calculate the size differently
-            is_last_chunk = (part_number == total_parts)
-            
-            # Look for cached chunk data if available
-            chunk_data = upload_data.get('cached_chunks', {}).get(part_number)
-            
-        # Get user database ID
-        user_id = current_user.id if hasattr(current_user, 'id') else None
-        if not user_id:
-            print(f"ERROR: No user ID available for retry")
-            return False
-            
-        user_database_id = uploader.get_user_database_id(user_id)
-        if not user_database_id:
-            print(f"ERROR: No user database ID found for retry")
-            return False
-            
-        # If we don't have the cached chunk, we need to create one
-        if not chunk_data:
-            print(f"No cached chunk data found for part {part_number}, creating a replacement chunk")
-            
-            # Calculate chunk size based on part number and total size
-            chunk_size = 5 * 1024 * 1024  # 5MB for all parts except possibly the last
-            if is_last_chunk and total_size % chunk_size != 0:
-                last_chunk_size = total_size % chunk_size
-                if last_chunk_size > 0:
-                    chunk_size = last_chunk_size
+            # Mark session as being processed to prevent concurrent access
+            upload_session['processing_thread'] = threading.current_thread().ident
+            upload_session['last_activity'] = time.time()
+            print(f"🔒 THREAD SAFETY: Session {upload_id} locked to thread {threading.current_thread().ident}")
+        
+        print(f"📁 Processing upload: {upload_session['filename']} ({upload_session['file_size'] / 1024 / 1024:.1f}MB)")
+        
+        # Verify file size matches headers
+        content_length = request.headers.get('Content-Length')
+        expected_size = upload_session['file_size']
+        
+        if content_length and int(content_length) != expected_size:
+            print(f"❌ Content-Length mismatch: {content_length} vs {expected_size}")
+            return jsonify({'error': 'Content-Length mismatch'}), 400
+        
+        try:
+            # Create a resource-aware stream generator
+            def stream_generator():
+                try:
+                    print("📡 Starting stream reading...")
+                    chunk_size = 64 * 1024  # 64KB chunks for memory efficiency
+                    total_read = 0
+                    last_log_mb = 0
                     
-            # Create a placeholder chunk - this is just for retry demonstration
-            # In a real implementation, you would need to retrieve the actual file data
-            print(f"Creating placeholder chunk of size {chunk_size} bytes for part {part_number}")
-            chunk_data = b'X' * chunk_size
+                    while True:
+                        chunk = request.stream.read(chunk_size)
+                        if not chunk:
+                            print(f"📡 Stream completed, total read: {total_read / 1024 / 1024:.1f}MB")
+                            break
+                        
+                        total_read += len(chunk)
+                        
+                        # Log progress every 10MB
+                        current_mb = total_read // (10 * 1024 * 1024)
+                        if current_mb > last_log_mb:
+                            print(f"📡 Read {total_read / (1024*1024):.1f}MB...")
+                            last_log_mb = current_mb
+                        
+                        yield chunk
+                        
+                except Exception as e:
+                    print(f"❌ Error reading request stream: {e}")
+                    raise
             
-            # Warn that this is not the original data
-            print(f"WARNING: Using placeholder data for part {part_number} - this will not match the original file content!")
-        else:
-            print(f"Using cached chunk data for part {part_number} ({len(chunk_data)} bytes)")
-        
-        # Generate a new session ID for this retry
-        session_id = str(uuid.uuid4())
-        
-        # Start a new thread to upload this part
-        thread = threading.Thread(
-            target=upload_thread_func,
-            args=(upload_id, part_number, chunk_data, filename, salt, is_last_chunk, bytes_uploaded_so_far, session_id)
-        )
-        thread.daemon = True
-        
-        # Store the thread reference
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            if upload_id in app.upload_processors:
-                upload_data = app.upload_processors[upload_id]
-                upload_data['upload_threads'][part_number] = thread
-                
-        # Start the thread
-        thread.start()
-        print(f"Started retry thread for part {part_number}")
-        return True
+            print("🔄 Processing upload...")
+            
+            # Process upload with circuit breaker protection
+            def upload_with_circuit_breaker():
+                return streaming_upload_manager.process_upload_stream(upload_id, stream_generator())
+            
+            if upload_circuit_breaker:
+                try:
+                    result = upload_circuit_breaker.call(upload_with_circuit_breaker)
+                except CircuitBreakerOpenError as e:
+                    print(f"🚨 Circuit breaker open: {e}")
+                    return jsonify({'error': 'Upload service temporarily unavailable. Please try again later.'}), 503
+            else:
+                result = upload_with_circuit_breaker()
+            
+            print(f"✅ Upload processing completed: {result}")
+            
+            # LEGACY CODE REMOVAL: Removed problematic add_file_to_user_database call
+            # This was causing file upload ID mismatch errors after upload completion
+            # The file is already successfully uploaded to Notion at this point
+            print("💾 Upload completed successfully - legacy database integration step removed")
+            print(f"🔍 Upload result: {result.get('filename')} ({result.get('bytes_uploaded', 0)} bytes)")
+            
+            # Final progress update
+            if socketio:
+                socketio.emit('upload_progress', {
+                    'upload_id': upload_id,
+                    'status': 'completed',
+                    'progress': 100,
+                    'bytes_uploaded': result['bytes_uploaded'],
+                    'total_size': result['bytes_uploaded']
+                })
+            
+            return jsonify({
+                'status': 'completed',
+                'upload_id': upload_id,
+                'filename': result['filename'],
+                'file_size': result['bytes_uploaded'],
+                'file_hash': result['file_hash'],
+                'file_id': result.get('file_id'),  # Return the file ID from upload result
+                'is_public': False,
+                'name': result.get('original_filename', result['filename']),
+                'size': result['bytes_uploaded']
+            })
+            
+        except MemoryError as e:
+            print(f"💥 Memory limit exceeded: {e}")
+            return jsonify({'error': f'Memory limit exceeded: {str(e)}'}), 507
+        except Exception as e:
+            print(f"💥 Upload processing error: {e}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': f'Upload failed: {str(e)}'}), 500
         
     except Exception as e:
-        print(f"ERROR in retry_missing_part for part {part_number}: {str(e)}")
+        print(f"💥 Critical error in streaming upload endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/upload/resume/<upload_id>', methods=['POST'])
+@login_required
+def resume_stream_file_upload(upload_id):
+    """Resume a previously started upload"""
+    try:
+        with app.upload_session_lock:
+            upload_session = streaming_upload_manager.get_upload_status(upload_id)
+            if not upload_session:
+                return jsonify({'error': 'Upload session not found'}), 404
+            upload_session['processing_thread'] = threading.current_thread().ident
+            upload_session['last_activity'] = time.time()
+
+        def stream_generator():
+            chunk_size = 64 * 1024
+            while True:
+                chunk = request.stream.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+
+        result = streaming_upload_manager.resume_upload_stream(upload_id, stream_generator())
+
+        if socketio:
+            socketio.emit('upload_progress', {
+                'upload_id': upload_id,
+                'status': 'completed',
+                'progress': 100,
+                'bytes_uploaded': result['bytes_uploaded'],
+                'total_size': result['bytes_uploaded']
+            })
+
+        return jsonify({
+            'status': 'completed',
+            'upload_id': upload_id,
+            'filename': result['filename'],
+            'file_size': result['bytes_uploaded'],
+            'file_hash': result['file_hash'],
+            'file_id': result.get('file_id'),
+            'is_public': False,
+            'name': result.get('original_filename', result['filename']),
+            'size': result['bytes_uploaded']
+        })
+
+    except Exception as e:
+        print(f"Resume upload error: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/upload/status/<upload_id>', methods=['GET'])
+@login_required
+def get_upload_status(upload_id):
+    """
+    Get the status of an upload session with enhanced monitoring
+    """
+    try:
+        upload_session = streaming_upload_manager.get_upload_status(upload_id)
+        if not upload_session:
+            return jsonify({'error': 'Upload session not found'}), 404
+        
+        # Import circuit breaker for status monitoring
+        try:
+            from uploader.circuit_breaker import upload_circuit_breaker, notion_api_circuit_breaker
+        except ImportError:
+            upload_circuit_breaker = None
+            notion_api_circuit_breaker = None
+        
+        # Basic status response
+        status_response = {
+            'upload_id': upload_id,
+            'status': upload_session['status'],
+            'filename': upload_session['filename'],
+            'file_size': upload_session['file_size'],
+            'bytes_uploaded': upload_session['bytes_uploaded'],
+            'is_multipart': upload_session['is_multipart'],
+            'created_at': upload_session['created_at']
+        }
+        
+        # Add circuit breaker status if available
+        if upload_circuit_breaker:
+            cb_stats = upload_circuit_breaker.get_stats()
+            status_response['circuit_breaker'] = {
+                'state': cb_stats['state'],
+                'success_rate': cb_stats['success_rate_percent']
+            }
+        
+        return jsonify(status_response)
+        
+    except Exception as e:
+        print(f"Error getting upload status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/system/health', methods=['GET'])
+@login_required
+def get_system_health():
+    """
+    Get comprehensive system health and resilience status
+    """
+    try:
+        # Import monitoring components
+        try:
+            from uploader.circuit_breaker import upload_circuit_breaker, notion_api_circuit_breaker, log_all_circuit_breaker_stats
+            from uploader.checkpoint_manager import checkpoint_manager, log_checkpoint_stats
+        except ImportError as e:
+            return jsonify({'error': f'Monitoring components not available: {e}'}), 500
+        
+        health_status = {
+            'timestamp': time.time(),
+            'status': 'healthy',
+            'components': {}
+        }
+        
+        # Circuit breaker health
+        circuit_breakers = []
+        if upload_circuit_breaker:
+            cb_stats = upload_circuit_breaker.get_stats()
+            circuit_breakers.append({
+                'name': cb_stats['name'],
+                'state': cb_stats['state'],
+                'success_rate': cb_stats['success_rate_percent'],
+                'total_calls': cb_stats['total_calls'],
+                'failure_count': cb_stats['failure_count']
+            })
+        
+        if notion_api_circuit_breaker:
+            cb_stats = notion_api_circuit_breaker.get_stats()
+            circuit_breakers.append({
+                'name': cb_stats['name'],
+                'state': cb_stats['state'],
+                'success_rate': cb_stats['success_rate_percent'],
+                'total_calls': cb_stats['total_calls'],
+                'failure_count': cb_stats['failure_count']
+            })
+        
+        health_status['components']['circuit_breakers'] = {
+            'status': 'healthy' if all(cb['state'] != 'OPEN' for cb in circuit_breakers) else 'critical',
+            'breakers': circuit_breakers
+        }
+        
+        # Checkpoint manager health
+        if checkpoint_manager:
+            checkpoint_stats = checkpoint_manager.get_checkpoint_stats()
+            health_status['components']['checkpoint_manager'] = {
+                'status': 'healthy' if checkpoint_stats['storage_available'] else 'warning',
+                'storage_type': checkpoint_stats['storage_type'],
+                'checkpoint_interval': checkpoint_stats['checkpoint_interval']
+            }
+        
+        # Overall system status
+        component_statuses = [comp.get('status', 'unknown') for comp in health_status['components'].values()]
+        if 'critical' in component_statuses:
+            health_status['status'] = 'critical'
+        elif 'warning' in component_statuses:
+            health_status['status'] = 'warning'
+        
+        # Performance metrics
+        health_status['performance'] = {
+            'active_upload_sessions': len(streaming_upload_manager.active_uploads) if hasattr(streaming_upload_manager, 'active_uploads') else 0
+        }
+        
+        return jsonify(health_status)
+        
+    except Exception as e:
+        print(f"Error getting system health: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'status': 'error'}), 500
+
+
+
+@app.route('/api/system/migrate-permanent-urls', methods=['POST'])
+@login_required
+def migrate_to_permanent_urls():
+    """
+    Migrate existing files to use permanent URLs with enhanced error handling and logging
+    """
+    try:
+        print(f"🔄 Starting permanent URL migration for user: {current_user.id}")
+        
+        # Validate that NOTION_SPACE_ID is configured
+        if not NOTION_SPACE_ID:
+            error_msg = "NOTION_SPACE_ID is not configured. Cannot generate permanent URLs."
+            print(f"❌ Migration failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'error': error_msg,
+                'code': 'MISSING_SPACE_ID'
+            }), 400
+        
+        # Get user's database ID
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            error_msg = f"User database not found for user: {current_user.id}"
+            print(f"❌ Migration failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'error': 'User database not found',
+                'code': 'USER_DATABASE_NOT_FOUND'
+            }), 404
+        
+        print(f"📁 Found user database: {user_database_id}")
+        
+        # Perform migration with detailed logging
+        migration_result = uploader.migrate_to_permanent_urls(user_database_id)
+        
+        # Check migration status
+        if migration_result.get('status') == 'failed':
+            error_msg = migration_result.get('error', 'Unknown migration error')
+            print(f"❌ Migration failed: {error_msg}")
+            return jsonify({
+                'status': 'error',
+                'error': error_msg,
+                'code': 'MIGRATION_FAILED'
+            }), 500
+        
+        # Success response with detailed information
+        migrated_count = migration_result.get('migrated', 0)
+        skipped_count = migration_result.get('skipped', 0)
+        error_count = migration_result.get('errors', 0)
+        total_files = migration_result.get('total_files', 0)
+        
+        print(f"✅ Migration completed: {migrated_count} migrated, {skipped_count} skipped, {error_count} errors")
+        
+        return jsonify({
+            'status': 'success',
+            'migration_result': {
+                'total_files': total_files,
+                'migrated': migrated_count,
+                'skipped': skipped_count,
+                'errors': error_count,
+                'database_id': user_database_id,
+                'space_id': NOTION_SPACE_ID
+            },
+            'message': f"Migration completed successfully: {migrated_count} files migrated, {skipped_count} skipped, {error_count} errors",
+            'summary': {
+                'success_rate': f"{((migrated_count + skipped_count) / total_files * 100):.1f}%" if total_files > 0 else "N/A",
+                'permanent_urls_enabled': True
+            }
+        })
+        
+    except Exception as e:
+        error_msg = str(e)
+        print(f"💥 Critical error during migration: {error_msg}")
         import traceback
         traceback.print_exc()
         
-        # Remove this part from pending if we failed to start the retry
+        return jsonify({
+            'status': 'error',
+            'error': error_msg,
+            'code': 'INTERNAL_ERROR',
+            'message': 'An internal error occurred during migration. Please check the logs and try again.'
+        }), 500
+
+
+@app.route('/api/upload/abort/<upload_id>', methods=['POST'])
+@login_required
+def abort_upload(upload_id):
+    """
+    Abort an active upload session
+    """
+    try:
+        upload_session = streaming_upload_manager.get_upload_status(upload_id)
+        if not upload_session:
+            return jsonify({'message': 'Upload session not found or already completed'}), 200
+        
+        # Mark as aborted
+        upload_session['status'] = 'aborted'
+        upload_session['aborted_at'] = time.time()
+        
+        # If it's a multipart upload, abort it with Notion
+        if upload_session.get('is_multipart') and upload_session['status'] in ['uploading', 'initialized']:
+            streaming_upload_manager.uploader._abort_multipart_upload(upload_session)
+        
+        return jsonify({'message': 'Upload aborted successfully'})
+        
+    except Exception as e:
+        print(f"Error aborting upload: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/download-multipart/<manifest_page_id>')
+def download_multipart_by_page_id(manifest_page_id):
+    """
+    Download a multi-part file using the manifest's Notion page ID (bypasses global file index).
+    """
+    try:
+        import requests, json
+        manifest_page = uploader.get_user_by_id(manifest_page_id)
+        if not manifest_page:
+            return "Manifest page not found", 404
+        file_property = manifest_page.get('properties', {}).get('file_data', {})
+        files_array = file_property.get('files', [])
+        manifest_file = files_array[0] if files_array else None
+
+        # Use NotionFileUploader's method to get a fresh signed URL for the manifest JSON
+        manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
+        manifest_metadata = uploader.get_file_download_metadata(manifest_page_id, manifest_filename)
+        manifest_url = manifest_metadata.get('url', '')
+        if not manifest_url:
+            return "Manifest file not found", 404
+
+        resp = requests.get(manifest_url)
+        resp.raise_for_status()
+        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        orig_name = manifest.get('original_filename', 'download')
+        total_size = manifest.get('total_size', 0)
+        import mimetypes
+        mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
+
+        range_header = request.headers.get('Range')
+        if range_header and total_size > 0:
+            range_value = range_header.strip().lower()
+            if '=' not in range_value:
+                return "Invalid range", 416
+            units, range_spec = range_value.split('=', 1)
+            if units != 'bytes':
+                return "Invalid range unit", 416
+            range_start, range_end = range_spec.split('-', 1)
+            if range_start and range_end:
+                start = int(range_start)
+                end = int(range_end)
+            elif range_start and not range_end:
+                start = int(range_start)
+                end = total_size - 1
+            elif not range_start and range_end:
+                suffix_length = int(range_end)
+                start = max(0, total_size - suffix_length)
+                end = total_size - 1
+            else:
+                return "Invalid range format", 416
+            if start < 0 or end >= total_size or start > end:
+                response = Response(status=416)
+                response.headers['Content-Range'] = f'bytes */{total_size}'
+                return response
+
+            def stream_range():
+                for chunk in uploader.stream_multi_part_file(manifest_page_id, start, end):
+                    yield chunk
+
+            response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
+            response.headers['Content-Length'] = str(end - start + 1)
+            response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+        else:
+            response = Response(stream_with_context(uploader.stream_multi_part_file(manifest_page_id)), mimetype=mimetype)
+            if total_size > 0:
+                response.headers['Content-Length'] = str(total_size)
+
+        response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
+        response.headers['Accept-Ranges'] = 'bytes'
+        return response
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
+        return f"Error streaming multi-part file: {str(e)}", 500
+
+# HELPER FUNCTIONS FOR LEGACY COMPATIBILITY
+
+def cleanup_upload_session(upload_id):
+    """
+    Clean up a specific upload session (legacy compatibility)
+    """
+    try:
         with app.upload_locks.get(upload_id, threading.Lock()):
             if upload_id in app.upload_processors:
-                upload_data = app.upload_processors[upload_id]
-                if part_number in upload_data['pending_parts']:
-                    upload_data['pending_parts'].remove(part_number)
-                    
-        return False
+                del app.upload_processors[upload_id]
+                print(f"Cleaned up legacy upload session: {upload_id}")
+    except Exception as e:
+        print(f"Error cleaning up upload session {upload_id}: {e}")
 
-if __name__ == '__main__':
-    # Start memory usage monitoring
-    print("Starting memory usage monitoring...")
-    log_memory_usage()
-    
-    # Only run the development server if FLASK_ENV is set to 'development'
-    # In production, Gunicorn will run the app
-    if os.environ.get('FLASK_ENV') == 'development':
-        socketio.run(app, host='0.0.0.0', port=5000, debug=True)
-    else:
-        # For production, Gunicorn will handle running the app
-        # This block is primarily for local development without FLASK_ENV=development
-        # or for direct execution in environments where Gunicorn isn't used.
-        print("Running in non-development mode. Use Gunicorn for production deployment.")
-        socketio.run(app, host='0.0.0.0', port=5000, debug=False) # debug should be False in production
+
+def process_websocket_chunk_robust(upload_id, part_number, chunk_data, is_last_chunk, chunk_size, session_id):
+    """
+    Legacy WebSocket chunk processing function (placeholder for compatibility)
+    """
+    try:
+        print(f"Legacy WebSocket chunk processing called for upload {upload_id}, part {part_number}")
+        # This is a placeholder - the new streaming upload doesn't use this method
+        # but it's referenced in some legacy code paths
+        pass
+    except Exception as e:
+        print(f"Error in legacy WebSocket chunk processing: {e}")
+
+
+# END HELPER FUNCTIONS
+
+# Start the cleanup task
+cleanup_old_sessions()
+
+# END OF STREAMING UPLOAD API
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 80))
+    socketio.run(app, host="0.0.0.0", port=port)

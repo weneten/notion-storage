@@ -8,6 +8,10 @@ import concurrent.futures
 import queue
 from typing import Dict, Any, List, Optional, Tuple, Union, Iterable
 from flask_socketio import SocketIO
+import uuid
+import time
+import random
+import mimetypes
 
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):
@@ -132,7 +136,169 @@ class ChunkProcessor:
                 raise
 
 class NotionFileUploader:
-    def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28", global_file_index_db_id: str = None):
+    def delete_file_from_user_database(self, file_page_id: str) -> Dict[str, Any]:
+        """Alias for delete_file_from_db for compatibility with streaming uploader."""
+        return self.delete_file_from_db(file_page_id)
+
+    def delete_file_from_index(self, file_page_id: str) -> Optional[Dict[str, Any]]:
+        """Alias for delete_file_from_global_index for compatibility with streaming uploader. Accepts file_page_id, retrieves hash, and deletes from global index if possible."""
+        # Try to get the hash from the file_page_id
+        file_details = self.get_user_by_id(file_page_id)
+        if not file_details:
+            print(f"[delete_file_from_index] File details not found for page ID: {file_page_id}")
+            return None
+        salted_sha512_hash = file_details.get('properties', {}).get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        if not salted_sha512_hash:
+            print(f"[delete_file_from_index] Could not retrieve salted_sha512_hash for file_page_id: {file_page_id}. Skipping Global File Index deletion.")
+            return None
+        return self.delete_file_from_global_index(salted_sha512_hash)
+    def stream_multi_part_file(self, manifest_page_id: str, start: int = 0, end: Optional[int] = None) -> Iterable[bytes]:
+        """
+        Streams a multi-part file described by a manifest JSON stored in Notion.
+        Supports optional byte range streaming so clients can request only
+        specific portions of the file.
+
+        Args:
+            manifest_page_id: The Notion page ID containing the manifest JSON.
+            start: Starting byte position (inclusive).
+            end: Ending byte position (inclusive). If None, stream until the end.
+
+        Yields:
+            File bytes in the requested range.
+        """
+        import json
+        # 1. Fetch the manifest JSON from Notion (as a file attachment)
+        manifest_page = self.get_user_by_id(manifest_page_id)
+        if not manifest_page:
+            raise Exception(f"Manifest page not found: {manifest_page_id}")
+        file_property = manifest_page.get('properties', {}).get('file_data', {})
+        files_array = file_property.get('files', [])
+        if not files_array:
+            raise Exception(f"No files found in 'file_data' for manifest page {manifest_page_id}")
+        # Assume the first file is the manifest JSON
+        manifest_file = files_array[0]
+        manifest_url = manifest_file.get('file', {}).get('url', '')
+        if not manifest_url:
+            raise Exception(f"No valid URL for manifest file on page {manifest_page_id}")
+        # Download the manifest JSON
+        resp = requests.get(manifest_url)
+        resp.raise_for_status()
+        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        parts = manifest.get('parts', [])
+        if not parts:
+            raise Exception(f"Manifest JSON does not contain 'parts' array")
+
+        total_size = sum(part.get('size', 0) for part in parts)
+        if end is None or end >= total_size:
+            end = total_size - 1
+        if start < 0 or start > end:
+            raise Exception("Invalid byte range requested")
+
+        # Build ordered list of parts with resolved page IDs and byte ranges
+        ordered_parts = []
+        current_pos = 0
+        for part in sorted(parts, key=lambda p: p.get('part_number', 0)):
+            part_size = part.get('size', 0)
+            part_end_pos = current_pos + part_size - 1
+            if part_end_pos < start:
+                current_pos += part_size
+                continue
+
+            file_hash = part.get('file_hash')
+            part_filename = part.get('filename')
+            if not file_hash:
+                raise Exception(f"Part missing file_hash: {part}")
+
+            index_entry = self.get_file_by_salted_sha512_hash(file_hash)
+            if not index_entry:
+                raise Exception(f"File part with hash {file_hash} not found in global index")
+            part_page_id = index_entry.get('properties', {}).get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            if not part_page_id:
+                raise Exception(f"No File Page ID for part hash {file_hash}")
+
+            part_start = 0
+            part_end = part_size - 1
+            if start > current_pos:
+                part_start = start - current_pos
+            if end < part_end_pos:
+                part_end = end - current_pos
+
+            ordered_parts.append({
+                'page_id': part_page_id,
+                'filename': part_filename,
+                'size': part_size,
+                'start': part_start,
+                'end': part_end
+            })
+
+            current_pos += part_size
+            if current_pos > end:
+                break
+
+        if not ordered_parts:
+            return
+
+        # Fetch file parts concurrently without storing them in memory. Each
+        # part is streamed in a background thread and delivered through a small
+        # in-memory queue to minimize latency between parts while avoiding large
+        # buffering.
+
+        prefetch_count = 2  # Number of parts to fetch concurrently
+        streams: List[Tuple[queue.Queue, threading.Thread]] = []
+
+        def start_prefetch(part_idx: int) -> None:
+            part_info = ordered_parts[part_idx]
+            q: queue.Queue = queue.Queue(maxsize=4)  # small buffer per part
+
+            def worker():
+                try:
+                    if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
+                        iterator = self.stream_file_from_notion_range(
+                            part_info['page_id'],
+                            part_info['filename'],
+                            part_info['start'],
+                            part_info['end'],
+                        )
+                    else:
+                        iterator = self.stream_file_from_notion(
+                            part_info['page_id'], part_info['filename']
+                        )
+                    for chunk in iterator:
+                        q.put(chunk)
+                    q.put(None)  # Signal completion
+                except Exception as e:  # Propagate errors to consumer
+                    q.put(e)
+
+            t = threading.Thread(target=worker, daemon=True)
+            t.start()
+            streams.append((q, t))
+
+        # Kick off initial prefetches
+        for i in range(min(prefetch_count, len(ordered_parts))):
+            start_prefetch(i)
+
+        current_index = 0
+        while current_index < len(ordered_parts):
+            q, t = streams[0]
+            while True:
+                chunk = q.get()
+                if chunk is None:
+                    break
+                if isinstance(chunk, Exception):
+                    raise chunk
+                yield chunk
+
+            # Remove completed stream
+            streams.pop(0)
+            t.join()
+            current_index += 1
+
+            # Start fetching next part to maintain the prefetch window
+            next_idx = current_index + len(streams)
+            if next_idx < len(ordered_parts):
+                start_prefetch(next_idx)
+    def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
+                 global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
         self.socketio = socketio
         self.base_url = "https://api.notion.com/v1"
@@ -143,6 +309,19 @@ class NotionFileUploader:
             "accept": "application/json"
         }
         self.global_file_index_db_id = global_file_index_db_id
+        self.notion_space_id = notion_space_id or "c91485e6-ff71-811c-b300-000345011419"  # Default space ID
+        
+        # Validation configuration
+        self.validation_config = {
+            'enabled': True,                    # Enable/disable validation entirely
+            'validation_threshold': 1800,      # Only validate URLs with less than 30 min left (seconds)
+            'urgent_threshold': 300,           # Urgent validation threshold - 5 min (seconds)
+            'bypass_fresh_urls': True,         # Skip validation for fresh URLs (>30 min left)
+            'timeout': 10,                     # Validation request timeout (seconds)
+            'accept_server_errors': True,      # Treat server errors (5xx) as valid
+            'accept_auth_errors': True,        # Treat auth errors (403, 405) as valid
+            'fallback_on_error': True         # Use cached URL if validation fails with error
+        }
 
     def ensure_txt_filename(self, filename: str) -> str:
         """Ensure filename has .txt extension but do not replace spaces"""
@@ -193,20 +372,31 @@ class NotionFileUploader:
             
         print(f"Creating file upload with payload: {payload}")
         
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            
-            if response.status_code != 200:
-                print(f"ERROR: Failed to create file upload: {response.text}")
-                raise Exception(f"Failed to create file upload: {response.text}")
-                
-            result = response.json()
-            print(f"File upload created with ID: {result.get('id', 'unknown')}")
-            return result
-            
-        except Exception as e:
-            print(f"ERROR in create_file_upload: {str(e)}")
-            raise
+        response = requests.post(url, headers=headers, json=payload)
+        
+        if response.status_code != 200:
+            print(f"ERROR: Failed to create file upload: {response.text}")
+            raise Exception(f"Failed to create file upload: {response.text}")
+        
+        result = response.json()
+        
+        # CRITICAL FIX 1: ID Validation on Upload Creation
+        upload_id = result.get('id')
+        if not upload_id:
+            error_msg = f"ID CORRUPTION: File upload creation succeeded but no ID returned. Response: {result}"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+        
+        print(f"🔍 CREATE_UPLOAD: File upload created with ID: {upload_id}")
+        print(f"🔍 CREATE_UPLOAD: Response keys: {list(result.keys())}")
+        
+        # Additional validation
+        if isinstance(upload_id, str) and len(upload_id.strip()) == 0:
+            error_msg = f"ID CORRUPTION: Upload ID is empty string"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+        
+        return result
 
     def send_file_content(self, file_upload_id: str, file_stream: Union[Iterable[bytes], io.BytesIO], content_type: str, filename: str, total_size: int) -> Dict[str, Any]:
         """Step 2: Send file content to Notion (for single file uploads)"""
@@ -215,23 +405,21 @@ class NotionFileUploader:
         # Always use generic file.txt for Notion's site
         notion_filename = "file.txt"
 
-        # Create an iterator that yields chunks directly from the stream
-        def stream_chunks():
-            if isinstance(file_stream, io.BytesIO):
-                # For BytesIO, read in chunks to avoid memory issues
-                while True:
-                    chunk = file_stream.read(8192)  # 8KB chunks
-                    if not chunk:
-                        break
-                    yield chunk
-            else:
-                # For iterables (like generators), use them directly
-                yield from file_stream
-
-        # Stream the file content using requests' streaming support
-        files = {
-            'file': (notion_filename, stream_chunks(), content_type)
-        }
+        # Handle different stream types properly for requests.post()
+        if isinstance(file_stream, io.BytesIO):
+            file_stream.seek(0)  # Ensure we're at the beginning
+            files = {
+                'file': (notion_filename, file_stream, content_type)
+            }
+        else:
+            # Handle other stream types by accumulating data
+            buffer = io.BytesIO()
+            for chunk in file_stream:
+                buffer.write(chunk)
+            buffer.seek(0)
+            files = {
+                'file': (notion_filename, buffer, content_type)
+            }
 
         headers = {
             'Authorization': self.headers['Authorization'],
@@ -245,7 +433,16 @@ class NotionFileUploader:
             raise Exception(f"File content upload failed with status {response.status_code}: {response.text}")
 
         result = response.json()
-        print(f"File content uploaded successfully. Status: {result.get('status')}")
+        
+        # CRITICAL FIX 1: ID Validation on File Content Upload
+        print(f"🔍 SEND_CONTENT: File content uploaded successfully. Status: {result.get('status')}")
+        print(f"🔍 SEND_CONTENT: Response keys: {list(result.keys())}")
+        
+        # Validate that the file upload ID is preserved in the response
+        response_file_info = result.get('file', {})
+        if response_file_info:
+            print(f"🔍 SEND_CONTENT: File info in response: {list(response_file_info.keys())}")
+        
         return result
 
     def create_file_block(self, page_id: str, file_upload_id: str, filename: str) -> Dict[str, Any]:
@@ -283,15 +480,11 @@ class NotionFileUploader:
     def get_block_info(self, block_id: str) -> Dict[str, Any]:
         """Get information about a specific block"""
         url = f"{self.base_url}/blocks/{block_id}"
-
-        try:
-            response = requests.get(url, headers=self.headers)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                raise Exception(f"Failed to get block info: {response.status_code} - {response.text}")
-        except Exception as e:
-            print(f"Error getting block info: {e}")
+        response = requests.get(url, headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"Error getting block info: {response.status_code} - {response.text}")
             return {}
 
     def get_download_url(self, block_result: Dict[str, Any], original_filename: str) -> str:
@@ -332,46 +525,369 @@ class NotionFileUploader:
             print(f"Error verifying page ID: {e}")
             return False
 
-    def get_notion_file_url_from_page_property(self, page_id: str, original_filename: str) -> str:
+    def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
         """
-        Retrieves a Notion-style download link for a file attached to a database page's 'file' property.
+        Always fetch a fresh Notion download link for the given file.
+        """
+        print(f"[FETCH] Fetching new download URL for {page_id}")
+        new_url, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+        return new_url
+
+    def _validate_cached_url(self, url: str, time_until_expiry: float = 0) -> bool:
+        """
+        Validate that a cached URL is still working using smart validation method.
+        Uses small GET range request instead of HEAD for better compatibility.
         """
         try:
-            print(f"Getting download URL for file page ID: {page_id}, original filename: {original_filename}")
+            print(f"🔍 VALIDATING URL: Starting validation (expires in {int(time_until_expiry)}s)")
+            
+            # Use small range GET request instead of HEAD for better compatibility with Notion's CDN
+            headers = {
+                'Range': 'bytes=0-1',  # Request just first 2 bytes
+                'User-Agent': 'NotionUploader/1.0'
+            }
+            
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=self.validation_config['timeout'],
+                allow_redirects=True
+            )
+            
+            # Build valid status codes based on configuration
+            valid_status_codes = [200, 206, 416]  # 416 = Range Not Satisfiable (but URL exists)
+            
+            if self.validation_config['accept_auth_errors']:
+                valid_status_codes.extend([403, 405])  # Forbidden, Method Not Allowed
+            
+            if response.status_code in valid_status_codes:
+                print(f"✅ URL VALIDATION PASSED: Status {response.status_code}")
+                return True
+            elif response.status_code == 404:
+                print(f"🚨 URL VALIDATION FAILED: Status {response.status_code} - URL not found")
+                return False
+            elif response.status_code in [500, 502, 503, 504]:
+                # Server errors - handle based on configuration
+                if self.validation_config['accept_server_errors']:
+                    print(f"⚠️ URL VALIDATION INCONCLUSIVE: Server error {response.status_code}, treating as valid per config")
+                    return True
+                else:
+                    print(f"🚨 URL VALIDATION FAILED: Server error {response.status_code}")
+                    return False
+            else:
+                print(f"🚨 URL VALIDATION FAILED: Unexpected status {response.status_code}")
+                return False
+                
+        except requests.exceptions.Timeout:
+            if self.validation_config['fallback_on_error']:
+                print(f"⚠️ URL VALIDATION TIMEOUT: Request timed out, using cached URL per config")
+                return True
+            else:
+                print(f"🚨 URL VALIDATION TIMEOUT: Request timed out, invalidating cached URL")
+                return False
+        except requests.exceptions.ConnectionError as e:
+            if self.validation_config['fallback_on_error']:
+                print(f"⚠️ URL VALIDATION CONNECTION ERROR: {e}, using cached URL per config")
+                return True
+            else:
+                print(f"🚨 URL VALIDATION CONNECTION ERROR: {e}, invalidating cached URL")
+                return False
+        except Exception as e:
+            if self.validation_config['fallback_on_error']:
+                print(f"⚠️ URL VALIDATION ERROR: {e}, using cached URL per config")
+                return True
+            else:
+                print(f"🚨 URL VALIDATION ERROR: {e}, invalidating cached URL")
+                return False
+
+    def _fetch_fresh_download_url(self, page_id: str, original_filename: str) -> str:
+        """
+        Fetch a fresh download URL from Notion API (legacy method for backward compatibility).
+        """
+        url, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+        return url
+
+    def _fetch_fresh_download_url_with_metadata(self, page_id: str, original_filename: str) -> tuple:
+        """
+        Fetch a fresh download URL from Notion API with file size and content type detection.
+        
+        Returns:
+            tuple: (download_url, file_size, content_type)
+        """
+        try:
+            print(f"Getting fresh download URL with metadata for file page ID: {page_id}, original filename: {original_filename}")
             
             # Get page information to extract file details
             page_info = self.get_user_by_id(page_id) # Reusing get_user_by_id as it fetches a page
             if not page_info:
                 print(f"No page found with ID: {page_id}")
-                return ""
+                return "", 0, "application/octet-stream"
 
-            # Extract file information from the 'file' property
-            # Assuming 'file' is the name of the file property in the database
-            file_property = page_info.get('properties', {}).get('file', {})
+            # Extract file information from the 'file_data' property (new name)
+            file_property = page_info.get('properties', {}).get('file_data', {})
             files_array = file_property.get('files', [])
 
             if not files_array:
-                print(f"No files found in 'file' property for page ID: {page_id}")
-                return ""
+                print(f"No files found in 'file_data' property for page ID: {page_id}")
+                return "", 0, "application/octet-stream"
 
-            # Get the first file in the array
-            file_info = files_array[0]
-            file_url = file_info.get('file', {}).get('url', '') # Corrected path to the URL
+            # Try to match by original filename if possible
+            file_info = None
+            for entry in files_array:
+                if entry.get('name') == original_filename or entry.get('name') == 'file.txt':
+                    file_info = entry
+                    break
+            if not file_info:
+                file_info = files_array[0]  # fallback to first if not found
+
+            file_url = file_info.get('file', {}).get('url', '')
 
             if not file_url:
-                print(f"No valid URL found in file property for page ID: {page_id}")
+                print(f"No valid URL found in file_data property for page ID: {page_id}")
                 print(f"File info: {file_info}")
-                return ""
+                return "", 0, "application/octet-stream"
 
-            print(f"Successfully retrieved download URL for file: {original_filename}")
-            return file_url
+            print(f"Successfully retrieved fresh download URL for file: {original_filename}")
+            
+            # Get file size from Notion file properties if available
+            file_size = self.get_file_size_from_notion(page_info, original_filename)
+            
+            # If not available from Notion, try to get it from the download URL
+            if file_size == 0:
+                file_size = self.get_file_size_from_url(file_url)
+            
+            # Determine content type
+            content_type = self.get_content_type_from_filename(original_filename)
+            
+            print(f"📊 File metadata: size={file_size} bytes, content_type={content_type}")
+            return file_url, file_size, content_type
             
         except Exception as e:
             print(f"Error constructing download URL from page property: {e}")
-            import traceback
-            traceback.print_exc()
-            return ""
+            return "", 0, "application/octet-stream"
 
+    def get_file_size_from_notion(self, page_info: Dict[str, Any], original_filename: str) -> int:
+        """
+        Extract file size from Notion page properties if available.
+        
+        Args:
+            page_info: Notion page information containing file properties
+            original_filename: Original filename for logging
+            
+        Returns:
+            int: File size in bytes, or 0 if not available
+        """
+        try:
+            # Check if there's a filesize property in the page
+            file_size = page_info.get('properties', {}).get('filesize', {}).get('number', 0)
+            if file_size > 0:
+                print(f"📊 Got file size from Notion properties: {file_size} bytes for {original_filename}")
+                return file_size
+            
+            print(f"📊 No file size found in Notion properties for {original_filename}")
+            return 0
+            
+        except Exception as e:
+            print(f"Error getting file size from Notion properties: {e}")
+            return 0
+
+    def get_file_size_from_url(self, download_url: str) -> int:
+        """
+        Get file size by making a HEAD request to the download URL.
+        
+        Args:
+            download_url: The Notion download URL
+            
+        Returns:
+            int: File size in bytes, or 0 if not available
+        """
+        try:
+            print(f"📊 Attempting to get file size from URL via HEAD request")
+            
+            # Make HEAD request to get Content-Length without downloading the file
+            response = requests.head(
+                download_url,
+                timeout=10,
+                allow_redirects=True,
+                headers={'User-Agent': 'NotionUploader/1.0'}
+            )
+            
+            if response.status_code == 200:
+                content_length = response.headers.get('Content-Length')
+                if content_length:
+                    file_size = int(content_length)
+                    print(f"📊 Got file size from HEAD request: {file_size} bytes")
+                    return file_size
+                else:
+                    print(f"📊 No Content-Length header in HEAD response")
+            else:
+                print(f"📊 HEAD request failed with status {response.status_code}")
+                
+        except requests.exceptions.RequestException as e:
+            print(f"📊 HEAD request failed: {e}")
+        except Exception as e:
+            print(f"📊 Error getting file size from URL: {e}")
+            
+        return 0
+
+    def get_content_type_from_filename(self, filename: str) -> str:
+        """
+        Determine content type from filename extension.
+        
+        Args:
+            filename: Original filename
+            
+        Returns:
+            str: MIME type string
+        """
+        try:
+            content_type, _ = mimetypes.guess_type(filename)
+            if content_type:
+                return content_type
+            
+            # Fallback for common file types
+            extension = filename.lower().split('.')[-1] if '.' in filename else ''
+            content_types = {
+                'txt': 'text/plain',
+                'pdf': 'application/pdf',
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'mp4': 'video/mp4',
+                'avi': 'video/x-msvideo',
+                'mov': 'video/quicktime',
+                'mp3': 'audio/mpeg',
+                'wav': 'audio/wav',
+                'zip': 'application/x-zip-compressed',
+                'doc': 'application/msword',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'xls': 'application/vnd.ms-excel',
+                'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            }
+            
+            return content_types.get(extension, 'application/octet-stream')
+            
+        except Exception as e:
+            print(f"Error determining content type: {e}")
+            return 'application/octet-stream'
+
+
+    def get_file_download_metadata(self, page_id: str, original_filename: str) -> Dict[str, Any]:
+        """
+        Get file download metadata including a fresh URL, size, and content type.
+
+        Args:
+            page_id: Notion page ID containing the file
+            original_filename: Original filename for content type detection
+
+        Returns:
+            Dict containing url, file_size, content_type, and cached status (always False)
+        """
+        try:
+            fresh_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+
+            return {
+                'url': fresh_url or '',
+                'file_size': file_size,
+                'content_type': content_type or 'application/octet-stream',
+                'cached': False
+            }
+
+        except Exception as e:
+            print(f"Error getting file download metadata: {e}")
+            return {
+                'url': '',
+                'file_size': 0,
+                'content_type': 'application/octet-stream',
+                'cached': False
+            }
+
+    def get_notion_file_url_from_page_property(self, page_id: str, original_filename: str) -> str:
+        """
+        Legacy wrapper that returns a fresh download URL for the given file.
+        """
+        return self.get_download_url_for_file(page_id, original_filename)
+
+    def configure_validation(self, **kwargs) -> Dict[str, Any]:
+        """
+        Configure URL validation behavior.
+        
+        Args:
+            enabled (bool): Enable/disable validation entirely
+            validation_threshold (int): Only validate URLs with less than this many seconds left
+            urgent_threshold (int): Urgent validation threshold in seconds
+            bypass_fresh_urls (bool): Skip validation for fresh URLs
+            timeout (int): Validation request timeout in seconds
+            accept_server_errors (bool): Treat server errors (5xx) as valid
+            accept_auth_errors (bool): Treat auth errors (403, 405) as valid
+            fallback_on_error (bool): Use cached URL if validation fails with error
+            
+        Returns:
+            Dict with current validation configuration
+        """
+        for key, value in kwargs.items():
+            if key in self.validation_config:
+                old_value = self.validation_config[key]
+                self.validation_config[key] = value
+                print(f"📝 VALIDATION CONFIG: {key} changed from {old_value} to {value}")
+            else:
+                print(f"⚠️ VALIDATION CONFIG: Unknown configuration key: {key}")
+        
+        return self.get_validation_config()
+    
+    def get_validation_config(self) -> Dict[str, Any]:
+        """
+        Get current validation configuration.
+        
+        Returns:
+            Dict with current validation settings
+        """
+        return self.validation_config.copy()
+    
+    def disable_validation(self):
+        """
+        Disable URL validation entirely - cached URLs will be used without validation.
+        """
+        self.validation_config['enabled'] = False
+        print("🚫 VALIDATION DISABLED: Cached URLs will be used without validation")
+    
+    def enable_validation(self):
+        """
+        Enable URL validation with smart timing.
+        """
+        self.validation_config['enabled'] = True
+        print("✅ VALIDATION ENABLED: Smart validation timing active")
+    
+    def set_conservative_validation(self):
+        """
+        Set conservative validation settings - validate more aggressively.
+        """
+        self.validation_config.update({
+            'enabled': True,
+            'validation_threshold': 3600,  # Validate URLs with less than 1 hour left
+            'urgent_threshold': 1800,      # Urgent validation for URLs with less than 30 min left
+            'bypass_fresh_urls': False,    # Always validate
+            'accept_server_errors': False, # Don't accept server errors as valid
+            'accept_auth_errors': True,    # Still accept auth errors (403, 405)
+            'fallback_on_error': False     # Don't use cached URL on validation errors
+        })
+        print("🛡️ CONSERVATIVE VALIDATION: More aggressive validation enabled")
+    
+    def set_permissive_validation(self):
+        """
+        Set permissive validation settings - validate less aggressively.
+        """
+        self.validation_config.update({
+            'enabled': True,
+            'validation_threshold': 900,   # Only validate URLs with less than 15 min left
+            'urgent_threshold': 300,       # Urgent validation for URLs with less than 5 min left
+            'bypass_fresh_urls': True,     # Skip validation for fresh URLs
+            'accept_server_errors': True,  # Accept server errors as valid
+            'accept_auth_errors': True,    # Accept auth errors as valid
+            'fallback_on_error': True      # Use cached URL on validation errors
+        })
+        print("🤝 PERMISSIVE VALIDATION: Less aggressive validation enabled")
     def upload_file_stream(self, file_stream: Iterable[bytes], filename: str, user_id: str, total_size: int, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Uploads a file to Notion from a stream to the specified database.
@@ -452,15 +968,34 @@ class NotionFileUploader:
             # Get the download URL
             download_url = upload_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}")
 
-            return {
+            # CRITICAL FIX 1: ID Validation on Upload Success
+            print(f"🔍 SINGLE_UPLOAD: Success with file_upload_id: {file_upload_id}")
+            print(f"🔍 SINGLE_UPLOAD: Download URL: {download_url[:50]}..." if download_url else "No download URL")
+            
+            result = {
                 "message": "File uploaded successfully",
                 "download_link": download_url,
                 "original_filename": original_filename,
                 "database_id": database_id,
                 "file_upload_id": file_upload_id
             }
+            
+            # Validate result before returning
+            if not result.get('file_upload_id'):
+                error_msg = f"ID CORRUPTION: Result missing file_upload_id after successful upload"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            
+            return result
 
         except Exception as e:
+            # CRITICAL FIX 4: Enhanced Error Handling
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['id', 'upload_id', 'null', 'empty']):
+                print(f"🚨 ID-RELATED ERROR in single file upload: {e}")
+                print(f"🔍 ERROR CONTEXT: filename={filename}, file_size={file_size}")
+                print(f"🔍 ERROR CONTEXT: file_upload_id={file_upload_id if 'file_upload_id' in locals() else 'N/A'}")
+            
             raise Exception(f"Error uploading single file: {e}")
 
     def upload_large_file_multipart_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str, chunk_size: int = 5 * 1024 * 1024, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -528,17 +1063,46 @@ class NotionFileUploader:
             # Step 3: Complete multipart upload
             complete_result = self.complete_multipart_upload(file_upload_id)
 
+            # CRITICAL FIX: Extract the actual file ID from completion response
+            actual_file_id = complete_result.get('file', {}).get('id')
+            if actual_file_id:
+                print(f"🔍 MULTIPART_COMPLETE: Got actual file ID from completion: {actual_file_id}")
+                file_upload_id = actual_file_id  # Use the correct ID from completion response
+            else:
+                print(f"🔍 MULTIPART_COMPLETE: No file ID in completion response, using upload ID: {file_upload_id}")
+
             # Return the download URL and other info
             download_url = complete_result.get('file', {}).get('url', f"https://notion.so/file/{file_upload_id}")
-            return {
+            
+            # CRITICAL FIX 1: ID Validation on Multipart Upload Success
+            print(f"🔍 MULTIPART_UPLOAD: Success with file_upload_id: {file_upload_id}")
+            print(f"🔍 MULTIPART_UPLOAD: Download URL: {download_url[:50]}..." if download_url else "No download URL")
+            
+            result = {
                 "message": "File uploaded successfully",
                 "download_link": download_url,
                 "original_filename": original_filename,
                 "database_id": database_id,
                 "file_upload_id": file_upload_id
             }
+            
+            # Validate result before returning
+            if not result.get('file_upload_id'):
+                error_msg = f"ID CORRUPTION: Multipart result missing file_upload_id after successful upload"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            
+            return result
 
         except Exception as e:
+            # CRITICAL FIX 4: Enhanced Error Handling for Multipart Uploads
+            error_msg = str(e).lower()
+            if any(keyword in error_msg for keyword in ['id', 'upload_id', 'null', 'empty', 'part']):
+                print(f"🚨 ID-RELATED ERROR in multipart upload: {e}")
+                print(f"🔍 ERROR CONTEXT: filename={filename}, file_size={file_size}")
+                print(f"🔍 ERROR CONTEXT: file_upload_id={file_upload_id if 'file_upload_id' in locals() else 'N/A'}")
+                print(f"🔍 ERROR CONTEXT: multipart_upload_info={multipart_upload_info if 'multipart_upload_info' in locals() else 'N/A'}")
+            
             raise Exception(f"Error uploading large file multipart: {e}")
 
     def upload_part_thread(self, upload_id: str, part_number: int, upload_url: str, chunk: bytes, filename: str, total_size: int, initial_uploaded_bytes: int, lock: threading.Lock, content_type: str, total_parts: int, session_id: str = None):
@@ -604,18 +1168,56 @@ class NotionFileUploader:
         return result
 
     def send_file_part(self, file_upload_id: str, part_number: int, chunk_data: bytes, filename: str, content_type: str, bytes_uploaded_so_far: int, total_bytes: int, total_parts: int, session_id: str) -> Dict[str, Any]:
-        """Send a chunk/part of a multipart upload"""
-        upload_url = None
+        """Send a chunk/part of a multipart upload with enhanced resilience and circuit breaker protection"""
+        # Import circuit breaker
+        try:
+            from .circuit_breaker import notion_api_circuit_breaker
+        except ImportError:
+            # Fallback if circuit breaker not available
+            notion_api_circuit_breaker = None
         
+        if notion_api_circuit_breaker:
+            # Use circuit breaker protection
+            return notion_api_circuit_breaker.call(
+                self._send_file_part_with_retry,
+                file_upload_id, part_number, chunk_data, filename, content_type,
+                bytes_uploaded_so_far, total_bytes, total_parts, session_id
+            )
+        else:
+            # Direct call without circuit breaker
+            return self._send_file_part_with_retry(
+                file_upload_id, part_number, chunk_data, filename, content_type,
+                bytes_uploaded_so_far, total_bytes, total_parts, session_id
+            )
+    
+    def _send_file_part_with_retry(self, file_upload_id: str, part_number: int, chunk_data: bytes, filename: str, content_type: str, bytes_uploaded_so_far: int, total_bytes: int, total_parts: int, session_id: str, max_retries: int = 5) -> Dict[str, Any]:
+        """Enhanced send_file_part with comprehensive retry logic and resilience"""
+        import random
+        import time
+        request_id = f"part_{part_number}_{uuid.uuid4().hex[:8]}"
+        
+        # Retry configuration
+        retry_config = {
+            'max_retries': max_retries,
+            'initial_delay': 1.0,
+            'max_delay': 120.0,
+            'exponential_base': 2.0,
+            'jitter_percent': 25,
+            'retryable_status_codes': [502, 503, 504],
+            'retryable_exceptions': [
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ChunkedEncodingError
+            ]
+        }
+        
+        upload_url = None
         if file_upload_id.startswith('http'):
-            # If file_upload_id is a full URL, use it directly
             upload_url = f"{file_upload_id}/send"
         else:
-            # Otherwise construct the URL from base
             upload_url = f"{self.base_url}/file_uploads/{file_upload_id}/send"
             
         headers = self.headers.copy()
-        # Do not include Content-Type in headers for multipart/form-data requests
         if "Content-Type" in headers:
             del headers["Content-Type"]
             
@@ -624,71 +1226,115 @@ class NotionFileUploader:
         if total_bytes > 0:
             progress_percentage = (bytes_uploaded_so_far + len(chunk_data)) / total_bytes * 100
             
-        # Show upload progress
         print(f"Uploading part {part_number} of {total_parts} ({len(chunk_data)/(1024*1024):.3f} MiB)")
         
+        # Log memory snapshot for high part numbers
+            
         # Prepare the multipart/form-data request
         files = {
-            'file': ('file.txt', chunk_data, 'text/plain'),  # Always use text/plain for Notion compatibility
+            'file': ('file.txt', chunk_data, 'text/plain'),
             'part_number': (None, str(part_number))
         }
-            
-        try:
-            response = requests.post(upload_url, headers=headers, files=files)
-            response_text = response.text
-            
-            if response.status_code != 200:
-                print(f"ERROR uploading part {part_number}: {response_text}")
-                raise Exception(f"Failed to upload part {part_number}: {response_text}")
-                
-            # Extract ETag from response
+        
+        last_exception = None
+        
+        for attempt in range(retry_config['max_retries']):
             try:
-                response_data = response.json()
-                print(f"Response for part {part_number}: {response_data}")
+                # Log request start
                 
-                # Notion's API might include ETag in different ways
-                etag = None
-                if 'etag' in response_data:
-                    etag = response_data['etag']
-                    print(f"Found ETag for part {part_number}: {etag}")
-                elif 'part' in response_data and 'etag' in response_data['part']:
-                    etag = response_data['part']['etag']
-                    print(f"Found ETag in 'part' for part {part_number}: {etag}")
+                # Multi-tier timeout strategy: (connect_timeout, read_timeout)
+                timeout_config = (30, 300)  # 30s connect, 5min read
+                
+                response = requests.post(
+                    upload_url,
+                    headers=headers,
+                    files=files,
+                    timeout=timeout_config
+                )
+                
+                # Log successful request
+                
+                # Check for retryable status codes
+                if response.status_code in retry_config['retryable_status_codes']:
+                    if attempt < retry_config['max_retries'] - 1:
+                        delay = self._calculate_retry_delay(attempt, retry_config)
+                        print(f"Part {part_number} got {response.status_code}, retrying in {delay:.2f}s (attempt {attempt + 1}/{retry_config['max_retries']})")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        raise Exception(f"Part {part_number} failed with {response.status_code} after {retry_config['max_retries']} attempts: {response.text}")
+                
+                if response.status_code != 200:
+                    print(f"ERROR uploading part {part_number}: {response.text}")
+                    raise Exception(f"Failed to upload part {part_number}: {response.text}")
+                    
+                # Parse response
+                try:
+                    response_data = response.json()
+                    print(f"Response for part {part_number}: {response_data}")
+                    
+                    # Handle ETag extraction
+                    etag = None
+                    if 'etag' in response_data:
+                        etag = response_data['etag']
+                        print(f"Found ETag for part {part_number}: {etag}")
+                    elif 'part' in response_data and 'etag' in response_data['part']:
+                        etag = response_data['part']['etag']
+                        print(f"Found ETag in 'part' for part {part_number}: {etag}")
+                    else:
+                        print(f"No ETag found in response for part {part_number}")
+                    
+                    if etag:
+                        response_data['etag'] = etag
+                    
+                    print(f"Successfully uploaded part {part_number} of {total_parts}")
+                    return response_data
+                    
+                except ValueError as e:
+                    print(f"WARNING: Could not parse JSON response for part {part_number}: {e}")
+                    response_text = response.text
+                    return {
+                        "part_number": part_number,
+                        "success": True,
+                        "response_text": response_text[:100] + "..." if len(response_text) > 100 else response_text
+                    }
+                    
+            except tuple(retry_config['retryable_exceptions']) as e:
+                last_exception = e
+                
+                # Enhanced error logging for timeout-related issues
+                error_msg = str(e).lower()
+                if any(keyword in error_msg for keyword in ['timeout', '504', 'gateway', 'connection', 'reset']):
+                    print(f"🚨 TIMEOUT_ERROR_DETECTED: Part {part_number} failed with timeout-related error: {e}")
+                
+                if attempt < retry_config['max_retries'] - 1:
+                    delay = self._calculate_retry_delay(attempt, retry_config)
+                    print(f"Part {part_number} failed ({type(e).__name__}), retrying in {delay:.2f}s (attempt {attempt + 1}/{retry_config['max_retries']})")
+                    time.sleep(delay)
+                    continue
                 else:
-                    # Some responses may not include an explicit ETag
-                    # According to Notion docs, parts are tracked internally
-                    print(f"No ETag found in response for part {part_number}")
-                
-                # Ensure etag is added to the response data for tracking
-                if etag:
-                    response_data['etag'] = etag
-                
-                # Emit a progress event if socketio is available
-                # Commented out to prevent server-to-Notion progress updates from being shown to the user
-                # if self.socketio:
-                #     self.socketio.emit('upload_progress', {
-                #         'percentage': progress_percentage,
-                #         'bytes_uploaded': bytes_uploaded_so_far + len(chunk_data),
-                #         'total_bytes': total_bytes,
-                #         'session_id': session_id
-                #     })
-                
-                print(f"Successfully uploaded part {part_number} of {total_parts}")
-                return response_data
-                
-            except ValueError as e:
-                print(f"WARNING: Could not parse JSON response for part {part_number}: {e}")
-                print(f"Response text: {response_text}")
-                # Return a basic dict with part info but no ETag
-                return {
-                    "part_number": part_number,
-                    "success": True,
-                    "response_text": response_text[:100] + "..." if len(response_text) > 100 else response_text
-                }
-                
-        except Exception as e:
-            print(f"ERROR in send_file_part for part {part_number}: {str(e)}")
-            raise
+                    # Log failed request
+                    raise Exception(f"Part {part_number} failed permanently after {retry_config['max_retries']} attempts: {str(e)}")
+                    
+            except Exception as e:
+                last_exception = e
+                # Log failed request
+                print(f"ERROR in send_file_part for part {part_number}: {str(e)}")
+                raise
+        
+        # Should never reach here, but just in case
+        raise Exception(f"Part {part_number} failed after all retry attempts: {str(last_exception)}")
+    
+    def _calculate_retry_delay(self, attempt: int, retry_config: dict) -> float:
+        """Calculate exponential backoff delay with jitter"""
+        base_delay = retry_config['initial_delay'] * (retry_config['exponential_base'] ** attempt)
+        max_delay = min(base_delay, retry_config['max_delay'])
+        
+        # Add jitter to prevent thundering herd
+        jitter_range = max_delay * (retry_config['jitter_percent'] / 100)
+        jitter = random.uniform(-jitter_range, jitter_range)
+        
+        return max(0.1, max_delay + jitter)  # Minimum 0.1 second delay
 
     def complete_multipart_upload(self, file_upload_id: str, parts: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
@@ -1013,18 +1659,77 @@ class NotionFileUploader:
 
         return response.json()
 
-    def get_user_by_id(self, user_id: str) -> Dict[str, Any]:
-        """Get a user page by its ID"""
+    def update_user_username(self, user_id: str, new_username: str) -> Dict[str, Any]:
+        """Update the username for a user in the Notion database"""
         url = f"{self.base_url}/pages/{user_id}"
+
+        payload = {
+            "properties": {
+                "Name": {
+                    "title": [
+                        {
+                            "text": {"content": new_username}
+                        }
+                    ]
+                }
+            }
+        }
 
         headers = {**self.headers, "Content-Type": "application/json"}
 
-        response = requests.get(url, headers=headers)
+        response = requests.patch(url, json=payload, headers=headers)
 
         if response.status_code != 200:
-            raise Exception(f"Failed to get user by ID: {response.text}")
+            raise Exception(f"Failed to update username: {response.text}")
 
         return response.json()
+
+    def get_user_by_id(self, user_id: str) -> Dict[str, Any]:
+        """Get a user page by its ID with retry logic for temporary failures"""
+        import time
+        
+        url = f"{self.base_url}/pages/{user_id}"
+        headers = {**self.headers, "Content-Type": "application/json"}
+        
+        print(f"DEBUG: Making request to Notion API: {url}")
+        print(f"DEBUG: Request headers: {headers}")
+
+        max_retries = 3
+        base_delay = 1  # Start with 1 second delay
+        
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.get(url, headers=headers, timeout=30)
+                print(f"DEBUG: Attempt {attempt + 1}: Response status: {response.status_code}")
+                print(f"DEBUG: Response headers: {dict(response.headers)}")
+                
+                if response.status_code == 200:
+                    return response.json()
+                elif response.status_code in [502, 503, 504] and attempt < max_retries:
+                    # Temporary server errors - retry with exponential backoff
+                    delay = base_delay * (2 ** attempt)
+                    print(f"DEBUG: Server error {response.status_code}, retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"DEBUG: Response text: {response.text[:500]}")  # Limit response text for readability
+                    raise Exception(f"Failed to get user by ID: HTTP {response.status_code} - {response.text}")
+                    
+            except requests.exceptions.RequestException as e:
+                if attempt < max_retries:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"DEBUG: Network error on attempt {attempt + 1}: {str(e)}, retrying in {delay} seconds...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"DEBUG: Request exception after {max_retries + 1} attempts: {str(e)}")
+                    raise Exception(f"Failed to get user by ID - Network error: {str(e)}")
+            except Exception as e:
+                print(f"DEBUG: Unexpected error: {str(e)}")
+                raise
+        
+        # Should not reach here, but just in case
+        raise Exception("Failed to get user by ID after all retry attempts")
 
     def get_user_database_id(self, user_id: str) -> Optional[str]:
         """
@@ -1076,7 +1781,7 @@ class NotionFileUploader:
         """Create a Notion database for a user to store file information"""
         url = f"{self.base_url}/databases"
 
-        # Define the database schema with all required properties
+        # Define the database schema with all required properties, only use file_data for file storage
         database_schema = {
             "parent": {"page_id": parent_id},
             "title": [
@@ -1098,14 +1803,23 @@ class NotionFileUploader:
                 "filehash": {
                     "rich_text": {}
                 },
-                "file": {
-                    "files": {}
-                },
                 "is_public": {
                     "checkbox": {}
                 },
                 "salt": {
                     "rich_text": {}
+                },
+                "is_visible": {
+                    "checkbox": {}
+                },
+                "is_folder": {
+                    "checkbox": {}
+                },
+                "folder_path": {
+                    "rich_text": {}
+                },
+                "file_data": {
+                    "files": {}
                 }
             },
             "is_inline": True
@@ -1125,15 +1839,40 @@ class NotionFileUploader:
         return result
 
     def get_files_from_user_database(self, database_id: str) -> Dict[str, Any]:
-        """Queries a user's Notion database for all file entries."""
+        """Queries a user's Notion database for all file entries.
+
+        The Notion API returns results in pages (maximum 100 per request).
+        Previously this method only fetched the first page which meant users
+        with more than 100 files couldn't see their entire collection. This
+        method now follows pagination cursors until all results have been
+        retrieved and returns a single combined response.
+        """
         url = f"{self.base_url}/databases/{database_id}/query"
         headers = {**self.headers, "Content-Type": "application/json"}
-        
+        all_results: List[Dict[str, Any]] = []
+        payload: Dict[str, Any] = {}
+
         try:
-            response = requests.post(url, headers=headers)
-            if response.status_code != 200:
-                raise Exception(f"Failed to query user database: {response.text}")
-            return response.json()
+            while True:
+                response = requests.post(url, headers=headers, json=payload)
+                if response.status_code != 200:
+                    raise Exception(f"Failed to query user database: {response.text}")
+
+                data = response.json()
+                all_results.extend(data.get('results', []))
+
+                if not data.get('has_more'):
+                    break
+
+                # Prepare next request with start_cursor
+                payload['start_cursor'] = data.get('next_cursor')
+
+            return {
+                "object": "list",
+                "results": all_results,
+                "next_cursor": None,
+                "has_more": False
+            }
         except Exception as e:
             print(f"Error querying user database {database_id}: {e}")
             raise
@@ -1218,78 +1957,143 @@ class NotionFileUploader:
             print(f"Error deleting file from Global File Index by hash {salted_sha512_hash}: {e}")
             raise
 
-    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None) -> Dict[str, Any]:
-        """Add a file entry to a user's Notion database"""
+    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False, folder_path: str = "/") -> Dict[str, Any]:
+        """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
+        # Ensure the is_folder property exists for this database
+        self.ensure_database_property(database_id, "is_folder", "checkbox")
+
+        # CRITICAL FIX 1: Enhanced ID Validation and Logging
+        print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
+        print(f"🔍 ADD_FILE_TO_DB: Parameter types - file_upload_id: {type(file_upload_id)}, database_id: {type(database_id)}")
+        print(f"🔍 ADD_FILE_TO_DB: IMPORTANT - This file_upload_id should be used for Notion file operations, NOT database operations")
+
+        # EXTRA LOGGING: Log filename, file_size, and call stack for every DB entry creation
+        print(f"[EXTRA LOGGING] Creating DB entry: filename={filename}, file_size={file_size}, original_filename={original_filename}")
+        print(f"[EXTRA LOGGING] Call stack:")
+
         if not file_upload_id:
-            raise Exception("file_upload_id is required but was null or empty")
+            error_msg = f"ID VALIDATION FAILED: file_upload_id is required but was null or empty. Received: {repr(file_upload_id)}"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+
+        # Additional validation for string content
+        if isinstance(file_upload_id, str):
+            if len(file_upload_id.strip()) == 0:
+                error_msg = f"ID VALIDATION FAILED: file_upload_id is empty string. Length: {len(file_upload_id)}"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+            if file_upload_id.lower() in ['null', 'none', 'undefined', 'nan']:
+                error_msg = f"ID VALIDATION FAILED: file_upload_id contains invalid value: {file_upload_id}"
+                print(f"🚨 CRITICAL ERROR: {error_msg}")
+                raise Exception(error_msg)
+
+        print(f"🔍 ID VALIDATION PASSED: file_upload_id '{file_upload_id}' is valid for file operations")
+        print(f"🔍 ID PURPOSE: This ID will be used in the file property for Notion file attachment")
 
         # Use original_filename if provided, otherwise fall back to filename
         display_filename = original_filename if original_filename else filename
-            
-        # Create a new page in the database with file information
+
+        # Create a new page in the database with file information, only use file_data for file storage
+        properties = {
+            "filename": {
+                "title": [
+                    {
+                        "text": {
+                            "content": display_filename
+                        }
+                    }
+                ]
+            },
+            "filesize": {
+                "number": file_size
+            },
+            "filehash": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": file_hash
+                        }
+                    }
+                ]
+            },
+            "file_data": {
+                "files": [
+                    {
+                        "name": "file.txt",
+                        "type": "file_upload",
+                        "file_upload": {
+                            "id": file_upload_id
+                        }
+                    }
+                ]
+            },
+            "is_public": {
+                "checkbox": is_public
+            },
+            "salt": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": salt
+                        }
+                    }
+                ]
+            },
+            "folder_path": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": folder_path
+                        }
+                    }
+                ]
+            },
+            "is_folder": {
+                "checkbox": False
+            }
+        }
+        # Add is_manifest property if this is a manifest entry
+        if is_manifest:
+            properties["is_manifest"] = {"checkbox": True}
+
         payload = {
             "parent": {"database_id": database_id},
-            "properties": {
-                "filename": {
-                    "title": [
-                        {
-                            "text": {
-                                "content": display_filename  # Store original filename in title property
-                            }
-                        }
-                    ]
-                },
-                "filesize": {
-                    "number": file_size
-                },
-                "filehash": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": file_hash
-                            }
-                        }
-                    ]
-                },
-                "file": {
-                    "files": [
-                        {
-                            "name": "file.txt",  # ALWAYS use "file.txt" for Notion API compatibility
-                            "type": "file_upload",
-                            "file_upload": {
-                                "id": file_upload_id
-                            }
-                        }
-                    ]
-                },
-                "is_public": {
-                    "checkbox": is_public
-                },
-                "salt": {
-                    "rich_text": [
-                        {
-                            "text": {
-                                "content": salt
-                            }
-                        }
-                    ]
-                }
-            }
+            "properties": properties
         }
 
         headers = {**self.headers, "Content-Type": "application/json"}
 
-        print(f"Adding file to user database with upload ID: {file_upload_id}")
-        print(f"  Original filename: {display_filename}")
-        print(f"  Stored as: file.txt")
+        print(f"🔍 DATABASE OPERATION: Adding file to user database with upload ID: {file_upload_id}")
+        print(f"🔍 DATABASE OPERATION: Original filename: {display_filename}")
+        print(f"🔍 DATABASE OPERATION: Stored as: file.txt")
+        print(f"🔍 DATABASE OPERATION: Database ID: {database_id}")
+        print(f"🔍 DATABASE OPERATION: Payload file_upload_id: {payload['properties']['file_data']['files'][0]['file_upload']['id']}")
+        # Verify payload integrity before sending
+        payload_file_id = payload['properties']['file_data']['files'][0]['file_upload']['id']
+        if payload_file_id != file_upload_id:
+            error_msg = f"ID CORRUPTION: Payload file_upload_id '{payload_file_id}' does not match parameter '{file_upload_id}'"
+            print(f"🚨 CRITICAL ERROR: {error_msg}")
+            raise Exception(error_msg)
+
         response = requests.post(url, json=payload, headers=headers)
 
         if response.status_code != 200:
-            raise Exception(f"Failed to add file to user database: {response.text}")
+            error_msg = f"Failed to add file to user database: {response.text}"
+            print(f"🚨 DATABASE ERROR: {error_msg}")
+            print(f"🔍 DATABASE ERROR: Request payload: {payload}")
+            raise Exception(error_msg)
 
-        return response.json()
+        result = response.json()
+        result_id = result.get('id')
+        print(f"🔍 DATABASE SUCCESS: File added with database page ID: {result_id}")
+        print(f"🔍 DATABASE SUCCESS: Response keys: {list(result.keys())}")
+        print(f"🔍 ID SEPARATION COMPLETE:")
+        print(f"  - File Upload ID (for Notion file operations): {file_upload_id}")
+        print(f"  - Database Page ID (for database operations): {result_id}")
+        print(f"  - These IDs serve different purposes and should never be confused")
+        return result
 
     def get_file_by_salted_sha512_hash(self, salted_sha512_hash: str) -> Optional[Dict[str, Any]]:
         """
@@ -1398,21 +2202,79 @@ class NotionFileUploader:
         except Exception as e:
             print(f"Error updating file public status: {e}")
             raise
+            
+    def update_file_metadata(self, file_id: str, filename: str = None, folder_path: str = None) -> Dict[str, Any]:
+        """Update filename or folder path for a file entry."""
+        url = f"{self.base_url}/pages/{file_id}"
+        properties = {}
 
-    def stream_file_from_notion(self, notion_download_url: str, timeout: int = 60) -> Iterable[bytes]:
-        """Stream file content from a Notion signed download URL.
+        if filename is not None:
+            properties["filename"] = {
+                "title": [{"text": {"content": filename}}]
+            }
 
-        The timeout has been increased to give clients roughly twice as long to
-        retrieve the media before signalling failure, helping avoid premature
-        "Failed to load media content" errors.
+        if folder_path is not None:
+            properties["folder_path"] = {
+                "rich_text": [{"text": {"content": folder_path}}]
+            }
+
+        if not properties:
+            return {}
+
+        payload = {"properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        response = requests.patch(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to update file metadata: {response.text}")
+        return response.json()
+
+    def create_folder(self, database_id: str, folder_name: str, parent_path: str = "/") -> Dict[str, Any]:
+        """Create a folder entry in the user's database."""
+        url = f"{self.base_url}/pages"
+
+        properties = {
+            "filename": {
+                "title": [
+                    {"text": {"content": folder_name}}
+                ]
+            },
+            "filesize": {"number": 0},
+            "filehash": {"rich_text": [{"text": {"content": ""}}]},
+            "file_data": {"files": []},
+            "is_public": {"checkbox": False},
+            "salt": {"rich_text": [{"text": {"content": ""}}]},
+            "folder_path": {"rich_text": [{"text": {"content": parent_path}}]},
+            "is_folder": {"checkbox": True},
+            "is_visible": {"checkbox": True}
+        }
+
+        payload = {"parent": {"database_id": database_id}, "properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        response = requests.post(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to create folder: {response.text}")
+        return response.json()
+
+    def stream_file_from_notion(self, page_id: str, original_filename: str,
+                                download_url: Optional[str] = None) -> Iterable[bytes]:
+        """Stream file content from Notion.
 
         Args:
-            notion_download_url: The pre-signed URL provided by Notion.
-            timeout: Total seconds to wait for the download stream before failing.
+            page_id: The Notion page ID where the file is stored.
+            original_filename: The original filename to match in the file property.
+            download_url: Optional pre-fetched download URL. If provided, the
+                method will skip fetching a new URL from Notion.
+
+        Yields:
+            Iterator of file content chunks.
         """
+        notion_download_url = download_url or self.get_notion_file_url_from_page_property(page_id, original_filename)
+        if not notion_download_url:
+            raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         try:
-            # Increase timeout to give clients more time before the stream fails.
-            with requests.get(notion_download_url, stream=True, timeout=timeout) as r:
+            with requests.get(notion_download_url, stream=True) as r:
                 r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                 for chunk in r.iter_content(chunk_size=8192):  # 8KB chunks
                     yield chunk
@@ -1420,13 +2282,71 @@ class NotionFileUploader:
             print(f"Timeout streaming file from Notion after {timeout} seconds")
             raise Exception(f"Failed to stream file from Notion: timed out after {timeout} seconds")
         except requests.exceptions.RequestException as e:
-            print(f"Error streaming file from Notion: {e}")
-            raise Exception(f"Failed to stream file from Notion: {e}")
+            print(f"Error streaming file from Notion S3 URL: {e}")
+            raise Exception(f"Failed to stream file from Notion S3 URL: {e}")
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit handler"""
-        pass
+    def stream_file_from_notion_range(self, page_id: str, original_filename: str,
+                                      start: int, end: int, download_url: Optional[str] = None) -> Iterable[bytes]:
+        """Stream a specific byte range of file content from Notion.
 
+        Args:
+            page_id: The Notion page ID where the file is stored.
+            original_filename: The original filename to match in the file property.
+            start: Starting byte position (inclusive).
+            end: Ending byte position (inclusive).
+            download_url: Optional pre-fetched download URL.
+
+        Yields:
+            Iterator of file content chunks for the requested range.
+        """
+        notion_download_url = download_url or self.get_notion_file_url_from_page_property(page_id, original_filename)
+        if not notion_download_url:
+            raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
+        headers = {
+            'Range': f'bytes={start}-{end}'
+        }
+        print(f"Requesting bytes {start}-{end} from Notion S3 download URL: {notion_download_url}")
+        try:
+            with requests.get(notion_download_url, headers=headers, stream=True) as r:
+                if r.status_code == 206:
+                    print(f"Received partial content response (206) for range {start}-{end}")
+                elif r.status_code == 200:
+                    print(f"Server doesn't support range requests, streaming full content and extracting range {start}-{end}")
+                else:
+                    r.raise_for_status()
+
+                bytes_read = 0
+                target_bytes = end - start + 1
+
+                if r.status_code == 200:
+                    skip_bytes = start
+                    for chunk in r.iter_content(chunk_size=8192):
+                        if skip_bytes > 0:
+                            if len(chunk) <= skip_bytes:
+                                skip_bytes -= len(chunk)
+                                continue
+                            else:
+                                chunk = chunk[skip_bytes:]
+                                skip_bytes = 0
+                        to_yield = min(len(chunk), target_bytes - bytes_read)
+                        if to_yield <= 0:
+                            break
+                        yield chunk[:to_yield]
+                        bytes_read += to_yield
+                        if bytes_read >= target_bytes:
+                            break
+                else:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        to_yield = min(len(chunk), target_bytes - bytes_read)
+                        if to_yield <= 0:
+                            break
+                        yield chunk[:to_yield]
+                        bytes_read += to_yield
+                        if bytes_read >= target_bytes:
+                            break
+        except requests.exceptions.RequestException as e:
+            print(f"Error streaming byte range from Notion S3 URL: {e}")
+            raise Exception(f"Failed to stream byte range from Notion S3 URL: {e}")
     def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool) -> Dict[str, Any]:
         """Adds an entry to the Global File Index database."""
         global_index_db_id = self.global_file_index_db_id
@@ -1462,6 +2382,7 @@ class NotionFileUploader:
             response = requests.post(url, json=payload, headers=headers)
             if response.status_code != 200:
                 raise Exception(f"Failed to add file to Global File Index: {response.text}")
+            print(f"✅ Added file to Global Index for {original_filename}")
             return response.json()
         except Exception as e:
             print(f"Error adding file to Global File Index: {e}")

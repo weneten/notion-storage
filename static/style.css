@@ -29,15 +29,14 @@ h2 {
     font-size: 1.8em;
 }
 
-.container {
+.content-container {
     background: #1e1e1e;
     padding: 30px;
     border-radius: 8px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
-    max-width: 1000px;
-    width: 90%;
+    width: 100%;
     box-sizing: border-box;
-    margin: 20px auto;
+    margin: 20px 0;
 }
 
 .form-group {
@@ -265,6 +264,53 @@ button:hover,
     background-color: #9d6fe7;
 }
 
+.table td .btn-success {
+    background-color: #03dac6;
+    color: #121212;
+    font-weight: 600;
+}
+
+.table td .btn-success:hover {
+    background-color: #02c4b5;
+    color: #121212;
+}
+
+/* File type icons styling */
+.file-type-icon {
+    font-size: 1.1em;
+    margin-right: 8px;
+    display: inline-block;
+}
+
+/* Action buttons container improvements */
+.action-buttons {
+    white-space: nowrap;
+    min-width: 200px;
+}
+
+.action-buttons .btn {
+    margin-right: 5px;
+    margin-bottom: 2px;
+}
+
+/* Responsive adjustments for action buttons */
+@media (max-width: 768px) {
+    .action-buttons {
+        min-width: auto;
+    }
+    
+    .action-buttons .btn {
+        margin-right: 3px;
+        margin-bottom: 3px;
+        padding: 4px 6px;
+        font-size: 0.75em;
+    }
+    
+    .action-buttons .btn i {
+        margin-right: 2px;
+    }
+}
+
 .filesize-cell {
     white-space: nowrap;
     text-align: right;
@@ -429,4 +475,854 @@ input:checked + .slider:before {
         font-size: 0.8em;
         margin: 1px;
     }
+}
+
+/* Mobile-specific adjustments for action buttons */
+@media (max-width: 768px) {
+    /* Stack action buttons vertically on small screens */
+    .action-buttons {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        align-items: flex-start;
+    }
+    
+    .action-buttons .btn {
+        margin: 2px 0;
+        width: auto;
+        min-width: 80px;
+    }
+}
+
+/* Modal Overlay System */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.9);
+    z-index: 10000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+}
+
+.modal-overlay.show {
+    opacity: 1;
+    visibility: visible;
+}
+
+.modal-container {
+    position: relative;
+    background-color: #1e1e1e;
+    border-radius: 12px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+    max-width: 95vw;
+    max-height: 95vh;
+    width: auto;
+    height: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid #333;
+    transform: scale(0.9);
+    transition: transform 0.3s ease;
+}
+
+.modal-overlay.show .modal-container {
+    transform: scale(1);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background-color: #2a2a2a;
+    border-bottom: 1px solid #333;
+}
+
+.modal-title {
+    color: #bb86fc;
+    margin: 0;
+    font-size: 1.2em;
+    font-weight: 600;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    color: #e0e0e0;
+    font-size: 1.5em;
+    cursor: pointer;
+    padding: 5px;
+    border-radius: 4px;
+    transition: color 0.3s ease, background-color 0.3s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 35px;
+    height: 35px;
+}
+
+.modal-close:hover {
+    color: #cf6679;
+    background-color: rgba(207, 102, 121, 0.1);
+}
+
+.modal-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    position: relative;
+    overflow: hidden;
+}
+
+.modal-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #bb86fc;
+    font-size: 1.1em;
+    padding: 60px 40px;
+    min-height: 200px;
+    background: radial-gradient(circle, rgba(187, 134, 252, 0.1) 0%, transparent 70%);
+    border-radius: 12px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+}
+
+.loading-spinner {
+    font-size: 3em;
+    margin-bottom: 20px;
+    color: #bb86fc;
+}
+
+.loading-spinner i {
+    animation: spin 1.5s linear infinite;
+    filter: drop-shadow(0 0 10px rgba(187, 134, 252, 0.5));
+}
+
+.modal-loading-text {
+    font-size: 1.2em;
+    font-weight: 500;
+    text-align: center;
+    margin-top: 10px;
+    color: #e0e0e0;
+}
+
+.modal-loading-subtext {
+    font-size: 0.9em;
+    color: #b0b0b0;
+    text-align: center;
+    margin-top: 8px;
+    opacity: 0.8;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+    0% { opacity: 0.8; }
+    50% { opacity: 1; }
+    100% { opacity: 0.8; }
+}
+
+.modal-loading-text {
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.modal-media-container {
+    display: none;
+    max-width: 100%;
+    max-height: 100%;
+    position: relative;
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.4s ease, transform 0.4s ease;
+}
+
+.modal-media-container.show {
+    display: block;
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Modal Video Styling */
+.modal-video {
+    max-width: 90vw;
+    max-height: 70vh;
+    width: auto;
+    height: auto;
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    background-color: #000;
+}
+
+/* Modal Image Styling */
+.modal-image {
+    max-width: 90vw;
+    max-height: 70vh;
+    width: auto;
+    height: auto;
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    cursor: zoom-in;
+    transition: transform 0.3s ease;
+}
+
+.modal-image.zoomed {
+    cursor: zoom-out;
+    transform: scale(1.5);
+}
+
+/* Modal Audio Styling */
+.modal-audio {
+    width: 400px;
+    max-width: 90vw;
+    height: 60px;
+    border-radius: 8px;
+    background-color: #2a2a2a;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* Modal PDF Styling */
+.modal-pdf-container {
+    width: 90vw;
+    max-width: 1200px;
+    height: 80vh;
+    max-height: 900px;
+    display: flex;
+    flex-direction: column;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.modal-pdf-iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    border-radius: 8px;
+    background-color: #fff;
+    flex: 1;
+}
+
+.modal-pdf-download-bar {
+    background-color: #2a2a2a;
+    padding: 10px 15px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.pdf-controls {
+    display: flex;
+    gap: 10px;
+}
+
+.pdf-controls .btn {
+    padding: 6px 12px;
+    font-size: 0.9em;
+}
+
+.modal-pdf-fallback {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #1e1e1e;
+    border-radius: 8px;
+}
+
+.pdf-fallback-content {
+    text-align: center;
+    color: #e0e0e0;
+    max-width: 400px;
+    padding: 40px;
+}
+
+.pdf-fallback-content h4 {
+    color: #bb86fc;
+    margin-bottom: 15px;
+}
+
+.pdf-fallback-content p {
+    color: #b0b0b0;
+    margin-bottom: 25px;
+    line-height: 1.5;
+}
+
+.mobile-pdf-notice {
+    background-color: #2a2a2a;
+    color: #03dac6;
+    padding: 8px 15px;
+    font-size: 0.9em;
+    border-bottom: 1px solid #333;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* PDF Loading States */
+.modal-pdf-container.loading {
+    opacity: 0.6;
+}
+
+.modal-pdf-container.loading .modal-pdf-iframe {
+    pointer-events: none;
+}
+
+.pdf-loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(30, 30, 30, 0.9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.pdf-loading-spinner {
+    text-align: center;
+    color: #bb86fc;
+}
+
+.pdf-loading-spinner i {
+    font-size: 2em;
+    margin-bottom: 10px;
+    animation: spin 1s linear infinite;
+}
+
+/* PDF Error Handling Styles */
+.modal-pdf-error {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #1e1e1e;
+    border-radius: 8px;
+    padding: 40px;
+}
+
+.pdf-error-content {
+    text-align: center;
+    color: #e0e0e0;
+    max-width: 400px;
+}
+
+.pdf-error-content h4 {
+    color: #cf6679;
+    margin-bottom: 15px;
+    font-size: 1.3em;
+}
+
+.pdf-error-content p {
+    color: #b0b0b0;
+    margin-bottom: 25px;
+    line-height: 1.5;
+}
+
+.pdf-error-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.pdf-error-actions .btn {
+    padding: 10px 20px;
+    font-size: 1em;
+    border-radius: 6px;
+    text-decoration: none;
+    transition: all 0.3s ease;
+}
+
+.modal-footer {
+    padding: 15px 20px;
+    background-color: #2a2a2a;
+    border-top: 1px solid #333;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.modal-info {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    flex: 1;
+    min-width: 0;
+}
+
+.modal-filename {
+    color: #e0e0e0;
+    font-weight: 600;
+    font-size: 1em;
+    word-break: break-all;
+}
+
+.modal-filesize,
+.modal-filetype {
+    color: #b0b0b0;
+    font-size: 0.9em;
+}
+
+.modal-navigation {
+    display: flex;
+    gap: 10px;
+}
+
+.modal-nav-btn {
+    background-color: #bb86fc;
+    color: #121212;
+    border: none;
+    padding: 8px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: 600;
+    transition: background-color 0.3s ease;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.modal-nav-btn:hover {
+    background-color: #9d6fe7;
+}
+
+.modal-nav-btn:disabled {
+    background-color: #444;
+    color: #888;
+    cursor: not-allowed;
+}
+
+/* iOS Safari Specific Optimizations */
+@supports (-webkit-touch-callout: none) {
+    .modal-overlay {
+        /* Prevent iOS Safari scroll bounce */
+        position: fixed;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    .modal-video {
+        /* Ensure proper aspect ratio on iOS */
+        object-fit: contain;
+        /* Better performance on iOS */
+        transform: translateZ(0);
+        -webkit-transform: translateZ(0);
+    }
+    
+    .modal-container {
+        /* Prevent iOS zoom issues */
+        -webkit-user-select: none;
+        user-select: none;
+    }
+}
+
+/* Mobile Responsive Design */
+@media (max-width: 768px) {
+    .modal-container {
+        max-width: 98vw;
+        max-height: 98vh;
+        border-radius: 8px;
+    }
+    /* Ensure overlays never block upload controls in portrait mode */
+    @media (orientation: portrait) {
+        /* Only hide inactive overlays so media viewer works properly */
+        .modal-overlay:not(.show) {
+            z-index: 1 !important;
+            pointer-events: none !important;
+            opacity: 0 !important;
+        }
+        .modal-overlay.show {
+            z-index: 10002 !important;
+        }
+        .alert {
+            z-index: 1 !important;
+        }
+        #progressBarContainer,
+        #uploadForm,
+        #fileInput,
+        button[type="submit"] {
+            z-index: 10001 !important;
+            position: relative !important;
+        }
+    }
+    .modal-header {
+        padding: 12px 15px;
+    }
+    
+    .modal-title {
+        font-size: 1.1em;
+    }
+    
+    .modal-body {
+        padding: 15px;
+    }
+    
+    .modal-video {
+        max-width: 95vw;
+        max-height: 60vh;
+    }
+    
+    .modal-image {
+        max-width: 95vw;
+        max-height: 60vh;
+    }
+    
+    .modal-audio {
+        width: 100%;
+        max-width: 95vw;
+    }
+    
+    .modal-pdf-container {
+        width: 98vw;
+        height: 75vh;
+        max-height: 600px;
+    }
+    
+    .modal-pdf-download-bar {
+        padding: 8px 12px;
+    }
+    
+    .pdf-controls {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    
+    .pdf-controls .btn {
+        padding: 8px 12px;
+        font-size: 0.85em;
+        flex: 1;
+        min-width: 100px;
+    }
+    
+    .mobile-pdf-notice {
+        padding: 6px 12px;
+        font-size: 0.8em;
+    }
+    
+    .pdf-fallback-content {
+        padding: 30px 20px;
+        max-width: 300px;
+    }
+    
+    .pdf-fallback-content .btn {
+        display: block;
+        width: 100%;
+        margin: 5px 0;
+    }
+    
+    .modal-pdf-error {
+        padding: 30px 20px;
+    }
+    
+    .pdf-error-content {
+        max-width: 300px;
+    }
+    
+    .pdf-error-actions {
+        flex-direction: column;
+        gap: 8px;
+    }
+    
+    .pdf-error-actions .btn {
+        width: 100%;
+        padding: 12px 20px;
+    }
+    
+    .modal-footer {
+        padding: 12px 15px;
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    .modal-info {
+        margin-bottom: 10px;
+    }
+    
+    .modal-navigation {
+        justify-content: center;
+    }
+    
+    .modal-nav-btn {
+        flex: 1;
+        justify-content: center;
+        max-width: 150px;
+    }
+}
+
+/* Small Mobile Devices */
+@media (max-width: 480px) {
+    .modal-video {
+        max-height: 50vh;
+    }
+    
+    .modal-image {
+        max-height: 50vh;
+    }
+    
+    .modal-filename {
+        font-size: 0.9em;
+    }
+    
+    .modal-filesize,
+    .modal-filetype {
+        font-size: 0.8em;
+    }
+}
+
+/* Touch Device Optimizations */
+@media (hover: none) and (pointer: coarse) {
+    .modal-close {
+        width: 44px;
+        height: 44px;
+        font-size: 1.3em;
+    }
+    
+    .modal-nav-btn {
+        padding: 12px 20px;
+        font-size: 1em;
+        min-height: 44px;
+    }
+    
+    .modal-image {
+        /* Enable touch gestures on mobile */
+        touch-action: pan-x pan-y pinch-zoom;
+    }
+}
+
+/* Accessibility Improvements */
+.modal-overlay:focus-within .modal-container {
+    outline: 2px solid #bb86fc;
+    outline-offset: 2px;
+}
+
+/* High Contrast Mode Support */
+@media (prefers-contrast: high) {
+    .modal-overlay {
+        background-color: rgba(0, 0, 0, 0.95);
+    }
+    
+    .modal-container {
+        border: 2px solid #fff;
+    }
+    
+    .modal-close:hover {
+        background-color: rgba(255, 255, 255, 0.2);
+    }
+}
+
+/* Reduced Motion Support */
+@media (prefers-reduced-motion: reduce) {
+    .modal-overlay,
+    .modal-container,
+    .modal-close,
+    .modal-nav-btn,
+    .modal-image {
+        transition: none;
+    }
+    
+    .loading-spinner i {
+        animation: none;
+    }
+}
+
+/* Dark Mode Optimizations */
+@media (prefers-color-scheme: dark) {
+    .modal-overlay {
+        background-color: rgba(0, 0, 0, 0.95);
+    }
+}
+/* Modal Integration Styles */
+.modal-view-btn,
+.modal-view-link {
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    position: relative;
+}
+
+.modal-view-btn:hover,
+.modal-view-link:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(187, 134, 252, 0.3);
+}
+
+
+/* Add visual indicator for viewable files */
+tr[data-file-hash] .view-button-container .modal-view-btn::before,
+tr[data-file-hash] .view-button-container .modal-view-link::before {
+    content: '';
+    position: absolute;
+    top: -2px;
+    left: -2px;
+    right: -2px;
+    bottom: -2px;
+    background: linear-gradient(45deg, #bb86fc, #03dac6);
+    border-radius: 6px;
+    z-index: -1;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
+
+tr[data-file-hash] .view-button-container .modal-view-btn:hover::before,
+tr[data-file-hash] .view-button-container .modal-view-link:hover::before {
+    opacity: 0.3;
+}
+
+/* Loading state improvements */
+.modal-loading {
+    background: radial-gradient(circle, rgba(187, 134, 252, 0.1) 0%, transparent 70%);
+    border-radius: 12px;
+    padding: 40px;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transform: translateY(0);
+    animation: modalFadeIn 0.3s ease-out;
+}
+
+@keyframes modalFadeIn {
+    0% {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Mobile loading adjustments */
+@media (max-width: 768px) {
+    .modal-loading {
+        padding: 30px 20px;
+        min-height: 150px;
+    }
+    
+    .loading-spinner {
+        font-size: 2.5em;
+        margin-bottom: 15px;
+    }
+    
+    .modal-loading-text {
+        font-size: 1.1em;
+    }
+    
+    .modal-loading-subtext {
+        font-size: 0.85em;
+        margin-top: 6px;
+    }
+}
+
+@media (max-width: 480px) {
+    .modal-loading {
+        padding: 25px 15px;
+        min-height: 120px;
+    }
+    
+    .loading-spinner {
+        font-size: 2em;
+        margin-bottom: 12px;
+    }
+    
+    .modal-loading-text {
+        font-size: 1em;
+    }
+    
+    .modal-loading-subtext {
+        font-size: 0.8em;
+    }
+}
+
+/* Enhanced focus styles for accessibility */
+.modal-view-btn:focus,
+.modal-view-link:focus {
+    outline: 2px solid #bb86fc;
+    outline-offset: 2px;
+    box-shadow: 0 0 0 4px rgba(187, 134, 252, 0.2);
+}
+
+/* Smooth transitions for dynamic content */
+.view-button-container {
+    transition: all 0.3s ease;
+}
+
+.view-button-container.loading {
+    opacity: 0.6;
+    pointer-events: none;
+}
+
+/* Modal backdrop blur enhancement */
+.modal-overlay.show {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+/* Better visual feedback for touch devices */
+@media (hover: none) and (pointer: coarse) {
+    .modal-view-btn:active,
+    .modal-view-link:active {
+        transform: scale(0.95);
+        transition: transform 0.1s ease;
+    }
+}
+
+/* Dark theme styling for move file modal */
+#moveModal .modal-content {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #bb86fc;
+}
+
+#moveModal .modal-header {
+    border-bottom: 1px solid #333;
+}
+
+#moveModal .modal-title {
+    color: #bb86fc;
+}
+
+#moveModal .close {
+    color: #e0e0e0;
+    text-shadow: none;
+}
+
+#moveModal .close:hover {
+    color: #bb86fc;
+}
+
+#moveModal .list-group-item {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #333;
+    cursor: pointer;
+}
+
+#moveModal .list-group-item:hover {
+    background-color: #2c2c2c;
+    color: #bb86fc;
 }

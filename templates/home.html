@@ -1,22 +1,42 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="container">
+<div class="container-fluid content-container">
     <h1><i class="fas fa-cloud-upload-alt mr-2"></i>Upload Files</h1>
     <!-- Message container for notifications (will be filled dynamically) -->
     <div id="messageContainer"></div>
+    <div id="folderNav" class="mb-3">
+        <strong>Current Folder:</strong> {{ current_folder }}
+        {% if current_folder != '/' %}
+            {% set parent_folder = '/' + '/'.join(current_folder.strip('/').split('/')[:-1]) %}
+            <a href="{{ url_for('home', folder=parent_folder if parent_folder != '//' else '/') }}" class="ml-2">Back</a>
+        {% endif %}
+        <button id="createFolderButton" class="btn btn-secondary btn-sm ml-2">
+            <i class="fas fa-folder-plus mr-1"></i>Create Folder
+        </button>
+        <button id="deleteSelectedButton" class="btn btn-danger btn-sm ml-2" style="display: none;">
+            <i class="fas fa-trash-alt mr-1"></i>Delete Selected
+        </button>
+        <button id="moveSelectedButton" class="btn btn-secondary btn-sm ml-2" style="display: none;">
+            <i class="fas fa-folder-open mr-1"></i>Move Selected
+        </button>
+    </div>
     <form id="uploadForm" method="post" enctype="multipart/form-data">
         <div class="form-group">
-            <label for="fileInput">Select File:</label>
-            <input type="file" id="fileInput" name="file" required>
+            <label for="fileInput">Select Files or Folders:</label>
+            <input type="file" id="fileInput" name="files" multiple>
+            <button type="button" id="selectFolderButton" class="btn btn-secondary btn-sm ml-2">Choose Folder</button>
+            <input type="file" id="folderInput" webkitdirectory directory mozdirectory multiple style="display:none;">
         </div>
         <button type="submit" id="uploadButton" class="btn btn-primary">
             <i class="fas fa-upload mr-1"></i> Upload
         </button>
     </form>
 
-    <div id="progressBarContainer" style="display: none; margin-top: 20px; width: 100%; background-color: #333; border-radius: 5px; padding: 3px; box-shadow: 0 1px 3px rgba(0,0,0,0.3);">
-        <div id="progressBar" style="width: 0%; height: 24px; background-color: #bb86fc; border-radius: 4px; text-align: center; line-height: 24px; color: #121212; transition: width 0.3s;">
+    <div id="progressBarContainer"
+        style="display: none; margin-top: 20px; width: 100%; background-color: #333; border-radius: 5px; padding: 3px; box-shadow: 0 1px 3px rgba(0,0,0,0.3);">
+        <div id="progressBar"
+            style="width: 0%; height: 24px; background-color: #bb86fc; border-radius: 4px; text-align: center; line-height: 24px; color: #121212; transition: width 0.3s;">
             <span id="progressText" style="font-weight: bold;">0%</span>
         </div>
     </div>
@@ -26,28 +46,60 @@
     <h2 style="margin-top: 40px;"><i class="fas fa-file-alt mr-2"></i>Your Files</h2>
     <div id="files-container">
         <!-- Files will be loaded here via JavaScript or directly from Flask context -->
-        {% if files %}
+        {% if entries %}
         <div class="table-responsive">
             <table class="table">
                 <thead>
                     <tr>
+                        <th></th>
                         <th><i class="fas fa-file mr-1"></i> Filename</th>
                         <th><i class="fas fa-weight mr-1"></i> Size</th>
+                        <th>Folder</th>
                         <th><i class="fas fa-link mr-1"></i> Public Link</th>
                         <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                         <th><i class="fas fa-cogs mr-1"></i> Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    {% for file in files %}
-                    <tr data-file-id="{{ file.id }}" data-file-hash="{{ file.file_hash }}">
-                        <td><strong>{{ file.name }}</strong></td>
-                        <td class="filesize-cell">{{ file.size | format_bytes }}</td>
+                    {% for entry in entries %}
+                    {% if entry.type == 'folder' %}
+                    <tr class="folder-row" data-folder-path="{{ entry.full_path }}">
+                        <td><input type="checkbox" class="select-item" data-type="folder" data-id="{{ entry.id }}"></td>
                         <td>
-                            {% if file.file_hash %}
-                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=file.file_hash) }}" target="_blank"
-                                class="public-link">
-                                <i class="fas fa-external-link-alt mr-1"></i>{{ request.url_root }}d/{{ file.file_hash[:10] }}...
+                            <i class="fas fa-folder mr-1"></i>
+                            <strong>{{ entry.name }}</strong>
+                        </td>
+                        <td class="filesize-cell">{{ entry.size | format_bytes }}</td>
+                        <td>{{ entry.full_path }}</td>
+                        <td></td>
+                        <td></td>
+                        <td>
+                            <a href="{{ url_for('home', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
+                                <i class="fas fa-folder-open mr-1"></i>Open
+                            </a>
+                            <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="{{ entry.id }}" data-folder-name="{{ entry.name }}">
+                                <i class="fas fa-edit mr-1"></i>Rename
+                            </button>
+                            <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="{{ entry.id }}" data-folder-path="{{ entry.full_path }}">
+                                <i class="fas fa-trash-alt mr-1"></i>Delete
+                            </button>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}">
+                        <td><input type="checkbox" class="select-item" data-type="file" data-id="{{ entry.id }}"></td>
+                        <td>
+                            <span class="file-type-icon" data-filename="{{ entry.name }}"></span>
+                            <strong>{{ entry.name }}</strong>
+                        </td>
+                        <td class="filesize-cell">{{ entry.size | format_bytes }}</td>
+                        <td>{{ entry.folder }}</td>
+                        <td>
+                            {% if entry.file_hash %}
+                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}"
+                                target="_blank" class="public-link">
+                                <i class="fas fa-external-link-alt mr-1"></i>{{ request.url_root }}d/{{
+                                entry.file_hash[:10] }}...
                             </a>
                             {% else %}
                             <span class="text-muted">N/A</span>
@@ -55,20 +107,30 @@
                         </td>
                         <td>
                             <label class="switch">
-                                <input type="checkbox" class="public-toggle" {% if file.is_public %}checked{% endif %}>
+                                <input type="checkbox" class="public-toggle" data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}" {% if entry.is_public %}checked{% endif %}>
                                 <span class="slider round"></span>
                             </label>
                         </td>
                         <td class="action-buttons">
-                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=file.file_hash) }}"
-                                class="btn btn-primary btn-sm">
+                            {% if entry.file_hash %}
+                            <span class="view-button-container" data-filename="{{ entry.name }}" data-hash="{{ entry.file_hash }}" data-filesize="{{ entry.size | format_bytes }}"></span>
+                            {% endif %}
+                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}" class="btn btn-primary btn-sm">
                                 <i class="fas fa-download mr-1"></i>Download
                             </a>
-                            <button class="btn btn-danger btn-sm delete-btn" data-file-id="{{ file.id }}">
-                                <i class="fas fa-trash-alt mr-1"></i>Delete
-                            </button>
+                            <div class="btn-group">
+                                <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                                    <i class="fas fa-bars"></i>
+                                </button>
+                                <div class="dropdown-menu dropdown-menu-right">
+                                    <button type="button" class="dropdown-item rename-btn" data-file-id="{{ entry.id }}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                                    <button type="button" class="dropdown-item move-btn" data-file-id="{{ entry.id }}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                                    <button type="button" class="dropdown-item delete-btn" data-file-id="{{ entry.id }}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                                </div>
+                            </div>
                         </td>
                     </tr>
+                    {% endif %}
                     {% endfor %}
                 </tbody>
             </table>
@@ -81,35 +143,59 @@
     </div>
 </div>
 
+<!-- Folder selection modal for moving files -->
+<div class="modal fade" id="moveModal" tabindex="-1" role="dialog" aria-labelledby="moveModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="moveModalLabel">Select Destination Folder</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <ul class="list-group" id="folderList"></ul>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
-<script src="{{ url_for('static', filename='upload.js') }}"></script>
+<script src="{{ url_for('static', filename='streaming-upload.js') }}"></script>
 
 <script>
     // Initialize socket connection
     const socket = io();
-    
+    window.currentFolder = "{{ current_folder }}";
     // Set up event handlers when DOM is fully loaded
-    document.addEventListener('DOMContentLoaded', function() {
-        // Form submission handling
+    document.addEventListener('DOMContentLoaded', function () {
+        // Initialize streaming uploader
+        initializeStreamingUploader();
+
+        // Form submission handling with streaming upload
         const uploadForm = document.getElementById('uploadForm');
         if (uploadForm) {
-            uploadForm.addEventListener('submit', function(event) {
+            uploadForm.addEventListener('submit', function (event) {
                 event.preventDefault();
-                uploadFile();
+                console.log('=== STREAMING UPLOAD TRIGGERED ===');
+                console.log('Form submission intercepted, using new streaming upload');
+                uploadFile(); // This will use the new streaming upload
             });
+        } else {
+            console.error('Upload form not found!');
         }
-        
+
         // Socket event handlers for upload progress
-        socket.on('upload_progress', function(data) {
+        socket.on('upload_progress', function (data) {
             const progressBar = document.getElementById('progressBar');
             const progressText = document.getElementById('progressText');
             const progressSubText = document.getElementById('progressSubText');
-            
+
             if (progressBar && data.percentage !== undefined) {
                 const percentage = Math.min(data.percentage, 95); // Cap at 95% until finalization
                 progressBar.style.width = percentage + '%';
                 progressText.textContent = percentage.toFixed(0) + '%';
-                
+
                 if (data.bytes_uploaded !== undefined && data.total_bytes !== undefined) {
                     const uploadedFormatted = formatFileSize(data.bytes_uploaded);
                     const totalFormatted = formatFileSize(data.total_bytes);
@@ -117,43 +203,43 @@
                 }
             }
         });
-        
-        socket.on('upload_complete', function(data) {
+
+        socket.on('upload_complete', function (data) {
             console.log('Upload complete event received:', data);
             updateProgressBar(100, 'Upload complete');
             showStatus(`File uploaded successfully. ID: ${data.file_id}`, 'success');
-            
+
             // Refresh file list with a small delay to ensure server has updated
             setTimeout(loadFiles, 500);
         });
-        
+
         // Add event handlers for delete buttons
         document.querySelectorAll('.delete-btn').forEach(button => {
-            button.addEventListener('click', async function() {
+            button.addEventListener('click', async function () {
                 const fileId = this.dataset.fileId;
                 const fileHash = this.closest('tr').dataset.fileHash;
-                
+
                 if (!confirm('Are you sure you want to delete this file?')) {
                     return;
                 }
-                
+
                 try {
                     const response = await fetch('/delete_file', {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({ 
-                            file_id: fileId, 
-                            file_hash: fileHash 
+                        body: JSON.stringify({
+                            file_id: fileId,
+                            file_hash: fileHash
                         })
                     });
-                    
+
                     if (!response.ok) {
                         const errorData = await response.json();
                         throw new Error(errorData.error || 'Failed to delete file');
                     }
-                    
+
                     const responseData = await response.json();
                     if (responseData.status === 'success') {
                         this.closest('tr').remove();
@@ -161,22 +247,22 @@
                     } else {
                         showStatus(responseData.error || 'Failed to delete file', 'error');
                     }
-                    
+
                 } catch (error) {
                     console.error('Delete Error:', error);
                     showStatus('Error deleting file: ' + error.message, 'error');
                 }
             });
         });
-        
+
         // Add event handlers for public toggles
         document.querySelectorAll('.public-toggle').forEach(toggle => {
-            toggle.addEventListener('change', async function() {
+            toggle.addEventListener('change', async function () {
                 const row = this.closest('tr');
                 const fileId = row.dataset.fileId;
                 const fileHash = row.dataset.fileHash;
                 const isPublic = this.checked;
-                
+
                 try {
                     const response = await fetch('/toggle_public_access', {
                         method: 'POST',
@@ -189,12 +275,12 @@
                             salted_sha512_hash: fileHash
                         })
                     });
-                    
+
                     if (!response.ok) {
                         const errorData = await response.json();
                         throw new Error(errorData.error || 'Failed to update public status');
                     }
-                    
+
                     const responseData = await response.json();
                     if (responseData.status === 'success') {
                         showStatus(`File is now ${isPublic ? 'public' : 'private'}`, 'success');
@@ -203,12 +289,196 @@
                         this.checked = !isPublic;
                         showStatus(responseData.error || 'Failed to update public status', 'error');
                     }
-                    
+
                 } catch (error) {
                     console.error('Toggle Public Access Error:', error);
                     this.checked = !isPublic; // Revert toggle on error
                     showStatus('Error updating public status: ' + error.message, 'error');
                 }
+            });
+        });
+
+        document.querySelectorAll('.rename-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const fileId = this.dataset.fileId;
+                const newName = prompt('New filename:');
+                if (!newName) return;
+                await fetch('/update_file_metadata', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({file_id: fileId, filename: newName})
+                });
+                location.reload();
+            });
+        });
+
+        document.querySelectorAll('.move-btn').forEach(btn => {
+            btn.addEventListener('click', function () {
+                const fileId = this.dataset.fileId;
+                openMoveDialog([fileId], []);
+            });
+        });
+
+        const createFolderBtn = document.getElementById('createFolderButton');
+        if (createFolderBtn) {
+            createFolderBtn.addEventListener('click', async function () {
+                const folderName = prompt('Folder name:');
+                if (!folderName) return;
+                await fetch('/create_folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({folder_name: folderName, parent_path: window.currentFolder || '/'})
+                });
+                location.reload();
+            });
+        }
+
+        const deleteSelectedBtn = document.getElementById('deleteSelectedButton');
+        const moveSelectedBtn = document.getElementById('moveSelectedButton');
+
+        function updateBulkActionButtons() {
+            const anyChecked = document.querySelectorAll('.select-item:checked').length > 0;
+            if (deleteSelectedBtn) deleteSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
+            if (moveSelectedBtn) moveSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
+        }
+
+        if (moveSelectedBtn) {
+            moveSelectedBtn.addEventListener('click', function () {
+                const selected = Array.from(document.querySelectorAll('.select-item:checked'));
+                if (selected.length === 0) return;
+                const fileIds = [];
+                const folderIds = [];
+                selected.forEach(cb => {
+                    const id = cb.dataset.id;
+                    if (cb.dataset.type === 'file') fileIds.push(id);
+                    else if (cb.dataset.type === 'folder') folderIds.push(id);
+                });
+                openMoveDialog(fileIds, folderIds);
+            });
+        }
+
+        if (deleteSelectedBtn) {
+            deleteSelectedBtn.addEventListener('click', async function () {
+                const selected = Array.from(document.querySelectorAll('.select-item:checked'));
+                if (selected.length === 0) return;
+
+                const fileIds = [];
+                const folderIds = [];
+                selected.forEach(cb => {
+                    const id = cb.dataset.id;
+                    if (cb.dataset.type === 'file') fileIds.push(id);
+                    else if (cb.dataset.type === 'folder') folderIds.push(id);
+                });
+
+                try {
+                    const previewResp = await fetch('/delete_selected', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_ids: fileIds, folder_ids: folderIds, preview: true })
+                    });
+                    if (!previewResp.ok) throw new Error('Failed to get delete summary');
+                    const summary = await previewResp.json();
+
+                    let parts = [];
+                    if (summary.folder_count > 0) {
+                        let msg = `${summary.folder_count} folder${summary.folder_count !== 1 ? 's' : ''}`;
+                        if (summary.subfolder_count > 0 || summary.files_in_folders > 0) {
+                            if (summary.subfolder_count > 0) {
+                                msg += ` with ${summary.subfolder_count} subfolder${summary.subfolder_count !== 1 ? 's' : ''}`;
+                            }
+                            if (summary.files_in_folders > 0) {
+                                msg += ` containing ${summary.files_in_folders} file${summary.files_in_folders !== 1 ? 's' : ''}`;
+                            }
+                        }
+                        parts.push(msg);
+                    }
+                    if (summary.independent_file_count > 0) {
+                        parts.push(`${summary.independent_file_count} file${summary.independent_file_count !== 1 ? 's' : ''}`);
+                    }
+                    const confirmMsg = `Delete ${parts.join(' and ')}?`;
+                    if (!confirm(confirmMsg)) return;
+
+                    const resp = await fetch('/delete_selected', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_ids: fileIds, folder_ids: folderIds })
+                    });
+                    if (!resp.ok) throw new Error('Failed to delete selected items');
+                    const result = await resp.json();
+                    if (result.status === 'success') {
+                        selected.forEach(cb => cb.closest('tr').remove());
+                        showStatus('Selected items deleted', 'success');
+                    } else {
+                        showStatus(result.error || 'Failed to delete selected items', 'error');
+                    }
+                } catch (err) {
+                    console.error('Mass delete error:', err);
+                    showStatus('Error deleting selected items: ' + err.message, 'error');
+                } finally {
+                    updateBulkActionButtons();
+                }
+            });
+
+            document.querySelectorAll('.select-item').forEach(cb => {
+                cb.addEventListener('change', updateBulkActionButtons);
+            });
+            updateBulkActionButtons();
+        }
+
+        document.querySelectorAll('.rename-folder-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const folderId = this.dataset.folderId;
+                const currentName = this.dataset.folderName || '';
+                const newName = prompt('New folder name:', currentName);
+                if (!newName) return;
+                await fetch('/rename_folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({folder_id: folderId, new_name: newName})
+                });
+                location.reload();
+            });
+        });
+
+        document.querySelectorAll('.delete-folder-btn').forEach(btn => {
+            btn.addEventListener('click', async function () {
+                const folderId = this.dataset.folderId;
+                let resp = await fetch('/delete_folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({folder_id: folderId})
+                });
+                if (!resp.ok) {
+                    alert('Failed to check folder');
+                    return;
+                }
+                const data = await resp.json();
+                if (data.needs_confirm) {
+                    let msg = `Folder is not empty. Delete ${data.file_count} file`;
+                    msg += data.file_count === 1 ? '' : 's';
+                    if (data.folder_count > 0) {
+                        msg += ` and ${data.folder_count} folder`;
+                        msg += data.folder_count === 1 ? '' : 's';
+                        if (data.subfolder_file_count > 0) {
+                            msg += ` containing ${data.subfolder_file_count} file`;
+                            msg += data.subfolder_file_count === 1 ? '' : 's';
+                        }
+                    }
+                    msg += ' as well?';
+                    if (!confirm(msg)) {
+                        return;
+                    }
+                    resp = await fetch('/delete_folder', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({folder_id: folderId, delete_contents: true})
+                    });
+                    if (!resp.ok) {
+                        alert('Failed to delete folder');
+                        return;
+                    }
+                }
+                location.reload();
             });
         });
     });
@@ -220,7 +490,7 @@
             // Determine the correct alert class
             let alertClass;
             let icon;
-            
+
             if (type === 'error') {
                 alertClass = 'alert-danger';
                 icon = '<i class="fas fa-exclamation-circle mr-2"></i>';
@@ -231,14 +501,14 @@
                 alertClass = 'alert-info';
                 icon = '<i class="fas fa-info-circle mr-2"></i>';
             }
-            
+
             // Create alert with inline styles to ensure correct appearance
             messageContainer.innerHTML = `
                 <div class="alert ${alertClass}" style="${type === 'info' ? 'background-color: #1c332d !important; border-color: #03dac6 !important; color: #03dac6 !important;' : ''}">
                     ${icon}${message}
                 </div>
             `;
-            
+
             // Auto-hide success messages after 5 seconds
             if (type === 'success') {
                 setTimeout(() => {
@@ -254,6 +524,113 @@
             }
         }
     }
+
+    // File type detection and view button functionality
+    function getFileTypeInfo(filename) {
+        const ext = filename.split('.').pop().toLowerCase();
+        
+        // Define supported media types
+        const mediaTypes = {
+            video: ['mp4', 'webm', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'm4v'],
+            audio: ['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a', 'wma'],
+            image: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'bmp', 'tiff'],
+            pdf: ['pdf']
+        };
+
+        // Check if file is viewable
+        for (const [type, extensions] of Object.entries(mediaTypes)) {
+            if (extensions.includes(ext)) {
+                return {
+                    type: type,
+                    icon: getFileTypeIcon(type),
+                    isViewable: true,
+                    extension: ext
+                };
+            }
+        }
+
+        // Default for non-viewable files
+        return {
+            type: 'file',
+            icon: '📄',
+            isViewable: false,
+            extension: ext
+        };
+    }
+
+    function getFileTypeIcon(type) {
+        const icons = {
+            video: '🎥',
+            audio: '🎵',
+            image: '🖼️',
+            pdf: '📄',
+            file: '📄'
+        };
+        return icons[type] || icons.file;
+    }
+
+    function createViewButton(fileHash, fileType, filename) {
+        const viewUrl = `/v/${fileHash}`;
+        let buttonClass = 'btn-success';
+        let icon = 'fas fa-eye';
+        
+        // Customize button based on file type
+        switch(fileType) {
+            case 'video':
+                icon = 'fas fa-play';
+                buttonClass = 'btn-success';
+                break;
+            case 'audio':
+                icon = 'fas fa-volume-up';
+                buttonClass = 'btn-success';
+                break;
+            case 'image':
+                icon = 'fas fa-image';
+                buttonClass = 'btn-success';
+                break;
+            case 'pdf':
+                icon = 'fas fa-file-pdf';
+                buttonClass = 'btn-success';
+                break;
+        }
+
+        return `<a href="${viewUrl}" class="btn ${buttonClass} btn-sm modal-view-btn" data-filename="${filename}" data-filetype="${fileType}">
+                    <i class="${icon} mr-1"></i>View
+                </a>`;
+    }
+    
+
+    function initializeFileTypeIcons() {
+        // Set file type icons for server-rendered files
+        document.querySelectorAll('.file-type-icon').forEach(iconElement => {
+            const filename = iconElement.dataset.filename;
+            const fileInfo = getFileTypeInfo(filename);
+            iconElement.textContent = fileInfo.icon;
+            iconElement.style.marginRight = '8px';
+        });
+
+        // Generate view buttons for server-rendered files
+        document.querySelectorAll('.view-button-container').forEach(container => {
+            const filename = container.dataset.filename;
+            const fileHash = container.dataset.hash;
+            const filesize = container.dataset.filesize || '';
+            const fileInfo = getFileTypeInfo(filename);
+            
+            if (fileInfo.isViewable) {
+                container.innerHTML = createViewButton(fileHash, fileInfo.type, filename);
+                // Add filesize attribute to view buttons for modal system
+                const viewButtons = container.querySelectorAll('.modal-view-btn, .modal-view-link');
+                viewButtons.forEach(btn => {
+                    btn.setAttribute('data-filesize', filesize);
+                });
+            }
+        });
+    }
+
+    // Initialize file type icons when DOM is loaded
+    document.addEventListener('DOMContentLoaded', function() {
+        initializeFileTypeIcons();
+    });
 </script>
 
 <style>
@@ -263,40 +640,44 @@
         margin-bottom: 20px;
         border-radius: 5px;
     }
-    
+
     .action-buttons {
         white-space: nowrap;
     }
-    
-    .action-buttons .btn {
+
+    .action-buttons > * {
         margin-right: 5px;
     }
-    
+
     #uploadButton {
         background-color: #bb86fc;
     }
-    
+
     #uploadButton:hover {
         background-color: #9d6fe7;
     }
-    
+
     .text-muted {
         color: #888 !important;
     }
-    
+
     /* Override alert styles */
     .alert.alert-info {
         background-color: #1c332d !important;
         border: 1px solid #03dac6 !important;
         color: #03dac6 !important;
     }
-    
+
     .alert.alert-processing {
         background-color: #1c332d !important;
         border: 1px solid #03dac6 !important;
         color: #03dac6 !important;
         display: flex;
         align-items: center;
+    }
+
+    .folder-option {
+        cursor: pointer;
     }
 </style>
 {% endblock %}
