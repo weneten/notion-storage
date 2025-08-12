@@ -2202,7 +2202,7 @@ class NotionFileUploader:
         except Exception as e:
             print(f"Error updating file public status: {e}")
             raise
-
+            
     def update_file_metadata(self, file_id: str, filename: str = None, folder_path: str = None) -> Dict[str, Any]:
         """Update filename or folder path for a file entry."""
         url = f"{self.base_url}/pages/{file_id}"
@@ -2278,6 +2278,9 @@ class NotionFileUploader:
                 r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                 for chunk in r.iter_content(chunk_size=8192):  # 8KB chunks
                     yield chunk
+        except requests.exceptions.Timeout:
+            print(f"Timeout streaming file from Notion after {timeout} seconds")
+            raise Exception(f"Failed to stream file from Notion: timed out after {timeout} seconds")
         except requests.exceptions.RequestException as e:
             print(f"Error streaming file from Notion S3 URL: {e}")
             raise Exception(f"Failed to stream file from Notion S3 URL: {e}")
