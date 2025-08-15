@@ -323,6 +323,30 @@ class NotionFileUploader:
             'fallback_on_error': True         # Use cached URL if validation fails with error
         }
 
+        # Cache for download URLs so we don't request a new signed URL from
+        # Notion on every download request. Each cache entry stores the URL,
+        # file size, content type and an expiry timestamp.  Entries are valid
+        # for 30 minutes which is well below Notion's signed URL lifetime.
+        # Keyed by (page_id, original_filename).
+        self.download_url_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self.cache_lock = threading.Lock()
+        self._start_download_url_cache_cleaner()
+
+    def _start_download_url_cache_cleaner(self) -> None:
+        """Start background thread to remove expired download URL cache entries."""
+        thread = threading.Thread(target=self._download_url_cache_cleaner, daemon=True)
+        thread.start()
+
+    def _download_url_cache_cleaner(self) -> None:
+        """Background worker that clears expired entries from the download URL cache."""
+        while True:
+            now = time.time()
+            with self.cache_lock:
+                keys_to_remove = [k for k, v in self.download_url_cache.items() if v['expires_at'] <= now]
+                for key in keys_to_remove:
+                    del self.download_url_cache[key]
+            time.sleep(300)
+
     def ensure_txt_filename(self, filename: str) -> str:
         """Ensure filename has .txt extension but do not replace spaces"""
         if not filename.lower().endswith('.txt'):
@@ -527,11 +551,12 @@ class NotionFileUploader:
 
     def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
         """
-        Always fetch a fresh Notion download link for the given file.
+        Return a signed download URL for the given file, using the cached
+        value when available.  Falls back to fetching a new URL from Notion
+        when the cache is missing or expired.
         """
-        print(f"[FETCH] Fetching new download URL for {page_id}")
-        new_url, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
-        return new_url
+        metadata = self.get_file_download_metadata(page_id, original_filename)
+        return metadata.get('url', '')
 
     def _validate_cached_url(self, url: str, time_until_expiry: float = 0) -> bool:
         """
@@ -775,17 +800,40 @@ class NotionFileUploader:
 
     def get_file_download_metadata(self, page_id: str, original_filename: str) -> Dict[str, Any]:
         """
-        Get file download metadata including a fresh URL, size, and content type.
+        Get file download metadata including a signed URL, file size and
+        content type.  Results are cached for 30 minutes to avoid fetching a
+        new signed URL from Notion on every request.
 
         Args:
             page_id: Notion page ID containing the file
             original_filename: Original filename for content type detection
 
         Returns:
-            Dict containing url, file_size, content_type, and cached status (always False)
+            Dict containing url, file_size, content_type, and cached status
         """
         try:
+            cache_key = (page_id, original_filename)
+            now = time.time()
+            with self.cache_lock:
+                cached_entry = self.download_url_cache.get(cache_key)
+                if cached_entry and cached_entry['expires_at'] > now:
+                    return {
+                        'url': cached_entry['url'],
+                        'file_size': cached_entry['file_size'],
+                        'content_type': cached_entry['content_type'],
+                        'cached': True
+                    }
+
             fresh_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+
+            if fresh_url:
+                with self.cache_lock:
+                    self.download_url_cache[cache_key] = {
+                        'url': fresh_url,
+                        'file_size': file_size,
+                        'content_type': content_type or 'application/octet-stream',
+                        'expires_at': now + 1800  # Cache for 30 minutes
+                    }
 
             return {
                 'url': fresh_url or '',
