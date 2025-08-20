@@ -53,9 +53,33 @@ def cleanup_old_sessions():
             for session_id in expired_metadata:
                 del app.upload_metadata[session_id]
                 print(f"Cleaned up expired metadata for session: {session_id}")
-        
-        active_sessions = len(app.upload_processors) if hasattr(app, 'upload_processors') else 0
-        print(f"SESSION_CLEANUP: Active sessions: {active_sessions}")
+        if 'streaming_upload_manager' in globals():
+            try:
+                with streaming_upload_manager.upload_lock:
+                    expired_uploads = []
+                    for upload_id, session in streaming_upload_manager.active_uploads.items():
+                        last_activity = session.get('last_activity', session.get('created_at', 0))
+                        if session.get('status') != 'completed' and current_time - last_activity > 900:  # 15 minutes
+                            expired_uploads.append(upload_id)
+
+                    for upload_id in expired_uploads:
+                        session = streaming_upload_manager.active_uploads.pop(upload_id, None)
+                        if session:
+                            for part_id in session.get('uploaded_parts', []):
+                                try:
+                                    streaming_upload_manager.uploader.notion_uploader.delete_file_from_user_database(part_id)
+                                    if streaming_upload_manager.uploader.notion_uploader.global_file_index_db_id:
+                                        streaming_upload_manager.uploader.notion_uploader.delete_file_from_index(part_id)
+                                    print(f"Deleted orphan part: {part_id}")
+                                except Exception as e:
+                                    print(f"Error deleting orphan part {part_id}: {e}")
+                            print(f"Cleaned up stalled upload session: {upload_id}")
+            except Exception as e:
+                print(f"Error cleaning streaming uploads: {e}")
+
+        legacy_sessions = len(app.upload_processors) if hasattr(app, 'upload_processors') else 0
+        streaming_sessions = len(streaming_upload_manager.active_uploads) if 'streaming_upload_manager' in globals() else 0
+        print(f"SESSION_CLEANUP: Active legacy sessions: {legacy_sessions}, streaming sessions: {streaming_sessions}")
         
     except Exception as e:
         print(f"Error in session cleanup: {e}")
@@ -1684,15 +1708,16 @@ def stream_file_upload(upload_id):
                         if not chunk:
                             print(f"📡 Stream completed, total read: {total_read / 1024 / 1024:.1f}MB")
                             break
-                        
+
+                        upload_session['last_activity'] = time.time()
                         total_read += len(chunk)
-                        
+
                         # Log progress every 10MB
                         current_mb = total_read // (10 * 1024 * 1024)
                         if current_mb > last_log_mb:
                             print(f"📡 Read {total_read / (1024*1024):.1f}MB...")
                             last_log_mb = current_mb
-                        
+
                         yield chunk
                         
                 except Exception as e:
@@ -1778,6 +1803,7 @@ def resume_stream_file_upload(upload_id):
                 chunk = request.stream.read(chunk_size)
                 if not chunk:
                     break
+                upload_session['last_activity'] = time.time()
                 yield chunk
 
         result = streaming_upload_manager.resume_upload_stream(upload_id, stream_generator())
@@ -2028,11 +2054,21 @@ def abort_upload(upload_id):
         # Mark as aborted
         upload_session['status'] = 'aborted'
         upload_session['aborted_at'] = time.time()
-        
+
         # If it's a multipart upload, abort it with Notion
         if upload_session.get('is_multipart') and upload_session['status'] in ['uploading', 'initialized']:
             streaming_upload_manager.uploader._abort_multipart_upload(upload_session)
-        
+
+        for part_id in upload_session.get('uploaded_parts', []):
+            try:
+                streaming_upload_manager.uploader.notion_uploader.delete_file_from_user_database(part_id)
+                if streaming_upload_manager.uploader.notion_uploader.global_file_index_db_id:
+                    streaming_upload_manager.uploader.notion_uploader.delete_file_from_index(part_id)
+                print(f"Deleted orphan part: {part_id}")
+            except Exception as e:
+                print(f"Error deleting orphan part {part_id}: {e}")
+        upload_session['uploaded_parts'] = []
+
         return jsonify({'message': 'Upload aborted successfully'})
         
     except Exception as e:
