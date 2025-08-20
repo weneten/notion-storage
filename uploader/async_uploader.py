@@ -3,6 +3,7 @@ import queue
 import asyncio
 from collections import deque
 from typing import Dict, Any, Tuple
+import psutil
 
 class AsyncUploader:
     """
@@ -10,8 +11,16 @@ class AsyncUploader:
     It maintains a queue of chunks to upload and processes them asynchronously.
     """
     def __init__(self, max_concurrent_uploads: int = 5):
-        self.max_concurrent_uploads = max_concurrent_uploads
-        self.chunk_queue = queue.Queue(maxsize=10)  # Limit queue size to control memory usage
+        # Determine a safe level of concurrency based on available memory.
+        # We assume each chunk is ~5MB and allocate twice that per worker to
+        # account for overhead while uploading.
+        available_mem = psutil.virtual_memory().available
+        chunk_memory = 5 * 1024 * 1024 * 2  # ~10MB per upload slot
+        safe_uploads = max(1, available_mem // chunk_memory)
+
+        self.max_concurrent_uploads = min(max_concurrent_uploads, safe_uploads)
+        # Limit queue size to twice the number of workers to bound memory usage
+        self.chunk_queue = queue.Queue(maxsize=self.max_concurrent_uploads * 2)
         self.result_queue = queue.Queue()
         self.workers = []
         self.active_uploads = 0

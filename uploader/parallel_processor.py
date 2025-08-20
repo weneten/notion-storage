@@ -10,6 +10,7 @@ from typing import Optional, Dict, Any
 import time
 import hashlib
 import secrets
+import psutil
 
 # Simple configuration for upload limits
 MAX_WORKERS = 10
@@ -44,11 +45,21 @@ class ParallelChunkProcessor:
     """Handles parallel upload of file chunks to Notion API with resource awareness"""
     
     def __init__(self, max_workers=4, notion_uploader=None, upload_session=None, socketio=None):
-        self.max_workers = min(max_workers, MAX_WORKERS)
         self.notion_uploader = notion_uploader
         self.upload_session = upload_session
         self.socketio = socketio
         self.chunk_size = CHUNK_SIZE
+
+        # Dynamically scale workers based on available system memory to
+        # avoid excessive RAM usage.  Each worker handles a single 5MB
+        # chunk at a time and may briefly require a bit more memory, so we
+        # estimate ~10MB per worker as a safe upper bound.
+        available_mem = psutil.virtual_memory().available
+        memory_per_worker = self.chunk_size * 2  # ~10MB per worker
+        safe_workers = max(1, available_mem // memory_per_worker)
+
+        # Respect configured limits but never exceed what memory allows.
+        self.max_workers = min(max_workers, MAX_WORKERS, safe_workers)
         
         # Create executor with fixed worker count
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
