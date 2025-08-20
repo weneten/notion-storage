@@ -491,6 +491,53 @@ class NotionStreamingUploader:
                 # Note: Notion API doesn't provide direct file deletion
         except Exception as cleanup_error:
             print(f"Warning: Failed to cleanup Notion upload: {cleanup_error}")
+
+    def _store_part_in_database(
+        self,
+        user_database_id: str,
+        original_filename: str,
+        part_filename: str,
+        part_size: int,
+        part_salted_hash: str,
+        part_salt: str,
+        notion_file_upload_id: str,
+        file_url: Optional[str],
+    ) -> Dict[str, Any]:
+        """Persist a single part's metadata in Notion databases.
+
+        This method is intended to run in a background thread so the main
+        upload loop can continue accepting data without waiting for database
+        operations to complete.
+        """
+        db_entry = self.notion_uploader.add_file_to_user_database(
+            database_id=user_database_id,
+            filename=part_filename,
+            file_size=part_size,
+            file_hash=part_salted_hash,
+            file_upload_id=notion_file_upload_id,
+            is_public=False,
+            salt=part_salt,
+            original_filename=original_filename,
+            file_url=file_url,
+            # Store part entries at root to avoid orphaned parts when moving folders
+            folder_path='/'
+        )
+
+        if self.notion_uploader.global_file_index_db_id:
+            self.notion_uploader.add_file_to_index(
+                salted_sha512_hash=part_salted_hash,
+                file_page_id=db_entry['id'],
+                user_database_id=user_database_id,
+                original_filename=part_filename,
+                is_public=False,
+            )
+
+        self.notion_uploader.update_user_properties(db_entry['id'], {
+            "is_visible": {"checkbox": False},
+            "file_data": db_entry.get('properties', {}).get('file_data', {})
+        })
+
+        return db_entry
     
     def process_stream(self, upload_session: Dict[str, Any], stream_generator, resume_from: int = 0) -> Dict[str, Any]:
         """
@@ -520,62 +567,57 @@ class NotionStreamingUploader:
                 leftover = b""
                 parts_metadata = []
 
-                for idx, part_size in enumerate(part_sizes, start=1):
-                    part_filename = f"{filename}.part{idx}"
-                    part_session = self.create_upload_session(part_filename, part_size, user_database_id)
-                    part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
-                    if part_size > self.SINGLE_PART_THRESHOLD:
-                        part_result = self._process_multipart_stream(part_session, part_stream, db_integration=False)
-                    else:
-                        part_result = self._process_single_part_stream(part_session, part_stream, db_integration=False)
+                # Execute database operations in background so the next part can
+                # begin uploading immediately after the previous one finishes.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as db_executor:
+                    db_futures: List = []
 
-                    leftover = part_stream.get_leftover()
-                    part_hash = part_stream.get_part_hash()
+                    for idx, part_size in enumerate(part_sizes, start=1):
+                        part_filename = f"{filename}.part{idx}"
+                        part_session = self.create_upload_session(part_filename, part_size, user_database_id)
+                        part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
+                        if part_size > self.SINGLE_PART_THRESHOLD:
+                            part_result = self._process_multipart_stream(part_session, part_stream, db_integration=False)
+                        else:
+                            part_result = self._process_single_part_stream(part_session, part_stream, db_integration=False)
 
-                    file_url = None
-                    if 'result' in part_result and part_result['result']:
-                        file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
+                        leftover = part_stream.get_leftover()
+                        part_hash = part_stream.get_part_hash()
 
-                    part_salt = generate_salt()
-                    part_salted_hash = calculate_salted_hash(part_hash, part_salt)
-                    db_entry = self.notion_uploader.add_file_to_user_database(
-                        database_id=user_database_id,
-                        filename=part_filename,
-                        file_size=part_size,
-                        file_hash=part_salted_hash,
-                        file_upload_id=part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                        is_public=False,
-                        salt=part_salt,
-                        original_filename=filename,
-                        file_url=file_url,
-                        # Store part entries at root to avoid orphaned parts when moving folders
-                        folder_path='/'
-                    )
+                        file_url = None
+                        if 'result' in part_result and part_result['result']:
+                            file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
 
-                    upload_session['uploaded_parts'].append(db_entry['id'])
-                    upload_session['last_activity'] = time.time()
+                        part_salt = generate_salt()
+                        part_salted_hash = calculate_salted_hash(part_hash, part_salt)
 
-                    if self.notion_uploader.global_file_index_db_id:
-                        self.notion_uploader.add_file_to_index(
-                            salted_sha512_hash=part_salted_hash,
-                            file_page_id=db_entry['id'],
-                            user_database_id=user_database_id,
-                            original_filename=part_filename,
-                            is_public=False
+                        # Schedule database bookkeeping in the background
+                        future = db_executor.submit(
+                            self._store_part_in_database,
+                            user_database_id,
+                            filename,
+                            part_filename,
+                            part_size,
+                            part_salted_hash,
+                            part_salt,
+                            part_result.get('notion_file_upload_id', part_result.get('file_id')),
+                            file_url,
                         )
 
-                    self.notion_uploader.update_user_properties(db_entry['id'], {
-                        "is_visible": {"checkbox": False},
-                        "file_data": db_entry.get('properties', {}).get('file_data', {})
-                    })
+                        db_futures.append((idx, part_filename, part_size, part_salted_hash, future))
+                        upload_session['last_activity'] = time.time()
 
-                    parts_metadata.append({
-                        "part_number": idx,
-                        "filename": part_filename,
-                        "file_id": db_entry['id'],
-                        "file_hash": part_salted_hash,
-                        "size": part_size
-                    })
+                    # Collect results from background tasks
+                    for idx, part_filename, part_size, part_salted_hash, future in db_futures:
+                        db_entry = future.result()
+                        upload_session['uploaded_parts'].append(db_entry['id'])
+                        parts_metadata.append({
+                            "part_number": idx,
+                            "filename": part_filename,
+                            "file_id": db_entry['id'],
+                            "file_hash": part_salted_hash,
+                            "size": part_size
+                        })
 
                 import json
                 metadata_json = json.dumps({
