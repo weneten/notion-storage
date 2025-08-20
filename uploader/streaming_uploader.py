@@ -607,7 +607,35 @@ class NotionStreamingUploader:
                 # flowing without waiting for Notion or database operations to
                 # finish for each part.
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as upload_executor:
-                    part_futures: List = []
+                    part_futures: List[concurrent.futures.Future] = []
+                    parts_lock = threading.Lock()
+
+                    def make_callback(idx, part_filename, part_size, part_salted_hash, part_salt):
+                        def _callback(fut: concurrent.futures.Future) -> None:
+                            try:
+                                upload_result = fut.result()
+                                db_entry = self._store_part_in_database(
+                                    user_database_id,
+                                    filename,
+                                    part_filename,
+                                    part_size,
+                                    part_salted_hash,
+                                    part_salt,
+                                    upload_result['file_upload_id'],
+                                    upload_result['file_url'],
+                                )
+                                with parts_lock:
+                                    upload_session['uploaded_parts'].append(db_entry['id'])
+                                    parts_metadata.append({
+                                        "part_number": idx,
+                                        "filename": part_filename,
+                                        "file_id": db_entry['id'],
+                                        "file_hash": part_salted_hash,
+                                        "size": part_size,
+                                    })
+                            except Exception as e:
+                                print(f"ERROR: Failed to store part {idx} metadata: {e}")
+                        return _callback
 
                     for idx, part_size in enumerate(part_sizes, start=1):
                         part_filename = f"{filename}.part{idx}"
@@ -632,29 +660,14 @@ class NotionStreamingUploader:
                         part_salt = generate_salt()
                         part_salted_hash = calculate_salted_hash(part_hash, part_salt)
 
-                        part_futures.append((idx, part_filename, part_size, part_salted_hash, part_salt, future))
+                        future.add_done_callback(
+                            make_callback(idx, part_filename, part_size, part_salted_hash, part_salt)
+                        )
+                        part_futures.append(future)
                         upload_session['last_activity'] = time.time()
 
-                    for idx, part_filename, part_size, part_salted_hash, part_salt, future in part_futures:
-                        upload_result = future.result()
-                        db_entry = self._store_part_in_database(
-                            user_database_id,
-                            filename,
-                            part_filename,
-                            part_size,
-                            part_salted_hash,
-                            part_salt,
-                            upload_result['file_upload_id'],
-                            upload_result['file_url'],
-                        )
-                        upload_session['uploaded_parts'].append(db_entry['id'])
-                        parts_metadata.append({
-                            "part_number": idx,
-                            "filename": part_filename,
-                            "file_id": db_entry['id'],
-                            "file_hash": part_salted_hash,
-                            "size": part_size
-                        })
+                    concurrent.futures.wait(part_futures)
+                    parts_metadata.sort(key=lambda x: x["part_number"])
 
                 import json
                 metadata_json = json.dumps({
