@@ -383,6 +383,7 @@ class NotionStreamingUploader:
             'created_at': time.time(),
             'status': 'initialized',
             'bytes_uploaded': 0,
+            'last_activity': time.time(),
             'hasher': hashlib.sha512()  # For file integrity
         }
         
@@ -498,6 +499,8 @@ class NotionStreamingUploader:
         try:
             print(f"DEBUG: Starting stream processing for upload {upload_session['upload_id']}")
             print(f"DEBUG: File: {upload_session['filename']}, Size: {upload_session['file_size']}, Multipart: {upload_session['is_multipart']}")
+            upload_session.setdefault('uploaded_parts', [])
+            upload_session['last_activity'] = time.time()
 
             file_size = upload_session['file_size']
             filename = upload_session['filename']
@@ -548,6 +551,9 @@ class NotionStreamingUploader:
                         # Store part entries at root to avoid orphaned parts when moving folders
                         folder_path='/'
                     )
+
+                    upload_session['uploaded_parts'].append(db_entry['id'])
+                    upload_session['last_activity'] = time.time()
 
                     if self.notion_uploader.global_file_index_db_id:
                         self.notion_uploader.add_file_to_index(
@@ -634,6 +640,7 @@ class NotionStreamingUploader:
                 # can report progress and offer download links just like the
                 # single-file path.  We use the manifest's salted hash since
                 # that entry is what gets indexed for downloads.
+                upload_session.pop('uploaded_parts', None)
                 return {
                     "status": "completed",
                     "split": True,
@@ -666,6 +673,7 @@ class NotionStreamingUploader:
                         "file_data": db_entry.get('properties', {}).get('file_data', {})
                     })
                 print(f"INFO: File uploaded as single DB entry (no split).")
+                upload_session.pop('uploaded_parts', None)
                 return {
                     **result,
                     "split": False
