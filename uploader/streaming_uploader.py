@@ -5,6 +5,7 @@ Implements continuous streaming upload with proper Notion API compliance
 
 import os
 import io
+import tempfile
 import threading
 import time
 import hashlib
@@ -12,6 +13,7 @@ import uuid
 import secrets
 from typing import Optional, Callable, Dict, Any, List
 import concurrent.futures
+import queue
 import requests
 from flask import Response
 from flask_socketio import SocketIO
@@ -538,7 +540,41 @@ class NotionStreamingUploader:
         })
 
         return db_entry
-    
+
+    def _upload_part_worker(
+        self,
+        part_session: Dict[str, Any],
+        chunk_queue: queue.Queue,
+        part_size: int,
+    ) -> Dict[str, str]:
+        """Upload a part by streaming bytes from ``chunk_queue``.
+
+        The main thread feeds incoming bytes into ``chunk_queue`` while this
+        worker consumes them and uploads to Notion. It returns the Notion file
+        upload ID and resulting file URL so the caller can persist metadata
+        once the hash is known."""
+
+        def file_generator():
+            while True:
+                chunk = chunk_queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+
+        if part_size > self.SINGLE_PART_THRESHOLD:
+            part_result = self._process_multipart_stream(part_session, file_generator(), db_integration=False)
+        else:
+            part_result = self._process_single_part_stream(part_session, file_generator(), db_integration=False)
+
+        file_url = None
+        if part_result and part_result.get('result'):
+            file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
+
+        return {
+            "file_upload_id": part_result.get("notion_file_upload_id", part_result.get("file_id")),
+            "file_url": file_url,
+        }
+
     def process_stream(self, upload_session: Dict[str, Any], stream_generator, resume_from: int = 0) -> Dict[str, Any]:
         """
         Process the incoming file stream and handle upload based on file size and splitting plan
@@ -567,57 +603,71 @@ class NotionStreamingUploader:
                 leftover = b""
                 parts_metadata = []
 
-                # Execute database operations in background so the next part can
-                # begin uploading immediately after the previous one finishes.
-                with concurrent.futures.ThreadPoolExecutor(max_workers=4) as db_executor:
-                    db_futures: List = []
+                # Upload parts in background threads so incoming data can keep
+                # flowing without waiting for Notion or database operations to
+                # finish for each part.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as upload_executor:
+                    part_futures: List[concurrent.futures.Future] = []
+                    parts_lock = threading.Lock()
+
+                    def make_callback(idx, part_filename, part_size, part_salted_hash, part_salt):
+                        def _callback(fut: concurrent.futures.Future) -> None:
+                            try:
+                                upload_result = fut.result()
+                                db_entry = self._store_part_in_database(
+                                    user_database_id,
+                                    filename,
+                                    part_filename,
+                                    part_size,
+                                    part_salted_hash,
+                                    part_salt,
+                                    upload_result['file_upload_id'],
+                                    upload_result['file_url'],
+                                )
+                                with parts_lock:
+                                    upload_session['uploaded_parts'].append(db_entry['id'])
+                                    parts_metadata.append({
+                                        "part_number": idx,
+                                        "filename": part_filename,
+                                        "file_id": db_entry['id'],
+                                        "file_hash": part_salted_hash,
+                                        "size": part_size,
+                                    })
+                            except Exception as e:
+                                print(f"ERROR: Failed to store part {idx} metadata: {e}")
+                        return _callback
 
                     for idx, part_size in enumerate(part_sizes, start=1):
                         part_filename = f"{filename}.part{idx}"
                         part_session = self.create_upload_session(part_filename, part_size, user_database_id)
                         part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
-                        if part_size > self.SINGLE_PART_THRESHOLD:
-                            part_result = self._process_multipart_stream(part_session, part_stream, db_integration=False)
-                        else:
-                            part_result = self._process_single_part_stream(part_session, part_stream, db_integration=False)
 
+                        chunk_queue: queue.Queue = queue.Queue(maxsize=4)
+                        future = upload_executor.submit(
+                            self._upload_part_worker,
+                            part_session,
+                            chunk_queue,
+                            part_size,
+                        )
+
+                        for chunk in part_stream:
+                            chunk_queue.put(chunk)
+
+                        chunk_queue.put(None)
                         leftover = part_stream.get_leftover()
                         part_hash = part_stream.get_part_hash()
-
-                        file_url = None
-                        if 'result' in part_result and part_result['result']:
-                            file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
 
                         part_salt = generate_salt()
                         part_salted_hash = calculate_salted_hash(part_hash, part_salt)
 
-                        # Schedule database bookkeeping in the background
-                        future = db_executor.submit(
-                            self._store_part_in_database,
-                            user_database_id,
-                            filename,
-                            part_filename,
-                            part_size,
-                            part_salted_hash,
-                            part_salt,
-                            part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                            file_url,
+                        future.add_done_callback(
+                            make_callback(idx, part_filename, part_size, part_salted_hash, part_salt)
                         )
-
-                        db_futures.append((idx, part_filename, part_size, part_salted_hash, future))
+                        part_futures.append(future)
                         upload_session['last_activity'] = time.time()
 
-                    # Collect results from background tasks
-                    for idx, part_filename, part_size, part_salted_hash, future in db_futures:
-                        db_entry = future.result()
-                        upload_session['uploaded_parts'].append(db_entry['id'])
-                        parts_metadata.append({
-                            "part_number": idx,
-                            "filename": part_filename,
-                            "file_id": db_entry['id'],
-                            "file_hash": part_salted_hash,
-                            "size": part_size
-                        })
+                    concurrent.futures.wait(part_futures)
+                    parts_metadata.sort(key=lambda x: x["part_number"])
 
                 import json
                 metadata_json = json.dumps({
