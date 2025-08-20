@@ -13,6 +13,7 @@ import uuid
 import secrets
 from typing import Optional, Callable, Dict, Any, List
 import concurrent.futures
+import queue
 import requests
 from flask import Response
 from flask_socketio import SocketIO
@@ -543,48 +544,36 @@ class NotionStreamingUploader:
     def _upload_part_worker(
         self,
         part_session: Dict[str, Any],
-        temp_file,
+        chunk_queue: queue.Queue,
         part_size: int,
-        user_database_id: str,
-        original_filename: str,
-        part_filename: str,
-        part_salted_hash: str,
-        part_salt: str,
-    ) -> Dict[str, Any]:
-        """
-        Upload a buffered part to Notion and store its metadata in the database.
-        Runs in a background thread so the main upload loop can continue
-        receiving data.
-        """
-        try:
-            def file_generator():
-                while True:
-                    chunk = temp_file.read(64 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
+    ) -> Dict[str, str]:
+        """Upload a part by streaming bytes from ``chunk_queue``.
 
-            if part_size > self.SINGLE_PART_THRESHOLD:
-                part_result = self._process_multipart_stream(part_session, file_generator(), db_integration=False)
-            else:
-                part_result = self._process_single_part_stream(part_session, file_generator(), db_integration=False)
+        The main thread feeds incoming bytes into ``chunk_queue`` while this
+        worker consumes them and uploads to Notion. It returns the Notion file
+        upload ID and resulting file URL so the caller can persist metadata
+        once the hash is known."""
 
-            file_url = None
-            if part_result and part_result.get('result'):
-                file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
+        def file_generator():
+            while True:
+                chunk = chunk_queue.get()
+                if chunk is None:
+                    break
+                yield chunk
 
-            return self._store_part_in_database(
-                user_database_id,
-                original_filename,
-                part_filename,
-                part_size,
-                part_salted_hash,
-                part_salt,
-                part_result.get('notion_file_upload_id', part_result.get('file_id')),
-                file_url,
-            )
-        finally:
-            temp_file.close()
+        if part_size > self.SINGLE_PART_THRESHOLD:
+            part_result = self._process_multipart_stream(part_session, file_generator(), db_integration=False)
+        else:
+            part_result = self._process_single_part_stream(part_session, file_generator(), db_integration=False)
+
+        file_url = None
+        if part_result and part_result.get('result'):
+            file_url = part_result['result'].get('download_link') or part_result['result'].get('file', {}).get('url')
+
+        return {
+            "file_upload_id": part_result.get("notion_file_upload_id", part_result.get("file_id")),
+            "file_url": file_url,
+        }
 
     def process_stream(self, upload_session: Dict[str, Any], stream_generator, resume_from: int = 0) -> Dict[str, Any]:
         """
@@ -625,34 +614,39 @@ class NotionStreamingUploader:
                         part_session = self.create_upload_session(part_filename, part_size, user_database_id)
                         part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
 
-                        temp_file = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)
-                        for chunk in part_stream:
-                            temp_file.write(chunk)
+                        chunk_queue: queue.Queue = queue.Queue(maxsize=4)
+                        future = upload_executor.submit(
+                            self._upload_part_worker,
+                            part_session,
+                            chunk_queue,
+                            part_size,
+                        )
 
+                        for chunk in part_stream:
+                            chunk_queue.put(chunk)
+
+                        chunk_queue.put(None)
                         leftover = part_stream.get_leftover()
-                        temp_file.seek(0)
                         part_hash = part_stream.get_part_hash()
 
                         part_salt = generate_salt()
                         part_salted_hash = calculate_salted_hash(part_hash, part_salt)
 
-                        future = upload_executor.submit(
-                            self._upload_part_worker,
-                            part_session,
-                            temp_file,
-                            part_size,
+                        part_futures.append((idx, part_filename, part_size, part_salted_hash, part_salt, future))
+                        upload_session['last_activity'] = time.time()
+
+                    for idx, part_filename, part_size, part_salted_hash, part_salt, future in part_futures:
+                        upload_result = future.result()
+                        db_entry = self._store_part_in_database(
                             user_database_id,
                             filename,
                             part_filename,
+                            part_size,
                             part_salted_hash,
                             part_salt,
+                            upload_result['file_upload_id'],
+                            upload_result['file_url'],
                         )
-
-                        part_futures.append((idx, part_filename, part_size, part_salted_hash, future))
-                        upload_session['last_activity'] = time.time()
-
-                    for idx, part_filename, part_size, part_salted_hash, future in part_futures:
-                        db_entry = future.result()
                         upload_session['uploaded_parts'].append(db_entry['id'])
                         parts_metadata.append({
                             "part_number": idx,
