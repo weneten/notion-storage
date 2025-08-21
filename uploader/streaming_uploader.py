@@ -511,19 +511,33 @@ class NotionStreamingUploader:
         upload loop can continue accepting data without waiting for database
         operations to complete.
         """
-        db_entry = self.notion_uploader.add_file_to_user_database(
-            database_id=user_database_id,
-            filename=part_filename,
-            file_size=part_size,
-            file_hash=part_salted_hash,
-            file_upload_id=notion_file_upload_id,
-            is_public=False,
-            salt=part_salt,
-            original_filename=original_filename,
-            file_url=file_url,
-            # Store part entries at root to avoid orphaned parts when moving folders
-            folder_path='/'
-        )
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            db_entry = self.notion_uploader.add_file_to_user_database(
+                database_id=user_database_id,
+                filename=part_filename,
+                file_size=part_size,
+                file_hash=part_salted_hash,
+                file_upload_id=notion_file_upload_id,
+                is_public=False,
+                salt=part_salt,
+                original_filename=original_filename,
+                file_url=file_url,
+                # Store part entries at root to avoid orphaned parts when moving folders
+                folder_path='/'
+            )
+
+            if self._validate_file_attachment(db_entry, notion_file_upload_id):
+                break
+
+            if attempt == max_attempts:
+                raise Exception(
+                    f"Failed to attach part {part_filename} after {max_attempts} attempts"
+                )
+            print(
+                f"WARNING: Validation failed for part {part_filename} (attempt {attempt}/{max_attempts}), retrying..."
+            )
+            time.sleep(1)
 
         if self.notion_uploader.global_file_index_db_id:
             self.notion_uploader.add_file_to_index(
@@ -540,6 +554,25 @@ class NotionStreamingUploader:
         })
 
         return db_entry
+
+    def _validate_file_attachment(self, db_entry: Dict[str, Any], upload_id: str) -> bool:
+        """Ensure the Notion page has a valid file attachment."""
+        try:
+            files = (
+                db_entry.get("properties", {})
+                .get("file_data", {})
+                .get("files", [])
+            )
+            if not files:
+                return False
+            file_info = files[0]
+            if file_info.get("type") == "file":
+                return bool(file_info.get("file", {}).get("url"))
+            if file_info.get("type") == "file_upload":
+                return file_info.get("file_upload", {}).get("id") == upload_id
+            return False
+        except Exception:
+            return False
 
     def _upload_part_worker(
         self,
