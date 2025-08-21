@@ -602,6 +602,7 @@ class NotionStreamingUploader:
                 stream_iter = iter(stream_generator)
                 leftover = b""
                 parts_metadata = []
+                total_uploaded = 0
 
                 # Upload parts in background threads so incoming data can keep
                 # flowing without waiting for Notion or database operations to
@@ -656,6 +657,15 @@ class NotionStreamingUploader:
                         chunk_queue.put(None)
                         leftover = part_stream.get_leftover()
                         part_hash = part_stream.get_part_hash()
+                        bytes_sent = part_stream.get_bytes_sent()
+
+                        if bytes_sent < part_size:
+                            future.cancel()
+                            raise ValueError(
+                                f"Incomplete upload: expected {part_size} bytes for part {idx}, received {bytes_sent}"
+                            )
+
+                        total_uploaded += bytes_sent
 
                         part_salt = generate_salt()
                         part_salted_hash = calculate_salted_hash(part_hash, part_salt)
@@ -668,6 +678,11 @@ class NotionStreamingUploader:
 
                     concurrent.futures.wait(part_futures)
                     parts_metadata.sort(key=lambda x: x["part_number"])
+
+                    if total_uploaded != file_size:
+                        raise ValueError(
+                            f"Incomplete upload: expected {file_size} bytes, received {total_uploaded}"
+                        )
 
                 import json
                 metadata_json = json.dumps({
@@ -809,6 +824,11 @@ class NotionStreamingUploader:
                         'total_size': upload_session['file_size'],
                         'progress': progress
                     })
+            if bytes_received != upload_session['file_size']:
+                raise ValueError(
+                    f"Incomplete upload: expected {upload_session['file_size']} bytes, received {bytes_received}"
+                )
+
             # Upload the complete file to Notion
             buffer.seek(0)
             notion_result = self._upload_to_notion_single_part(

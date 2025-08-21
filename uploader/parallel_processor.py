@@ -137,7 +137,12 @@ class ParallelChunkProcessor:
                 buffer.seek(0)
                 final_data = buffer.read()
                 self._submit_chunk_upload_with_checkpoint(part_number, final_data, multipart_info, checkpoint_key, is_final=True)
-            
+
+            if bytes_received != self.upload_session['file_size']:
+                raise ValueError(
+                    f"Incomplete upload: expected {self.upload_session['file_size']} bytes, received {bytes_received}"
+                )
+
             print(f"📦 All chunks submitted ({part_number} parts), waiting for completion...")
             
             # Wait for all uploads to complete
