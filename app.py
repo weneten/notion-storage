@@ -59,6 +59,9 @@ def cleanup_old_sessions():
                     expired_uploads = []
                     for upload_id, session in streaming_upload_manager.active_uploads.items():
                         last_activity = session.get('last_activity', session.get('created_at', 0))
+                        # Use failure timestamp if available so failed uploads clean up reliably
+                        if session.get('status') == 'failed':
+                            last_activity = session.get('failed_at', last_activity)
                         if session.get('status') != 'completed' and current_time - last_activity > 900:  # 15 minutes
                             expired_uploads.append(upload_id)
 
