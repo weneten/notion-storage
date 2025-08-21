@@ -313,6 +313,11 @@ class NotionFileUploader:
         }
         self.session = requests.Session()
         self.session.headers.update({**self.headers, "Connection": "keep-alive"})
+        # Separate session for raw file downloads so Notion-specific headers like
+        # Authorization aren't sent to AWS signed URLs, which would otherwise
+        # result in authentication errors.
+        self.download_session = requests.Session()
+        self.download_session.headers.update({"Connection": "keep-alive"})
         self.global_file_index_db_id = global_file_index_db_id
         self.notion_space_id = notion_space_id or "c91485e6-ff71-811c-b300-000345011419"  # Default space ID
         
@@ -2360,7 +2365,8 @@ class NotionFileUploader:
         if not notion_download_url:
             raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         try:
-            with self.session.get(notion_download_url, stream=True) as r:
+            # Use the download session without Notion headers for S3 requests
+            with self.download_session.get(notion_download_url, stream=True) as r:
                 r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                 for chunk in r.iter_content(chunk_size=8192):  # 8KB chunks
                     yield chunk
@@ -2390,7 +2396,8 @@ class NotionFileUploader:
         }
         print(f"Requesting bytes {start}-{end} from Notion S3 download URL: {notion_download_url}")
         try:
-            with self.session.get(notion_download_url, headers=headers, stream=True) as r:
+            # Use the download session without Notion headers for S3 requests
+            with self.download_session.get(notion_download_url, headers=headers, stream=True) as r:
                 if r.status_code == 206:
                     print(f"Received partial content response (206) for range {start}-{end}")
                 elif r.status_code == 200:
