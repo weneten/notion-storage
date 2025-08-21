@@ -308,6 +308,8 @@ class NotionFileUploader:
             "Notion-Version": notion_version,
             "accept": "application/json"
         }
+        self.session = requests.Session()
+        self.session.headers.update({**self.headers, "Connection": "keep-alive"})
         self.global_file_index_db_id = global_file_index_db_id
         self.notion_space_id = notion_space_id or "c91485e6-ff71-811c-b300-000345011419"  # Default space ID
         
@@ -375,7 +377,7 @@ class NotionFileUploader:
             Exception if creation fails
         """
         url = f"{self.base_url}/file_uploads"
-        headers = {**self.headers, "Content-Type": "application/json"}
+        headers = {**self.headers, "Content-Type": "application/json", "Connection": "keep-alive"}
         
         payload = {}
         if content_type:
@@ -396,7 +398,7 @@ class NotionFileUploader:
             
         print(f"Creating file upload with payload: {payload}")
         
-        response = requests.post(url, headers=headers, json=payload)
+        response = self.session.post(url, headers=headers, json=payload)
         
         if response.status_code != 200:
             print(f"ERROR: Failed to create file upload: {response.text}")
@@ -448,10 +450,11 @@ class NotionFileUploader:
         headers = {
             'Authorization': self.headers['Authorization'],
             'Notion-Version': self.headers['Notion-Version'],
+            'Connection': 'keep-alive'
         }
 
         print(f"Uploading file content for {filename} with content type: {content_type}...")
-        response = requests.post(url, files=files, headers=headers)
+        response = self.session.post(url, files=files, headers=headers)
 
         if response.status_code != 200:
             raise Exception(f"File content upload failed with status {response.status_code}: {response.text}")
@@ -2530,7 +2533,8 @@ class NotionFileUploader:
         url = f"{upload_url}/send"
         headers = {
             'Authorization': self.headers['Authorization'],
-            'Notion-Version': self.headers['Notion-Version']
+            'Notion-Version': self.headers['Notion-Version'],
+            'Connection': 'keep-alive'
         }
         files = {
             'file': ('file.txt', chunk_data, 'text/plain'),
@@ -2542,7 +2546,7 @@ class NotionFileUploader:
         total_parts = len(self.upload_futures) + 1  # Current queued parts plus this one
         chunk_size_mb = len(chunk_data) / (1024*1024)
         print(f"Uploading part {part_number} of {total_parts} ({chunk_size_mb:.2f} MB)...")
-        response = requests.post(url, headers=headers, files=files)
+        response = self.session.post(url, headers=headers, files=files)
         if response.status_code != 200:
             raise Exception(f"Part {part_number} upload failed: {response.text}")
             
@@ -2552,10 +2556,10 @@ class NotionFileUploader:
     def _complete_multipart_upload(self, upload_url: str, upload_id: str, parts: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Complete a multipart upload"""
         url = f"{upload_url}/complete"  # Base URL is already properly formatted
-        headers = {**self.headers, "Content-Type": "application/json"}
+        headers = {**self.headers, "Content-Type": "application/json", "Connection": "keep-alive"}
         
         print("Completing multipart upload...")
-        response = requests.post(url, headers=headers, json={})  # Notion API expects an empty body
+        response = self.session.post(url, headers=headers, json={})  # Notion API expects an empty body
         if response.status_code != 200:
             raise Exception(f"Failed to complete multipart upload: {response.text}")
         return response.json()
@@ -2564,8 +2568,8 @@ class NotionFileUploader:
         """Abort a multipart upload in case of failure"""
         try:
             url = f"{upload_url}/cancel"  # Base URL is already properly formatted
-            headers = {**self.headers, "Content-Type": "application/json"}
-            requests.post(url, headers=headers)
+            headers = {**self.headers, "Content-Type": "application/json", "Connection": "keep-alive"}
+            self.session.post(url, headers=headers)
             print(f"Successfully aborted multipart upload {upload_id}")
         except Exception as e:
             print(f"Failed to abort multipart upload {upload_id}: {e}")
