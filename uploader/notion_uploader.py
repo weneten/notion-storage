@@ -254,12 +254,12 @@ class NotionFileUploader:
                 }
             return None
 
-        prefetch_count = int(os.getenv("STREAM_PREFETCH_COUNT", "1"))
+        prefetch_count = int(os.getenv("STREAM_PREFETCH_COUNT", "2"))
         prefetch_count = max(1, prefetch_count)
         streams: List[Tuple[queue.Queue, threading.Thread]] = []
 
         def start_prefetch(part_info: Dict[str, Any]) -> None:
-            q: queue.Queue = queue.Queue(maxsize=4)  # small buffer per part
+            q: queue.Queue = queue.Queue()
 
             def worker() -> None:
                 try:
@@ -292,7 +292,13 @@ class NotionFileUploader:
             start_prefetch(part_info)
 
         while streams:
-            q, t = streams[0]
+            q, t = streams.pop(0)
+            while len(streams) < prefetch_count:
+                part_info = resolve_next_part()
+                if not part_info:
+                    break
+                start_prefetch(part_info)
+
             while True:
                 chunk = q.get()
                 if chunk is None:
@@ -300,13 +306,7 @@ class NotionFileUploader:
                 if isinstance(chunk, Exception):
                     raise chunk
                 yield chunk
-
-            streams.pop(0)
             t.join()
-
-            next_part = resolve_next_part()
-            if next_part:
-                start_prefetch(next_part)
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token

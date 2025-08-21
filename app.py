@@ -23,6 +23,7 @@ import string
 import json
 from flask_socketio import emit
 from collections import defaultdict
+from urllib.parse import quote
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -625,34 +626,14 @@ def download_by_hash(salted_sha512_hash):
                 error_trace = traceback.format_exc()
                 print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
                 return f"Error streaming multi-part file: {str(e)}", 500
-        # Otherwise, normal single file download
+        # Otherwise, normal single file download via direct redirect
         file_metadata = fetch_download_metadata(file_page_id, original_filename)
-        if not file_metadata['url']:
+        download_url = file_metadata.get('url')
+        if not download_url:
             return "Download link not available for this file", 500
-        mimetype = file_metadata['content_type']
-        if mimetype == 'application/octet-stream':
-            import mimetypes
-            detected_type, _ = mimetypes.guess_type(original_filename)
-            if detected_type:
-                mimetype = detected_type
-        response = Response(
-            stream_with_context(
-                uploader.stream_file_from_notion(
-                    file_page_id,
-                    original_filename,
-                    download_url=file_metadata['url']
-                )
-            ),
-            mimetype=mimetype
-        )
-        response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
-        if file_metadata['file_size'] > 0:
-            response.headers['Content-Length'] = str(file_metadata['file_size'])
-            # Avoid printing Unicode emoji to stdout to prevent UnicodeEncodeError in some environments
-            print(f"Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
-        else:
-            print(f"No file size available for Content-Length header for {original_filename}")
-        return response
+        disposition = quote(f'attachment; filename="{original_filename}"')
+        separator = '&' if '?' in download_url else '?'
+        return redirect(f"{download_url}{separator}response-content-disposition={disposition}")
 
     except Exception as e:
         import traceback
@@ -790,203 +771,13 @@ def stream_by_hash(salted_sha512_hash):
                 print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
                 return "An error occurred during streaming.", 500
 
-        # Get comprehensive file metadata including URL, size, and content type
         file_metadata = fetch_download_metadata(file_page_id, original_filename)
-
-        if not file_metadata['url']:
+        download_url = file_metadata.get('url')
+        if not download_url:
             return "Stream link not available for this file", 500
-
-        file_size = file_metadata['file_size']
-        detected_content_type = file_metadata['content_type']
-
-        print(f"📊 Streaming file: {original_filename}, size: {file_size} bytes, type: {detected_content_type}")
-
-        # Enhanced MIME type detection for media files
-        def get_enhanced_mimetype(filename):
-            """Enhanced MIME type detection for common media formats"""
-            import mimetypes
-            
-            # Get MIME type from filename
-            mimetype, _ = mimetypes.guess_type(filename)
-            
-            if mimetype:
-                return mimetype
-            
-            # Fallback based on file extension for common media types
-            extension = filename.lower().split('.')[-1] if '.' in filename else ''
-            
-            media_types = {
-                # Video formats
-                'mp4': 'video/mp4',
-                'webm': 'video/webm',
-                'avi': 'video/x-msvideo',
-                'mov': 'video/quicktime',
-                'mkv': 'video/x-matroska',
-                'wmv': 'video/x-ms-wmv',
-                'flv': 'video/x-flv',
-                'm4v': 'video/x-m4v',
-                
-                # Audio formats
-                'mp3': 'audio/mpeg',
-                'wav': 'audio/wav',
-                'ogg': 'audio/ogg',
-                'aac': 'audio/aac',
-                'flac': 'audio/flac',
-                'm4a': 'audio/mp4',
-                'wma': 'audio/x-ms-wma',
-                
-                # Image formats
-                'jpg': 'image/jpeg',
-                'jpeg': 'image/jpeg',
-                'png': 'image/png',
-                'gif': 'image/gif',
-                'webp': 'image/webp',
-                'svg': 'image/svg+xml',
-                'bmp': 'image/bmp',
-                'tiff': 'image/tiff',
-                
-                # Document formats
-                'pdf': 'application/pdf',
-                'txt': 'text/plain',
-                'html': 'text/html',
-                'css': 'text/css',
-                'js': 'application/javascript'
-            }
-            
-            return media_types.get(extension, 'application/octet-stream')
-
-        # Use detected content type from metadata, with enhanced fallback
-        mimetype = detected_content_type
-        if mimetype == 'application/octet-stream':
-            mimetype = get_enhanced_mimetype(original_filename)
-
-        if request.method == 'HEAD':
-            # Respond with headers only, no body
-            response = Response(status=200, mimetype=mimetype)
-            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
-            if file_size > 0:
-                response.headers['Content-Length'] = str(file_size)
-            return add_stream_headers(response, mimetype)
-
-        # Parse Range header for partial content requests
-        range_header = request.headers.get('Range', '').strip()
-        
-        if range_header:
-            # Parse Range header (e.g., "bytes=0-1023", "bytes=1024-", "bytes=-500")
-            if not range_header.startswith('bytes='):
-                return "Invalid range header", 416
-            
-            try:
-                range_spec = range_header[6:]  # Remove "bytes="
-                
-                if '-' not in range_spec:
-                    return "Invalid range format", 416
-                
-                range_start, range_end = range_spec.split('-', 1)
-                
-                # Handle different range formats
-                if range_start and range_end:
-                    # bytes=start-end
-                    start = int(range_start)
-                    end = int(range_end)
-                elif range_start and not range_end:
-                    # bytes=start-
-                    start = int(range_start)
-                    end = file_size - 1
-                elif not range_start and range_end:
-                    # bytes=-suffix (last N bytes)
-                    suffix_length = int(range_end)
-                    start = max(0, file_size - suffix_length)
-                    end = file_size - 1
-                else:
-                    return "Invalid range format", 416
-                
-                # Validate range - handle cases where file_size might be 0
-                if file_size > 0:
-                    if start < 0 or end >= file_size or start > end:
-                        response = Response(status=416)
-                        response.headers['Content-Range'] = f'bytes */{file_size}'
-                        return response
-                else:
-                    # If file size is unknown, we can't validate the range properly
-                    # But we can still try to serve the requested range
-                    print(f"⚠️ File size unknown, attempting to serve range {start}-{end} anyway")
-                
-                # Stream the requested range
-                def stream_range():
-                    for chunk in uploader.stream_file_from_notion_range(
-                        file_page_id,
-                        original_filename,
-                        start,
-                        end,
-                        download_url=file_metadata['url']
-                    ):
-                        yield chunk
-                
-                # Create partial content response
-                response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
-                response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
-                response.headers['Content-Length'] = str(end - start + 1)
-                
-                # Include total file size in Content-Range if known
-                if file_size > 0:
-                    response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
-                    print(f"📊 Range response: bytes {start}-{end}/{file_size}")
-                else:
-                    response.headers['Content-Range'] = f'bytes {start}-{end}/*'
-                    print(f"📊 Range response: bytes {start}-{end}/* (size unknown)")
-                    
-                response.headers['Accept-Ranges'] = 'bytes'
-                
-                # iOS Safari optimized headers for partial content
-                response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
-                response.headers['X-Content-Type-Options'] = 'nosniff'
-                response.headers['Vary'] = 'Range, Accept-Encoding'
-                
-                # Additional iOS streaming optimizations for partial content
-                if mimetype.startswith('video/'):
-                    response.headers['Connection'] = 'keep-alive'
-                    response.headers['Content-Transfer-Encoding'] = 'binary'
-
-                return add_stream_headers(response, mimetype)
-                
-            except (ValueError, TypeError) as e:
-                return "Invalid range values", 416
-        
-        else:
-            # Full content request
-            response = Response(
-                stream_with_context(
-                    uploader.stream_file_from_notion(
-                        file_page_id,
-                        original_filename,
-                        download_url=file_metadata['url']
-                    )
-                ),
-                mimetype=mimetype
-            )
-            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
-            
-            # Add Content-Length header if file size is available
-            if file_size > 0:
-                response.headers['Content-Length'] = str(file_size)
-                print(f"📊 Full content response includes Content-Length: {file_size} bytes for {original_filename}")
-            else:
-                print(f"⚠️ No file size available for Content-Length header for {original_filename}")
-                
-            response.headers['Accept-Ranges'] = 'bytes'
-            
-            # iOS Safari optimized headers
-            response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
-            response.headers['X-Content-Type-Options'] = 'nosniff'
-            response.headers['Vary'] = 'Range, Accept-Encoding'
-            
-            # Additional iOS streaming optimizations
-            if mimetype.startswith('video/'):
-                response.headers['Connection'] = 'keep-alive'
-                response.headers['Content-Transfer-Encoding'] = 'binary'
-
-            return add_stream_headers(response, mimetype)
+        disposition = quote(f'inline; filename="{original_filename}"')
+        separator = '&' if '?' in download_url else '?'
+        return redirect(f"{download_url}{separator}response-content-disposition={disposition}")
 
     except Exception as e:
         import traceback
