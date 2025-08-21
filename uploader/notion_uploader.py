@@ -14,6 +14,12 @@ import random
 import mimetypes
 from config.resilient_upload_config import DOWNLOAD_URL_CACHE_TTL
 
+
+# Default chunk size for downloading files from Notion (64KB). Can be overridden
+# by setting the ``DOWNLOAD_CHUNK_SIZE`` environment variable or by passing a
+# ``chunk_size`` parameter to streaming functions.
+DOWNLOAD_CHUNK_SIZE = int(os.getenv("DOWNLOAD_CHUNK_SIZE", 64 * 1024))
+
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):
         self.chunk_buffer = io.BytesIO()
@@ -2354,8 +2360,13 @@ class NotionFileUploader:
             raise Exception(f"Failed to create folder: {response.text}")
         return response.json()
 
-    def stream_file_from_notion(self, page_id: str, original_filename: str,
-                                download_url: Optional[str] = None) -> Iterable[bytes]:
+    def stream_file_from_notion(
+        self,
+        page_id: str,
+        original_filename: str,
+        download_url: Optional[str] = None,
+        chunk_size: int = DOWNLOAD_CHUNK_SIZE,
+    ) -> Iterable[bytes]:
         """Stream file content from Notion.
 
         Args:
@@ -2363,6 +2374,8 @@ class NotionFileUploader:
             original_filename: The original filename to match in the file property.
             download_url: Optional pre-fetched download URL. If provided, the
                 method will skip fetching a new URL from Notion.
+            chunk_size: Size of chunks to download in bytes. Defaults to
+                ``DOWNLOAD_CHUNK_SIZE``.
 
         Yields:
             Iterator of file content chunks.
@@ -2374,14 +2387,21 @@ class NotionFileUploader:
             # Use the download session without Notion headers for S3 requests
             with self.download_session.get(notion_download_url, stream=True) as r:
                 r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-                for chunk in r.iter_content(chunk_size=8192):  # 8KB chunks
+                for chunk in r.iter_content(chunk_size=chunk_size):
                     yield chunk
         except requests.exceptions.RequestException as e:
             print(f"Error streaming file from Notion S3 URL: {e}")
             raise Exception(f"Failed to stream file from Notion S3 URL: {e}")
 
-    def stream_file_from_notion_range(self, page_id: str, original_filename: str,
-                                      start: int, end: int, download_url: Optional[str] = None) -> Iterable[bytes]:
+    def stream_file_from_notion_range(
+        self,
+        page_id: str,
+        original_filename: str,
+        start: int,
+        end: int,
+        download_url: Optional[str] = None,
+        chunk_size: int = DOWNLOAD_CHUNK_SIZE,
+    ) -> Iterable[bytes]:
         """Stream a specific byte range of file content from Notion.
 
         Args:
@@ -2390,6 +2410,8 @@ class NotionFileUploader:
             start: Starting byte position (inclusive).
             end: Ending byte position (inclusive).
             download_url: Optional pre-fetched download URL.
+            chunk_size: Size of chunks to download in bytes. Defaults to
+                ``DOWNLOAD_CHUNK_SIZE``.
 
         Yields:
             Iterator of file content chunks for the requested range.
@@ -2416,7 +2438,7 @@ class NotionFileUploader:
 
                 if r.status_code == 200:
                     skip_bytes = start
-                    for chunk in r.iter_content(chunk_size=8192):
+                    for chunk in r.iter_content(chunk_size=chunk_size):
                         if skip_bytes > 0:
                             if len(chunk) <= skip_bytes:
                                 skip_bytes -= len(chunk)
@@ -2432,7 +2454,7 @@ class NotionFileUploader:
                         if bytes_read >= target_bytes:
                             break
                 else:
-                    for chunk in r.iter_content(chunk_size=8192):
+                    for chunk in r.iter_content(chunk_size=chunk_size):
                         to_yield = min(len(chunk), target_bytes - bytes_read)
                         if to_yield <= 0:
                             break
