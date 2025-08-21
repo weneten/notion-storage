@@ -189,6 +189,23 @@ uploader = NotionFileUploader(
 # Initialize streaming upload manager
 streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, socketio=socketio, notion_uploader=uploader)
 
+# Helper to retrieve download metadata with automatic refresh when needed
+def fetch_download_metadata(page_id: str, filename: str) -> Dict[str, Any]:
+    """Fetch file download metadata and refresh if cached or throttled."""
+    metadata = uploader.get_file_download_metadata(page_id, filename)
+    if metadata.get('cached'):
+        # For repeated downloads, force a new signed URL
+        metadata = uploader.get_file_download_metadata(page_id, filename, force_refresh=True)
+    else:
+        try:
+            import requests
+            head_resp = requests.head(metadata['url'], timeout=5)
+            if head_resp.status_code in (403, 429):
+                metadata = uploader.get_file_download_metadata(page_id, filename, force_refresh=True)
+        except Exception:
+            metadata = uploader.get_file_download_metadata(page_id, filename, force_refresh=True)
+    return metadata
+
 # User class for Flask-Login
 class User(UserMixin):
     def __init__(self, id, username, password_hash):
@@ -540,7 +557,7 @@ def download_by_hash(salted_sha512_hash):
 
                 # Use NotionFileUploader's method to get a fresh signed URL for the manifest JSON
                 manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
-                manifest_metadata = uploader.get_file_download_metadata(file_page_id, manifest_filename)
+                manifest_metadata = fetch_download_metadata(file_page_id, manifest_filename)
                 manifest_url = manifest_metadata.get('url', '')
                 if not manifest_url:
                     return "Manifest file not found", 404
@@ -609,7 +626,7 @@ def download_by_hash(salted_sha512_hash):
                 print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
                 return f"Error streaming multi-part file: {str(e)}", 500
         # Otherwise, normal single file download
-        file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
+        file_metadata = fetch_download_metadata(file_page_id, original_filename)
         if not file_metadata['url']:
             return "Download link not available for this file", 500
         mimetype = file_metadata['content_type']
@@ -618,7 +635,16 @@ def download_by_hash(salted_sha512_hash):
             detected_type, _ = mimetypes.guess_type(original_filename)
             if detected_type:
                 mimetype = detected_type
-        response = Response(stream_with_context(uploader.stream_file_from_notion(file_page_id, original_filename)), mimetype=mimetype)
+        response = Response(
+            stream_with_context(
+                uploader.stream_file_from_notion(
+                    file_page_id,
+                    original_filename,
+                    download_url=file_metadata['url']
+                )
+            ),
+            mimetype=mimetype
+        )
         response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
         if file_metadata['file_size'] > 0:
             response.headers['Content-Length'] = str(file_metadata['file_size'])
@@ -689,7 +715,7 @@ def stream_by_hash(salted_sha512_hash):
                 manifest_file = files_array[0] if files_array else None
 
                 manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
-                manifest_metadata = uploader.get_file_download_metadata(file_page_id, manifest_filename)
+                manifest_metadata = fetch_download_metadata(file_page_id, manifest_filename)
                 manifest_url = manifest_metadata.get('url', '')
                 if not manifest_url:
                     return "Manifest file not found", 404
@@ -765,7 +791,7 @@ def stream_by_hash(salted_sha512_hash):
                 return "An error occurred during streaming.", 500
 
         # Get comprehensive file metadata including URL, size, and content type
-        file_metadata = uploader.get_file_download_metadata(file_page_id, original_filename)
+        file_metadata = fetch_download_metadata(file_page_id, original_filename)
 
         if not file_metadata['url']:
             return "Stream link not available for this file", 500
@@ -888,7 +914,13 @@ def stream_by_hash(salted_sha512_hash):
                 
                 # Stream the requested range
                 def stream_range():
-                    for chunk in uploader.stream_file_from_notion_range(file_page_id, original_filename, start, end):
+                    for chunk in uploader.stream_file_from_notion_range(
+                        file_page_id,
+                        original_filename,
+                        start,
+                        end,
+                        download_url=file_metadata['url']
+                    ):
                         yield chunk
                 
                 # Create partial content response
@@ -923,7 +955,16 @@ def stream_by_hash(salted_sha512_hash):
         
         else:
             # Full content request
-            response = Response(stream_with_context(uploader.stream_file_from_notion(file_page_id, original_filename)), mimetype=mimetype)
+            response = Response(
+                stream_with_context(
+                    uploader.stream_file_from_notion(
+                        file_page_id,
+                        original_filename,
+                        download_url=file_metadata['url']
+                    )
+                ),
+                mimetype=mimetype
+            )
             response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
             
             # Add Content-Length header if file size is available
@@ -2095,7 +2136,7 @@ def download_multipart_by_page_id(manifest_page_id):
 
         # Use NotionFileUploader's method to get a fresh signed URL for the manifest JSON
         manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
-        manifest_metadata = uploader.get_file_download_metadata(manifest_page_id, manifest_filename)
+        manifest_metadata = fetch_download_metadata(manifest_page_id, manifest_filename)
         manifest_url = manifest_metadata.get('url', '')
         if not manifest_url:
             return "Manifest file not found", 404
