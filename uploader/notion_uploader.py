@@ -247,7 +247,8 @@ class NotionFileUploader:
                 }
             return None
 
-        prefetch_count = 2  # Number of parts to fetch concurrently
+        prefetch_count = int(os.getenv("STREAM_PREFETCH_COUNT", "1"))
+        prefetch_count = max(1, prefetch_count)
         streams: List[Tuple[queue.Queue, threading.Thread]] = []
 
         def start_prefetch(part_info: Dict[str, Any]) -> None:
@@ -336,6 +337,14 @@ class NotionFileUploader:
         self.cache_lock = threading.Lock()
         self._start_download_url_cache_cleaner()
 
+        # Cache for Global File Index lookups to avoid repeated queries for the
+        # same file part. Entries are cached for 30 minutes similar to the
+        # download URL cache.
+        self.index_cache: Dict[str, Dict[str, Any]] = {}
+        self.index_cache_lock = threading.Lock()
+        self.index_cache_ttl = 1800  # 30 minutes
+        self._start_index_cache_cleaner()
+
     def _start_download_url_cache_cleaner(self) -> None:
         """Start background thread to remove expired download URL cache entries."""
         thread = threading.Thread(target=self._download_url_cache_cleaner, daemon=True)
@@ -349,6 +358,21 @@ class NotionFileUploader:
                 keys_to_remove = [k for k, v in self.download_url_cache.items() if v['expires_at'] <= now]
                 for key in keys_to_remove:
                     del self.download_url_cache[key]
+            time.sleep(300)
+
+    def _start_index_cache_cleaner(self) -> None:
+        """Start background thread to remove expired Global File Index cache entries."""
+        thread = threading.Thread(target=self._index_cache_cleaner, daemon=True)
+        thread.start()
+
+    def _index_cache_cleaner(self) -> None:
+        """Background worker that clears expired entries from the Global File Index cache."""
+        while True:
+            now = time.time()
+            with self.index_cache_lock:
+                keys_to_remove = [k for k, v in self.index_cache.items() if v['expires_at'] <= now]
+                for key in keys_to_remove:
+                    del self.index_cache[key]
             time.sleep(300)
 
     def ensure_txt_filename(self, filename: str) -> str:
@@ -2171,28 +2195,37 @@ class NotionFileUploader:
         headers = {**self.headers, "Content-Type": "application/json"}
 
         try:
-            index_response = requests.post(index_query_url, json=index_payload, headers=headers)
+            now = time.time()
+            with self.index_cache_lock:
+                cached = self.index_cache.get(salted_sha512_hash)
+                if cached and cached['expires_at'] > now:
+                    return cached['entry']
+
+            index_response = self.session.post(index_query_url, json=index_payload, headers=headers)
             if index_response.status_code != 200:
                 print(f"Failed to query Global File Index: {index_response.text}")
                 return None
 
             index_results = index_response.json().get('results', [])
             if not index_results:
-                return None # Hash not found in index
+                return None  # Hash not found in index
 
-            # Get the first matching entry from the index
             index_entry = index_results[0]
             properties = index_entry.get('properties', {})
 
             file_page_id = properties.get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
             user_database_id = properties.get('User Database ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            
+
             if not file_page_id or not user_database_id:
                 print("Missing File Page ID or User Database ID in Global File Index entry.")
                 return None
 
-            # Instead of fetching the full file details, return the index entry itself
-            # The caller (app.py) will then extract file_page_id and user_database_id
+            with self.index_cache_lock:
+                self.index_cache[salted_sha512_hash] = {
+                    'entry': index_entry,
+                    'expires_at': now + self.index_cache_ttl
+                }
+
             return index_entry
 
         except Exception as e:
@@ -2327,7 +2360,7 @@ class NotionFileUploader:
         if not notion_download_url:
             raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         try:
-            with requests.get(notion_download_url, stream=True) as r:
+            with self.session.get(notion_download_url, stream=True) as r:
                 r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                 for chunk in r.iter_content(chunk_size=8192):  # 8KB chunks
                     yield chunk
@@ -2357,7 +2390,7 @@ class NotionFileUploader:
         }
         print(f"Requesting bytes {start}-{end} from Notion S3 download URL: {notion_download_url}")
         try:
-            with requests.get(notion_download_url, headers=headers, stream=True) as r:
+            with self.session.get(notion_download_url, headers=headers, stream=True) as r:
                 if r.status_code == 206:
                     print(f"Received partial content response (206) for range {start}-{end}")
                 elif r.status_code == 200:
