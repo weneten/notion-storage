@@ -254,7 +254,8 @@ class NotionFileUploader:
                 }
             return None
 
-        prefetch_count = int(os.getenv("STREAM_PREFETCH_COUNT", "1"))
+        # Prefetch multiple parts to minimize delays between 500MiB segments
+        prefetch_count = int(os.getenv("STREAM_PREFETCH_COUNT", "2"))
         prefetch_count = max(1, prefetch_count)
         streams: List[Tuple[queue.Queue, threading.Thread]] = []
 
