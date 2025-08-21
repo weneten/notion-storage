@@ -194,63 +194,66 @@ class NotionFileUploader:
         if start < 0 or start > end:
             raise Exception("Invalid byte range requested")
 
-        # Build ordered list of parts with resolved page IDs and byte ranges
-        ordered_parts = []
+        # The original implementation resolved *all* part metadata before
+        # starting to stream any bytes.  Large files can consist of hundreds of
+        # parts which led to significant startup delays.  Instead we lazily
+        # resolve part information and prefetch only a small window of upcoming
+        # parts.  This allows the first bytes to be sent to the client as soon
+        # as the first part is located.
+
+        parts = sorted(parts, key=lambda p: p.get('part_number', 0))
+        part_index = 0
         current_pos = 0
-        for part in sorted(parts, key=lambda p: p.get('part_number', 0)):
-            part_size = part.get('size', 0)
-            part_end_pos = current_pos + part_size - 1
-            if part_end_pos < start:
+
+        def resolve_next_part() -> Optional[Dict[str, Any]]:
+            nonlocal part_index, current_pos
+            while part_index < len(parts):
+                part = parts[part_index]
+                part_size = part.get('size', 0)
+                part_end_pos = current_pos + part_size - 1
+                if part_end_pos < start:
+                    current_pos += part_size
+                    part_index += 1
+                    continue
+
+                file_hash = part.get('file_hash')
+                part_filename = part.get('filename')
+                if not file_hash:
+                    raise Exception(f"Part missing file_hash: {part}")
+
+                index_entry = self.get_file_by_salted_sha512_hash(file_hash)
+                if not index_entry:
+                    raise Exception(f"File part with hash {file_hash} not found in global index")
+                part_page_id = index_entry.get('properties', {}).get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                if not part_page_id:
+                    raise Exception(f"No File Page ID for part hash {file_hash}")
+
+                part_start = 0
+                part_end = part_size - 1
+                if start > current_pos:
+                    part_start = start - current_pos
+                if end < part_end_pos:
+                    part_end = end - current_pos
+
                 current_pos += part_size
-                continue
+                part_index += 1
 
-            file_hash = part.get('file_hash')
-            part_filename = part.get('filename')
-            if not file_hash:
-                raise Exception(f"Part missing file_hash: {part}")
-
-            index_entry = self.get_file_by_salted_sha512_hash(file_hash)
-            if not index_entry:
-                raise Exception(f"File part with hash {file_hash} not found in global index")
-            part_page_id = index_entry.get('properties', {}).get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            if not part_page_id:
-                raise Exception(f"No File Page ID for part hash {file_hash}")
-
-            part_start = 0
-            part_end = part_size - 1
-            if start > current_pos:
-                part_start = start - current_pos
-            if end < part_end_pos:
-                part_end = end - current_pos
-
-            ordered_parts.append({
-                'page_id': part_page_id,
-                'filename': part_filename,
-                'size': part_size,
-                'start': part_start,
-                'end': part_end
-            })
-
-            current_pos += part_size
-            if current_pos > end:
-                break
-
-        if not ordered_parts:
-            return
-
-        # Fetch file parts concurrently without storing them in memory. Each
-        # part is streamed in a background thread and delivered through a small
-        # in-memory queue to minimize latency between parts while avoiding large
-        # buffering.
+                return {
+                    'page_id': part_page_id,
+                    'filename': part_filename,
+                    'size': part_size,
+                    'start': part_start,
+                    'end': part_end,
+                }
+            return None
 
         prefetch_count = 2  # Number of parts to fetch concurrently
         streams: List[Tuple[queue.Queue, threading.Thread]] = []
 
-        def start_prefetch(part_idx: int) -> None:
-            part_info = ordered_parts[part_idx]
+        def start_prefetch(part_info: Dict[str, Any]) -> None:
             q: queue.Queue = queue.Queue(maxsize=4)  # small buffer per part
 
-            def worker():
+            def worker() -> None:
                 try:
                     if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
                         iterator = self.stream_file_from_notion_range(
@@ -273,12 +276,14 @@ class NotionFileUploader:
             t.start()
             streams.append((q, t))
 
-        # Kick off initial prefetches
-        for i in range(min(prefetch_count, len(ordered_parts))):
-            start_prefetch(i)
+        # Prime the prefetch window
+        for _ in range(prefetch_count):
+            part_info = resolve_next_part()
+            if not part_info:
+                break
+            start_prefetch(part_info)
 
-        current_index = 0
-        while current_index < len(ordered_parts):
+        while streams:
             q, t = streams[0]
             while True:
                 chunk = q.get()
@@ -288,15 +293,12 @@ class NotionFileUploader:
                     raise chunk
                 yield chunk
 
-            # Remove completed stream
             streams.pop(0)
             t.join()
-            current_index += 1
 
-            # Start fetching next part to maintain the prefetch window
-            next_idx = current_index + len(streams)
-            if next_idx < len(ordered_parts):
-                start_prefetch(next_idx)
+            next_part = resolve_next_part()
+            if next_part:
+                start_prefetch(next_part)
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
