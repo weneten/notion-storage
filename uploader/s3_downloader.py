@@ -63,7 +63,12 @@ def download_file(bucket: str, key: str, dest: str, concurrency: Optional[int] =
         # Fallback to unsigned requests for publicly accessible objects
         anon_client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
         anon_transfer = S3Transfer(client=anon_client, config=transfer_config)
-        anon_transfer.download_file(bucket, key, dest)
+        try:
+            anon_transfer.download_file(bucket, key, dest)
+        finally:
+            anon_transfer.close()
+    finally:
+        transfer.close()
 
 
 def _parse_s3_url(url: str) -> tuple[str, str]:
