@@ -200,8 +200,7 @@ def fetch_download_metadata(page_id: str, filename: str) -> Dict[str, Any]:
     else:
         try:
             import requests
-            parsed = urllib.parse.urlparse(metadata['url'])
-            headers = uploader.headers if parsed.netloc.endswith("notion.so") else {}
+            headers = uploader._get_download_headers(metadata['url'])
             head_resp = requests.head(metadata['url'], headers=headers, timeout=5)
             if head_resp.status_code in (403, 429):
                 metadata = uploader.get_file_download_metadata(page_id, filename, force_refresh=True)
@@ -564,8 +563,10 @@ def download_by_hash(salted_sha512_hash):
                 manifest_url = manifest_metadata.get('url', '')
                 if not manifest_url:
                     return "Manifest file not found", 404
-                headers = uploader.headers if urllib.parse.urlparse(manifest_url).netloc.endswith("notion.so") else {}
-                resp = requests.get(manifest_url, headers=headers)
+                resp = requests.get(
+                    manifest_url,
+                    headers=uploader._get_download_headers(manifest_url)
+                )
                 resp.raise_for_status()
                 manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
                 orig_name = manifest.get('original_filename', 'download')
@@ -722,8 +723,10 @@ def stream_by_hash(salted_sha512_hash):
                 manifest_url = manifest_metadata.get('url', '')
                 if not manifest_url:
                     return "Manifest file not found", 404
-                headers = uploader.headers if urllib.parse.urlparse(manifest_url).netloc.endswith("notion.so") else {}
-                resp = requests.get(manifest_url, headers=headers)
+                resp = requests.get(
+                    manifest_url,
+                    headers=uploader._get_download_headers(manifest_url)
+                )
                 resp.raise_for_status()
                 manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
 
@@ -2143,8 +2146,10 @@ def download_multipart_by_page_id(manifest_page_id):
         manifest_url = manifest_metadata.get('url', '')
         if not manifest_url:
             return "Manifest file not found", 404
-        headers = uploader.headers if urllib.parse.urlparse(manifest_url).netloc.endswith("notion.so") else {}
-        resp = requests.get(manifest_url, headers=headers)
+        resp = requests.get(
+            manifest_url,
+            headers=uploader._get_download_headers(manifest_url)
+        )
         resp.raise_for_status()
         manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
         orig_name = manifest.get('original_filename', 'download')
