@@ -9,3 +9,4 @@ python-dotenv==1.0.0
 gunicorn
 eventlet
 psutil==5.9.8
+boto3
