@@ -6,7 +6,8 @@ configurable concurrency. Each part download is retried with exponential
 backoff to help recover from transient throttling errors.
 
 The maximum concurrency can be configured via the ``MAX_S3_CONCURRENCY``
-environment variable (default: ``10``).
+environment variable (default: ``10``). This value also controls the size of
+the shared S3 client's connection pool used for all transfers.
 """
 
 import os
@@ -25,9 +26,43 @@ from botocore.exceptions import NoCredentialsError
 # Number of attempts for each part download (includes exponential backoff)
 _NUM_DOWNLOAD_ATTEMPTS = 5
 
-# Shared HTTP session for connection pooling
-_SESSION = requests.Session()
-atexit.register(_SESSION.close)
+# Default concurrency for S3 transfers and connection pools
+_MAX_S3_CONCURRENCY = int(os.getenv("MAX_S3_CONCURRENCY", "10"))
+
+# Shared S3 clients to avoid repeated initialization
+_S3_CLIENT = boto3.client(
+    "s3", config=Config(max_pool_connections=_MAX_S3_CONCURRENCY)
+)
+_ANON_S3_CLIENT = boto3.client(
+    "s3",
+    config=Config(
+        signature_version=UNSIGNED, max_pool_connections=_MAX_S3_CONCURRENCY
+    ),
+)
+
+# Reusable transfers for the default concurrency
+_TRANSFER_CONFIG = TransferConfig(
+    multipart_threshold=8 * 1024 * 1024,
+    max_concurrency=_MAX_S3_CONCURRENCY,
+    num_download_attempts=_NUM_DOWNLOAD_ATTEMPTS,
+)
+_S3_TRANSFER = S3Transfer(client=_S3_CLIENT, config=_TRANSFER_CONFIG)
+_ANON_S3_TRANSFER = S3Transfer(client=_ANON_S3_CLIENT, config=_TRANSFER_CONFIG)
+
+
+def _get_transfer(concurrency: int, *, anonymous: bool = False) -> S3Transfer:
+    """Return an ``S3Transfer`` for the desired concurrency."""
+
+    if concurrency == _MAX_S3_CONCURRENCY:
+        return _ANON_S3_TRANSFER if anonymous else _S3_TRANSFER
+
+    transfer_config = TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        max_concurrency=concurrency,
+        num_download_attempts=_NUM_DOWNLOAD_ATTEMPTS,
+    )
+    client = _ANON_S3_CLIENT if anonymous else _S3_CLIENT
+    return S3Transfer(client=client, config=transfer_config)
 
 
 def download_file(bucket: str, key: str, dest: str, concurrency: Optional[int] = None) -> None:
@@ -47,28 +82,15 @@ def download_file(bucket: str, key: str, dest: str, concurrency: Optional[int] =
         (default: ``10``).
     """
     if concurrency is None:
-        concurrency = int(os.getenv("MAX_S3_CONCURRENCY", "10"))
+        concurrency = _MAX_S3_CONCURRENCY
 
-    transfer_config = TransferConfig(
-        multipart_threshold=8 * 1024 * 1024,
-        max_concurrency=concurrency,
-        num_download_attempts=_NUM_DOWNLOAD_ATTEMPTS,
-    )
-
-    client = boto3.client("s3")
-    transfer = S3Transfer(client=client, config=transfer_config)
+    transfer = _get_transfer(concurrency)
     try:
         transfer.download_file(bucket, key, dest)
     except NoCredentialsError:
         # Fallback to unsigned requests for publicly accessible objects
-        anon_client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
-        anon_transfer = S3Transfer(client=anon_client, config=transfer_config)
-        try:
-            anon_transfer.download_file(bucket, key, dest)
-        finally:
-            anon_transfer.close()
-    finally:
-        transfer.close()
+        anon_transfer = _get_transfer(concurrency, anonymous=True)
+        anon_transfer.download_file(bucket, key, dest)
 
 
 def _parse_s3_url(url: str) -> tuple[str, str]:
