@@ -12,6 +12,7 @@ the shared S3 client's connection pool used for all transfers.
 
 import os
 import time
+import atexit
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -135,7 +136,7 @@ def _download_presigned_url(url: str, dest: str) -> None:
     """
     for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
         try:
-            with requests.get(url, stream=True) as resp:
+            with _SESSION.get(url, stream=True) as resp:
                 resp.raise_for_status()
                 with open(dest, "wb") as f:
                     for chunk in resp.iter_content(chunk_size=8192):
@@ -159,7 +160,7 @@ def _stream_presigned_url(
     def generator():
         for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
             try:
-                with requests.get(url, headers=headers, stream=True) as resp:
+                with _SESSION.get(url, headers=headers, stream=True) as resp:
                     if resp.status_code not in (200, 206):
                         resp.raise_for_status()
 
