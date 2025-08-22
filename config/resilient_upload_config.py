@@ -74,11 +74,6 @@ class ResilientUploadConfig:
             'pool_block': os.getenv('POOL_BLOCK', 'false').lower() == 'true'
         }
 
-        # Download URL cache configuration
-        # Allows adjusting how long signed download URLs are cached locally
-        # before requesting a fresh one from Notion. Defaults to 5 minutes.
-        self.download_url_cache_ttl = int(os.getenv('DOWNLOAD_URL_CACHE_TTL', '300'))
-        
         # Checkpoint Configuration
         self.checkpoint_config = {
             'enabled': os.getenv('CHECKPOINT_ENABLED', 'true').lower() == 'true',
@@ -147,7 +142,6 @@ class ResilientUploadConfig:
             'retry_config': self.retry_config,
             'circuit_breaker_config': self.circuit_breaker_config,
             'connection_config': self.connection_config,
-            'download_url_cache_ttl': self.download_url_cache_ttl,
             'checkpoint_config': self.checkpoint_config,
             'upload_limits': self.upload_limits,
             'monitoring_config': self.monitoring_config,
@@ -205,4 +199,3 @@ MAX_CONCURRENT_UPLOADS = resilient_config.upload_limits['max_concurrent_uploads'
 TIMEOUT_CONFIG = resilient_config.timeout_config
 RETRY_CONFIG = resilient_config.retry_config
 CHECKPOINT_ENABLED = resilient_config.checkpoint_config['enabled']
-DOWNLOAD_URL_CACHE_TTL = resilient_config.download_url_cache_ttl

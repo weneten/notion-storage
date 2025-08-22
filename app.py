@@ -189,22 +189,10 @@ uploader = NotionFileUploader(
 # Initialize streaming upload manager
 streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, socketio=socketio, notion_uploader=uploader)
 
-# Helper to retrieve download metadata with automatic refresh when needed
+# Helper to retrieve download metadata
 def fetch_download_metadata(page_id: str, filename: str) -> Dict[str, Any]:
-    """Fetch file download metadata and refresh if cached or throttled."""
-    metadata = uploader.get_file_download_metadata(page_id, filename)
-    if metadata.get('cached'):
-        # For repeated downloads, force a new signed URL
-        metadata = uploader.get_file_download_metadata(page_id, filename, force_refresh=True)
-    else:
-        try:
-            import requests
-            head_resp = requests.head(metadata['url'], timeout=5)
-            if head_resp.status_code in (403, 429):
-                metadata = uploader.get_file_download_metadata(page_id, filename, force_refresh=True)
-        except Exception:
-            metadata = uploader.get_file_download_metadata(page_id, filename, force_refresh=True)
-    return metadata
+    """Fetch fresh file download metadata without caching."""
+    return uploader.get_file_download_metadata(page_id, filename)
 
 # User class for Flask-Login
 class User(UserMixin):
