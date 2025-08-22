@@ -502,7 +502,7 @@ def download_by_hash(salted_sha512_hash):
     """
     try:
         # Find the file in the global file index using the hash
-        index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
+        index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash, force_refresh=True)
 
         if not index_entry:
             return "File not found", 404
@@ -662,7 +662,7 @@ def stream_by_hash(salted_sha512_hash):
     """
     try:
         # Find the file in the global file index using the hash
-        index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash)
+        index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash, force_refresh=True)
 
         if not index_entry:
             return "File not found", 404
