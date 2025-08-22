@@ -11,6 +11,7 @@ environment variable (default: ``10``).
 
 import os
 from typing import Optional
+from urllib.parse import urlparse
 
 import boto3
 from boto3.s3.transfer import S3Transfer, TransferConfig
@@ -47,3 +48,28 @@ def download_file(bucket: str, key: str, dest: str, concurrency: Optional[int] =
     client = boto3.client("s3")
     transfer = S3Transfer(client=client, config=transfer_config)
     transfer.download_file(bucket, key, dest)
+
+
+def _parse_s3_url(url: str) -> tuple[str, str]:
+    """Extract bucket and key from an S3 URL."""
+    parsed = urlparse(url)
+    netloc_parts = parsed.netloc.split(".")
+    path = parsed.path.lstrip("/")
+
+    if netloc_parts[0] == "s3":
+        # Path-style URL: s3.amazonaws.com/bucket/key
+        parts = path.split("/", 1)
+        bucket = parts[0]
+        key = parts[1] if len(parts) > 1 else ""
+    else:
+        # Virtual-hosted-style URL: bucket.s3.amazonaws.com/key
+        bucket = netloc_parts[0]
+        key = path
+
+    return bucket, key
+
+
+def download_file_from_url(url: str, dest: str, concurrency: Optional[int] = None) -> None:
+    """Download an S3 object specified by URL to ``dest``."""
+    bucket, key = _parse_s3_url(url)
+    download_file(bucket, key, dest, concurrency=concurrency)
