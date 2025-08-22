@@ -2,10 +2,11 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for, s
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_socketio import SocketIO
 from flask_cors import CORS
-from uploader import NotionFileUploader, ChunkProcessor
+from uploader import NotionFileUploader, ChunkProcessor, download_s3_file_from_url
 from uploader.streaming_uploader import StreamingUploadManager
 from dotenv import load_dotenv
 import os
+import tempfile
 import secrets
 import hashlib
 import concurrent.futures
@@ -29,30 +30,7 @@ def cleanup_old_sessions():
     """Clean up old upload sessions every minute"""
     try:
         current_time = time.time()
-        
-        if hasattr(app, 'upload_processors'):
-            # Clean up old upload sessions (older than 30 minutes)
-            expired_sessions = []
-            for upload_id, upload_data in app.upload_processors.items():
-                last_activity = upload_data.get('last_activity', 0)
-                if current_time - last_activity > 1800:  # 30 minutes
-                    expired_sessions.append(upload_id)
-            
-            # Clean up expired sessions
-            for upload_id in expired_sessions:
-                print(f"Cleaning up expired upload session: {upload_id}")
-                cleanup_upload_session(upload_id)
-        
-        # Clean up old metadata entries
-        if hasattr(app, 'upload_metadata'):
-            expired_metadata = []
-            for session_id, metadata in app.upload_metadata.items():
-                if current_time - metadata.get('timestamp', 0) > 300:  # 5 minutes
-                    expired_metadata.append(session_id)
-            
-            for session_id in expired_metadata:
-                del app.upload_metadata[session_id]
-                print(f"Cleaned up expired metadata for session: {session_id}")
+
         if 'streaming_upload_manager' in globals():
             try:
                 with streaming_upload_manager.upload_lock:
@@ -80,13 +58,12 @@ def cleanup_old_sessions():
             except Exception as e:
                 print(f"Error cleaning streaming uploads: {e}")
 
-        legacy_sessions = len(app.upload_processors) if hasattr(app, 'upload_processors') else 0
         streaming_sessions = len(streaming_upload_manager.active_uploads) if 'streaming_upload_manager' in globals() else 0
-        print(f"SESSION_CLEANUP: Active legacy sessions: {legacy_sessions}, streaming sessions: {streaming_sessions}")
-        
+        print(f"SESSION_CLEANUP: Active streaming sessions: {streaming_sessions}")
+
     except Exception as e:
         print(f"Error in session cleanup: {e}")
-        
+
     # Schedule next check
     threading.Timer(60, cleanup_old_sessions).start()
     
@@ -107,12 +84,6 @@ socketio = SocketIO(
 )
 
 # Initialize global upload state containers with thread synchronization
-app.upload_locks = {}
-app.upload_processors = {}
-
-# Add global metadata store
-app.upload_metadata = {}
-
 # CRITICAL FIX 3: Thread Synchronization - Global locks for upload session management
 app.upload_session_lock = threading.Lock()  # Master lock for upload session operations
 app.id_validation_lock = threading.Lock()   # Lock for ID validation operations
@@ -193,6 +164,24 @@ streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, so
 def fetch_download_metadata(page_id: str, filename: str) -> Dict[str, Any]:
     """Fetch fresh file download metadata without caching."""
     return uploader.get_file_download_metadata(page_id, filename)
+
+
+def fetch_json_from_url(url: str) -> Dict[str, Any]:
+    """Retrieve JSON content from a URL, using the S3 downloader for S3 links."""
+    if 'amazonaws.com' in url:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            download_s3_file_from_url(url, tmp_path)
+            with open(tmp_path, 'rb') as f:
+                return json.loads(f.read())
+        finally:
+            os.remove(tmp_path)
+    else:
+        import requests
+        resp = requests.get(url)
+        resp.raise_for_status()
+        return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
 
 # User class for Flask-Login
 class User(UserMixin):
@@ -550,9 +539,7 @@ def download_by_hash(salted_sha512_hash):
                 if not manifest_url:
                     return "Manifest file not found", 404
 
-                resp = requests.get(manifest_url)
-                resp.raise_for_status()
-                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+                manifest = fetch_json_from_url(manifest_url)
                 orig_name = manifest.get('original_filename', 'download')
                 total_size = manifest.get('total_size', 0)
                 # Use video mimetype if possible, fallback to octet-stream
@@ -708,9 +695,7 @@ def stream_by_hash(salted_sha512_hash):
                 if not manifest_url:
                     return "Manifest file not found", 404
 
-                resp = requests.get(manifest_url)
-                resp.raise_for_status()
-                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+                manifest = fetch_json_from_url(manifest_url)
 
                 orig_name = manifest.get('original_filename', 'file')
                 total_size = manifest.get('total_size', 0)
@@ -2129,9 +2114,7 @@ def download_multipart_by_page_id(manifest_page_id):
         if not manifest_url:
             return "Manifest file not found", 404
 
-        resp = requests.get(manifest_url)
-        resp.raise_for_status()
-        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        manifest = fetch_json_from_url(manifest_url)
         orig_name = manifest.get('original_filename', 'download')
         total_size = manifest.get('total_size', 0)
         import mimetypes
@@ -2183,36 +2166,6 @@ def download_multipart_by_page_id(manifest_page_id):
         error_trace = traceback.format_exc()
         print(f"DEBUG: Error streaming multi-part file: {str(e)}\n{error_trace}")
         return f"Error streaming multi-part file: {str(e)}", 500
-
-# HELPER FUNCTIONS FOR LEGACY COMPATIBILITY
-
-def cleanup_upload_session(upload_id):
-    """
-    Clean up a specific upload session (legacy compatibility)
-    """
-    try:
-        with app.upload_locks.get(upload_id, threading.Lock()):
-            if upload_id in app.upload_processors:
-                del app.upload_processors[upload_id]
-                print(f"Cleaned up legacy upload session: {upload_id}")
-    except Exception as e:
-        print(f"Error cleaning up upload session {upload_id}: {e}")
-
-
-def process_websocket_chunk_robust(upload_id, part_number, chunk_data, is_last_chunk, chunk_size, session_id):
-    """
-    Legacy WebSocket chunk processing function (placeholder for compatibility)
-    """
-    try:
-        print(f"Legacy WebSocket chunk processing called for upload {upload_id}, part {part_number}")
-        # This is a placeholder - the new streaming upload doesn't use this method
-        # but it's referenced in some legacy code paths
-        pass
-    except Exception as e:
-        print(f"Error in legacy WebSocket chunk processing: {e}")
-
-
-# END HELPER FUNCTIONS
 
 # Start the cleanup task
 cleanup_old_sessions()
