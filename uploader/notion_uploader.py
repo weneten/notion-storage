@@ -362,6 +362,12 @@ class NotionFileUploader:
                     del self.index_cache[key]
             time.sleep(min(self.index_cache_ttl, 300))
 
+    def invalidate_index_cache(self, salted_sha512_hash: str) -> None:
+        """Remove a specific entry from the Global File Index cache."""
+        with self.index_cache_lock:
+            if salted_sha512_hash in self.index_cache:
+                del self.index_cache[salted_sha512_hash]
+
     def ensure_txt_filename(self, filename: str) -> str:
         """Ensure filename has .txt extension but do not replace spaces"""
         if not filename.lower().endswith('.txt'):
@@ -2125,10 +2131,16 @@ class NotionFileUploader:
         print(f"  - These IDs serve different purposes and should never be confused")
         return result
 
-    def get_file_by_salted_sha512_hash(self, salted_sha512_hash: str) -> Optional[Dict[str, Any]]:
+    def get_file_by_salted_sha512_hash(self, salted_sha512_hash: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         """
         Queries the Global File Index database for a file by its salted SHA512 hash,
         then fetches the full file details from the user's specific database.
+
+        Args:
+            salted_sha512_hash: The salted hash identifying the file.
+            force_refresh: If ``True``, bypass the in-memory cache and fetch
+                the latest data from Notion.  This ensures public/private
+                status checks always use fresh data.
         """
         global_index_db_id = self.global_file_index_db_id
         if not global_index_db_id:
@@ -2150,7 +2162,7 @@ class NotionFileUploader:
         try:
             now = time.time()
             with self.index_cache_lock:
-                cached = self.index_cache.get(salted_sha512_hash)
+                cached = None if force_refresh else self.index_cache.get(salted_sha512_hash)
                 if cached and cached['expires_at'] > now:
                     return cached['entry']
 
@@ -2236,6 +2248,8 @@ class NotionFileUploader:
                         print(f"Warning: Could not find entry in Global File Index for hash: {salted_sha512_hash} to update public status.")
                 else:
                     print("Warning: GLOBAL_FILE_INDEX_DB_ID not set in NotionFileUploader instance. Cannot update public status in Global File Index.")
+            if salted_sha512_hash:
+                self.invalidate_index_cache(salted_sha512_hash)
 
             return response.json()
         except Exception as e:
