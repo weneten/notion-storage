@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 import boto3
 import requests
+from requests.adapters import HTTPAdapter
 from boto3.s3.transfer import S3Transfer, TransferConfig
 from botocore import UNSIGNED
 from botocore.config import Config
@@ -48,6 +49,15 @@ _TRANSFER_CONFIG = TransferConfig(
 )
 _S3_TRANSFER = S3Transfer(client=_S3_CLIENT, config=_TRANSFER_CONFIG)
 _ANON_S3_TRANSFER = S3Transfer(client=_ANON_S3_CLIENT, config=_TRANSFER_CONFIG)
+
+# Shared HTTP session for downloading pre-signed URLs
+_SESSION = requests.Session()
+_SESSION.mount(
+    "https://",
+    HTTPAdapter(
+        pool_connections=_MAX_S3_CONCURRENCY, pool_maxsize=_MAX_S3_CONCURRENCY
+    ),
+)
 
 
 def _get_transfer(concurrency: int, *, anonymous: bool = False) -> S3Transfer:
