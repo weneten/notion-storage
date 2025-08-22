@@ -12,7 +12,6 @@ import uuid
 import time
 import random
 import mimetypes
-from config.resilient_upload_config import DOWNLOAD_URL_CACHE_TTL
 
 
 # Default chunk size for downloading files from Notion (64KB). Can be overridden
@@ -337,41 +336,16 @@ class NotionFileUploader:
             'timeout': 10,                     # Validation request timeout (seconds)
             'accept_server_errors': True,      # Treat server errors (5xx) as valid
             'accept_auth_errors': True,        # Treat auth errors (403, 405) as valid
-            'fallback_on_error': True         # Use cached URL if validation fails with error
+            'fallback_on_error': True          # Deprecated; caching disabled
         }
-
-        # Cache for download URLs so we don't request a new signed URL from
-        # Notion on every download request. Each cache entry stores the URL,
-        # file size, content type and an expiry timestamp. Entries live for
-        # ``DOWNLOAD_URL_CACHE_TTL`` seconds, well below Notion's signed URL
-        # lifetime. Keyed by (page_id, original_filename).
-        self.download_url_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
-        self.cache_lock = threading.Lock()
-        self.download_url_cache_ttl = DOWNLOAD_URL_CACHE_TTL
-        self._start_download_url_cache_cleaner()
 
         # Cache for Global File Index lookups to avoid repeated queries for the
         # same file part. Entries are cached for 30 minutes similar to the
-        # download URL cache.
+        # previous download URL cache.
         self.index_cache: Dict[str, Dict[str, Any]] = {}
         self.index_cache_lock = threading.Lock()
         self.index_cache_ttl = 1800  # 30 minutes
         self._start_index_cache_cleaner()
-
-    def _start_download_url_cache_cleaner(self) -> None:
-        """Start background thread to remove expired download URL cache entries."""
-        thread = threading.Thread(target=self._download_url_cache_cleaner, daemon=True)
-        thread.start()
-
-    def _download_url_cache_cleaner(self) -> None:
-        """Background worker that clears expired entries from the download URL cache."""
-        while True:
-            now = time.time()
-            with self.cache_lock:
-                keys_to_remove = [k for k, v in self.download_url_cache.items() if v['expires_at'] <= now]
-                for key in keys_to_remove:
-                    del self.download_url_cache[key]
-            time.sleep(min(self.download_url_cache_ttl, 300))
 
     def _start_index_cache_cleaner(self) -> None:
         """Start background thread to remove expired Global File Index cache entries."""
@@ -386,7 +360,7 @@ class NotionFileUploader:
                 keys_to_remove = [k for k, v in self.index_cache.items() if v['expires_at'] <= now]
                 for key in keys_to_remove:
                     del self.index_cache[key]
-            time.sleep(300)
+            time.sleep(min(self.index_cache_ttl, 300))
 
     def ensure_txt_filename(self, filename: str) -> str:
         """Ensure filename has .txt extension but do not replace spaces"""
@@ -592,11 +566,7 @@ class NotionFileUploader:
             return False
 
     def get_download_url_for_file(self, page_id: str, original_filename: str) -> str:
-        """
-        Return a signed download URL for the given file, using the cached
-        value when available.  Falls back to fetching a new URL from Notion
-        when the cache is missing or expired.
-        """
+        """Return a fresh signed download URL for the given file."""
         metadata = self.get_file_download_metadata(page_id, original_filename)
         return metadata.get('url', '')
 
@@ -842,44 +812,10 @@ class NotionFileUploader:
 
     def get_file_download_metadata(self, page_id: str, original_filename: str,
                                     force_refresh: bool = False) -> Dict[str, Any]:
-        """
-        Get file download metadata including a signed URL, file size and
-        content type. Results are cached for ``DOWNLOAD_URL_CACHE_TTL`` seconds
-        to avoid fetching a new signed URL from Notion on every request.
-
-        Args:
-            page_id: Notion page ID containing the file
-            original_filename: Original filename for content type detection
-            force_refresh: Bypass the cache and fetch a fresh signed URL
-
-        Returns:
-            Dict containing url, file_size, content_type, and cached status
-        """
+        """Fetch a fresh signed URL and related metadata for the given file."""
         try:
-            cache_key = (page_id, original_filename)
-            now = time.time()
-            if not force_refresh:
-                with self.cache_lock:
-                    cached_entry = self.download_url_cache.get(cache_key)
-                    if cached_entry and cached_entry['expires_at'] > now:
-                        return {
-                            'url': cached_entry['url'],
-                            'file_size': cached_entry['file_size'],
-                            'content_type': cached_entry['content_type'],
-                            'cached': True
-                        }
-
             fresh_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(
                 page_id, original_filename)
-
-            if fresh_url:
-                with self.cache_lock:
-                    self.download_url_cache[cache_key] = {
-                        'url': fresh_url,
-                        'file_size': file_size,
-                        'content_type': content_type or 'application/octet-stream',
-                        'expires_at': now + self.download_url_cache_ttl
-                    }
 
             return {
                 'url': fresh_url or '',
