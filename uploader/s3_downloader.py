@@ -1,17 +1,14 @@
 """Utility for downloading objects from S3 with concurrency and retries.
 
 This module provides a ``download_file`` helper that wraps ``boto3``'s
-:class:`~boto3.s3.transfer.S3Transfer` to perform multipart downloads. Each
-part download is retried with exponential backoff to help recover from
-transient throttling errors.
+:class:`~boto3.s3.transfer.S3Transfer` to perform multipart downloads with
+configurable concurrency. Each part download is retried with exponential
+backoff to help recover from transient throttling errors.
 
-The effective concurrency is determined automatically based on object size:
-roughly one worker thread per 100 MiB of data, capped by the
-``MAX_S3_CONCURRENCY`` environment variable (default: ``10``). A higher limit
-can be supplied via the ``concurrency`` argument.
+The maximum concurrency can be configured via the ``MAX_S3_CONCURRENCY``
+environment variable (default: ``10``).
 """
 
-import math
 import os
 import time
 from typing import Optional
@@ -40,24 +37,12 @@ def download_file(bucket: str, key: str, dest: str, concurrency: Optional[int] =
     dest:
         Local filesystem path where the object should be stored.
     concurrency:
-        Optional override for maximum concurrent S3 requests. If ``None``, the
-        helper uses roughly one worker thread per 100 MiB of object size capped
-        by the ``MAX_S3_CONCURRENCY`` environment variable (default: ``10``).
+        Optional override for maximum concurrent S3 requests. If ``None``,
+        the value is read from the ``MAX_S3_CONCURRENCY`` environment variable
+        (default: ``10``).
     """
-
-    client = boto3.client("s3")
-
     if concurrency is None:
-        # Desired concurrency based on object size (1 thread per 100 MiB)
-        max_env = int(os.getenv("MAX_S3_CONCURRENCY", "10"))
-        try:
-            head = client.head_object(Bucket=bucket, Key=key)
-            size = head.get("ContentLength", 0)
-            auto = max(1, math.ceil(size / (100 * 1024 * 1024)))
-        except Exception:
-            auto = 1
-
-        concurrency = min(auto, max_env)
+        concurrency = int(os.getenv("MAX_S3_CONCURRENCY", "10"))
 
     transfer_config = TransferConfig(
         multipart_threshold=8 * 1024 * 1024,
@@ -65,6 +50,7 @@ def download_file(bucket: str, key: str, dest: str, concurrency: Optional[int] =
         num_download_attempts=_NUM_DOWNLOAD_ATTEMPTS,
     )
 
+    client = boto3.client("s3")
     transfer = S3Transfer(client=client, config=transfer_config)
     try:
         transfer.download_file(bucket, key, dest)
