@@ -10,11 +10,16 @@ environment variable (default: ``10``).
 """
 
 import os
+import time
 from typing import Optional
 from urllib.parse import urlparse
 
 import boto3
+import requests
 from boto3.s3.transfer import S3Transfer, TransferConfig
+from botocore import UNSIGNED
+from botocore.config import Config
+from botocore.exceptions import NoCredentialsError
 
 # Number of attempts for each part download (includes exponential backoff)
 _NUM_DOWNLOAD_ATTEMPTS = 5
@@ -47,7 +52,13 @@ def download_file(bucket: str, key: str, dest: str, concurrency: Optional[int] =
 
     client = boto3.client("s3")
     transfer = S3Transfer(client=client, config=transfer_config)
-    transfer.download_file(bucket, key, dest)
+    try:
+        transfer.download_file(bucket, key, dest)
+    except NoCredentialsError:
+        # Fallback to unsigned requests for publicly accessible objects
+        anon_client = boto3.client("s3", config=Config(signature_version=UNSIGNED))
+        anon_transfer = S3Transfer(client=anon_client, config=transfer_config)
+        anon_transfer.download_file(bucket, key, dest)
 
 
 def _parse_s3_url(url: str) -> tuple[str, str]:
@@ -70,6 +81,37 @@ def _parse_s3_url(url: str) -> tuple[str, str]:
 
 
 def download_file_from_url(url: str, dest: str, concurrency: Optional[int] = None) -> None:
-    """Download an S3 object specified by URL to ``dest``."""
-    bucket, key = _parse_s3_url(url)
-    download_file(bucket, key, dest, concurrency=concurrency)
+    """Download an S3 object specified by URL to ``dest``.
+
+    If ``url`` contains pre-signed query parameters, the object is fetched
+    directly via HTTP so the signature is preserved. Otherwise the helper
+    extracts the bucket/key pair and delegates to :func:`download_file` for
+    concurrent downloads via ``boto3``.
+    """
+    parsed = urlparse(url)
+    if parsed.query:
+        _download_presigned_url(url, dest)
+    else:
+        bucket, key = _parse_s3_url(url)
+        download_file(bucket, key, dest, concurrency=concurrency)
+
+
+def _download_presigned_url(url: str, dest: str) -> None:
+    """Download an object using its full pre-signed URL.
+
+    The download is streamed to ``dest`` and each attempt is retried with
+    exponential backoff to tolerate transient errors.
+    """
+    for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
+        try:
+            with requests.get(url, stream=True) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as f:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            return
+        except Exception:
+            if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1:
+                raise
+            time.sleep(2**attempt)
