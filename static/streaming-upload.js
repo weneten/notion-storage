@@ -95,6 +95,16 @@ function updateProgressBar(percentage, statusText) {
     }
 }
 
+// Bulk selection helpers
+const deleteSelectedBtn = document.getElementById('deleteSelectedButton');
+const moveSelectedBtn = document.getElementById('moveSelectedButton');
+
+function updateBulkActionButtons() {
+    const anyChecked = document.querySelectorAll('.select-item:checked').length > 0;
+    if (deleteSelectedBtn) deleteSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
+    if (moveSelectedBtn) moveSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
+}
+
 class StreamingFileUploader {
     constructor() {
         this.activeUploads = new Map();
@@ -616,6 +626,7 @@ async function loadFiles() {
                 <table class="table" id="fileTable">
                     <thead>
                         <tr>
+                            <th></th>
                             <th><i class="fas fa-file mr-1"></i> Filename</th>
                             <th><i class="fas fa-weight mr-1"></i> Size</th>
                             <th>Folder</th>
@@ -631,6 +642,7 @@ async function loadFiles() {
             if (entry.type === 'folder') {
                 tableHTML += `
                 <tr class="folder-row" data-folder-path="${entry.full_path}">
+                    <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
                     <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
                     <td class="filesize-cell">${formatFileSize(entry.size)}</td>
                     <td>${entry.full_path}</td>
@@ -659,6 +671,7 @@ async function loadFiles() {
 
                 tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
+                    <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
                     <td>
                         <span style="margin-right: 8px;">${fileInfo.icon}</span>
                         <strong>${entry.name}</strong>
@@ -713,6 +726,12 @@ async function loadFiles() {
         // Set up event handlers for the new elements
         setupFileActionEventHandlers();
         setupFolderActionEventHandlers();
+
+        // Initialize bulk selection handlers for new checkboxes
+        document.querySelectorAll('.select-item').forEach(cb => {
+            cb.addEventListener('change', updateBulkActionButtons);
+        });
+        updateBulkActionButtons();
 
         // Reinitialize file type icons for newly loaded content
         if (typeof initializeFileTypeIcons === 'function') {
