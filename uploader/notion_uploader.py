@@ -6,12 +6,36 @@ import threading
 import io
 import concurrent.futures
 import queue
+import tempfile
 from typing import Dict, Any, List, Optional, Tuple, Union, Iterable
 from flask_socketio import SocketIO
 import uuid
 import time
 import random
 import mimetypes
+from .s3_downloader import (
+    download_file_from_url,
+    stream_file_from_url,
+    stream_file_range_from_url,
+)
+
+
+def _fetch_json(url: str):
+    """Retrieve JSON from a URL, using the S3 downloader when applicable."""
+    import json
+    if 'amazonaws.com' in url:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            download_file_from_url(url, tmp_path)
+            with open(tmp_path, 'rb') as f:
+                return json.load(f)
+        finally:
+            os.remove(tmp_path)
+    else:
+        resp = requests.get(url)
+        resp.raise_for_status()
+        return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
 
 
 # Default chunk size for downloading files from Notion (1 MiB). Can be overridden
@@ -187,9 +211,7 @@ class NotionFileUploader:
         if not manifest_url:
             raise Exception(f"No valid URL for manifest file on page {manifest_page_id}")
         # Download the manifest JSON
-        resp = requests.get(manifest_url)
-        resp.raise_for_status()
-        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        manifest = _fetch_json(manifest_url)
         parts = manifest.get('parts', [])
         if not parts:
             raise Exception(f"Manifest JSON does not contain 'parts' array")
@@ -319,11 +341,6 @@ class NotionFileUploader:
         }
         self.session = requests.Session()
         self.session.headers.update({**self.headers, "Connection": "keep-alive"})
-        # Separate session for raw file downloads so Notion-specific headers like
-        # Authorization aren't sent to AWS signed URLs, which would otherwise
-        # result in authentication errors.
-        self.download_session = requests.Session()
-        self.download_session.headers.update({"Connection": "keep-alive"})
         self.global_file_index_db_id = global_file_index_db_id
         self.notion_space_id = notion_space_id or "c91485e6-ff71-811c-b300-000345011419"  # Default space ID
         
@@ -2332,16 +2349,10 @@ class NotionFileUploader:
         """
         notion_download_url = download_url or self.get_notion_file_url_from_page_property(page_id, original_filename)
         if not notion_download_url:
-            raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
-        try:
-            # Use the download session without Notion headers for S3 requests
-            with self.download_session.get(notion_download_url, stream=True) as r:
-                r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-                for chunk in r.iter_content(chunk_size=chunk_size):
-                    yield chunk
-        except requests.exceptions.RequestException as e:
-            print(f"Error streaming file from Notion S3 URL: {e}")
-            raise Exception(f"Failed to stream file from Notion S3 URL: {e}")
+            raise Exception(
+                f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'"
+            )
+        yield from stream_file_from_url(notion_download_url, chunk_size=chunk_size)
 
     def stream_file_from_notion_range(
         self,
@@ -2368,53 +2379,12 @@ class NotionFileUploader:
         """
         notion_download_url = download_url or self.get_notion_file_url_from_page_property(page_id, original_filename)
         if not notion_download_url:
-            raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
-        headers = {
-            'Range': f'bytes={start}-{end}'
-        }
-        print(f"Requesting bytes {start}-{end} from Notion S3 download URL: {notion_download_url}")
-        try:
-            # Use the download session without Notion headers for S3 requests
-            with self.download_session.get(notion_download_url, headers=headers, stream=True) as r:
-                if r.status_code == 206:
-                    print(f"Received partial content response (206) for range {start}-{end}")
-                elif r.status_code == 200:
-                    print(f"Server doesn't support range requests, streaming full content and extracting range {start}-{end}")
-                else:
-                    r.raise_for_status()
-
-                bytes_read = 0
-                target_bytes = end - start + 1
-
-                if r.status_code == 200:
-                    skip_bytes = start
-                    for chunk in r.iter_content(chunk_size=chunk_size):
-                        if skip_bytes > 0:
-                            if len(chunk) <= skip_bytes:
-                                skip_bytes -= len(chunk)
-                                continue
-                            else:
-                                chunk = chunk[skip_bytes:]
-                                skip_bytes = 0
-                        to_yield = min(len(chunk), target_bytes - bytes_read)
-                        if to_yield <= 0:
-                            break
-                        yield chunk[:to_yield]
-                        bytes_read += to_yield
-                        if bytes_read >= target_bytes:
-                            break
-                else:
-                    for chunk in r.iter_content(chunk_size=chunk_size):
-                        to_yield = min(len(chunk), target_bytes - bytes_read)
-                        if to_yield <= 0:
-                            break
-                        yield chunk[:to_yield]
-                        bytes_read += to_yield
-                        if bytes_read >= target_bytes:
-                            break
-        except requests.exceptions.RequestException as e:
-            print(f"Error streaming byte range from Notion S3 URL: {e}")
-            raise Exception(f"Failed to stream byte range from Notion S3 URL: {e}")
+            raise Exception(
+                f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'"
+            )
+        yield from stream_file_range_from_url(
+            notion_download_url, start, end, chunk_size=chunk_size
+        )
     def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool) -> Dict[str, Any]:
         """Adds an entry to the Global File Index database."""
         global_index_db_id = self.global_file_index_db_id
