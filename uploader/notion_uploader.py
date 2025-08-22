@@ -188,7 +188,7 @@ class NotionFileUploader:
         if not manifest_url:
             raise Exception(f"No valid URL for manifest file on page {manifest_page_id}")
         # Download the manifest JSON
-        resp = requests.get(manifest_url)
+        resp = requests.get(manifest_url, headers=self._get_download_headers(manifest_url))
         resp.raise_for_status()
         manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
         parts = manifest.get('parts', [])
@@ -609,11 +609,14 @@ class NotionFileUploader:
             print(f"🔍 VALIDATING URL: Starting validation (expires in {int(time_until_expiry)}s)")
             
             # Use small range GET request instead of HEAD for better compatibility with Notion's CDN
-            headers = {
-                'Range': 'bytes=0-1',  # Request just first 2 bytes
-                'User-Agent': 'NotionUploader/1.0'
-            }
-            
+            headers = self._get_download_headers(
+                url,
+                {
+                    'Range': 'bytes=0-1',  # Request just first 2 bytes
+                    'User-Agent': 'NotionUploader/1.0',
+                },
+            )
+
             response = requests.get(
                 url,
                 headers=headers,
@@ -707,6 +710,20 @@ class NotionFileUploader:
             return f"https://www.notion.so/signed/{encoded}?{urllib.parse.urlencode(params)}"
         except Exception:
             return file_url
+
+    def _get_download_headers(self, url: str, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Build headers for downloading files from Notion."""
+        headers: Dict[str, str] = {}
+        if extra:
+            headers.update(extra)
+        try:
+            host = urllib.parse.urlparse(url).netloc
+        except Exception:
+            host = ""
+        if host.endswith("notion.so"):
+            headers["Authorization"] = f"Bearer {self.api_token}"
+            headers["Notion-Version"] = self.notion_version
+        return headers
 
     def _fetch_fresh_download_url_with_metadata(self, page_id: str, original_filename: str) -> tuple:
         """
@@ -815,7 +832,10 @@ class NotionFileUploader:
                 download_url,
                 timeout=10,
                 allow_redirects=True,
-                headers={'User-Agent': 'NotionUploader/1.0'}
+                headers=self._get_download_headers(
+                    download_url,
+                    {'User-Agent': 'NotionUploader/1.0'},
+                ),
             )
             
             if response.status_code == 200:
@@ -2423,8 +2443,9 @@ class NotionFileUploader:
         if not notion_download_url:
             raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
         try:
-            # Use the download session without Notion headers for S3 requests
-            with self.download_session.get(notion_download_url, stream=True) as r:
+            headers = self._get_download_headers(notion_download_url)
+            # Use the download session; auth headers are added only for Notion proxy URLs
+            with self.download_session.get(notion_download_url, headers=headers, stream=True) as r:
                 r.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
                 for chunk in r.iter_content(chunk_size=chunk_size):
                     yield chunk
@@ -2458,12 +2479,13 @@ class NotionFileUploader:
         notion_download_url = download_url or self.get_notion_file_url_from_page_property(page_id, original_filename)
         if not notion_download_url:
             raise Exception(f"Could not find AWS S3 signed URL for file '{original_filename}' on page '{page_id}'")
-        headers = {
-            'Range': f'bytes={start}-{end}'
-        }
+        headers = self._get_download_headers(
+            notion_download_url,
+            {'Range': f'bytes={start}-{end}'},
+        )
         print(f"Requesting bytes {start}-{end} from Notion S3 download URL: {notion_download_url}")
         try:
-            # Use the download session without Notion headers for S3 requests
+            # Use the download session; auth headers are added only for Notion proxy URLs
             with self.download_session.get(notion_download_url, headers=headers, stream=True) as r:
                 if r.status_code == 206:
                     print(f"Received partial content response (206) for range {start}-{end}")
