@@ -12,6 +12,7 @@ the shared S3 client's connection pool used for all transfers.
 
 import os
 import time
+import atexit
 from typing import Optional
 from urllib.parse import urlparse
 
