@@ -6,12 +6,32 @@ import threading
 import io
 import concurrent.futures
 import queue
+import tempfile
 from typing import Dict, Any, List, Optional, Tuple, Union, Iterable
 from flask_socketio import SocketIO
 import uuid
 import time
 import random
 import mimetypes
+from .s3_downloader import download_file_from_url
+
+
+def _fetch_json(url: str):
+    """Retrieve JSON from a URL, using the S3 downloader when applicable."""
+    import json
+    if 'amazonaws.com' in url:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            download_file_from_url(url, tmp_path)
+            with open(tmp_path, 'rb') as f:
+                return json.load(f)
+        finally:
+            os.remove(tmp_path)
+    else:
+        resp = requests.get(url)
+        resp.raise_for_status()
+        return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
 
 
 # Default chunk size for downloading files from Notion (1 MiB). Can be overridden
@@ -187,9 +207,7 @@ class NotionFileUploader:
         if not manifest_url:
             raise Exception(f"No valid URL for manifest file on page {manifest_page_id}")
         # Download the manifest JSON
-        resp = requests.get(manifest_url)
-        resp.raise_for_status()
-        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        manifest = _fetch_json(manifest_url)
         parts = manifest.get('parts', [])
         if not parts:
             raise Exception(f"Manifest JSON does not contain 'parts' array")

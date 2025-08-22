@@ -19,6 +19,24 @@ from flask import Response
 from flask_socketio import SocketIO
 from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
+from .s3_downloader import download_file_from_url
+
+
+def _fetch_text(url: str) -> str:
+    """Download text content from a URL, using S3 helper for S3 links."""
+    if 'amazonaws.com' in url:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            download_file_from_url(url, tmp_path)
+            with open(tmp_path, 'rb') as f:
+                return f.read().decode('utf-8')
+        finally:
+            os.remove(tmp_path)
+    else:
+        resp = requests.get(url)
+        resp.raise_for_status()
+        return resp.content.decode('utf-8')
 
 
 class NotionStreamingUploader:
@@ -65,12 +83,8 @@ class NotionStreamingUploader:
                 file_url = props['file_data']['files'][0].get('file', {}).get('url') or props['file_data']['files'][0].get('external', {}).get('url')
                 if file_url:
                     try:
-                        resp = requests.get(file_url)
-                        if resp.status_code == 200:
-                            file_data = resp.content.decode("utf-8")
-                            print(f"[DELETE] Manifest JSON loaded from file property (url): {file_url}")
-                        else:
-                            print(f"[DELETE] Manifest JSON fetch failed with status {resp.status_code}: {resp.text}")
+                        file_data = _fetch_text(file_url)
+                        print(f"[DELETE] Manifest JSON loaded from file property (url): {file_url}")
                     except Exception as e:
                         print(f"[DELETE] Failed to fetch manifest JSON from Notion: {e}")
             # Fallback: try to get file_data as plain text
@@ -194,12 +208,8 @@ class NotionStreamingUploader:
             file_url = props['file_data']['files'][0].get('file', {}).get('url') or props['file_data']['files'][0].get('external', {}).get('url')
             if file_url:
                 try:
-                    resp = requests.get(file_url)
-                    if resp.status_code == 200:
-                        file_data = resp.content.decode("utf-8")
-                        print(f"[DELETE] Manifest JSON loaded from file property (url): {file_url}")
-                    else:
-                        print(f"[DELETE] Manifest JSON fetch failed with status {resp.status_code}: {resp.text}")
+                    file_data = _fetch_text(file_url)
+                    print(f"[DELETE] Manifest JSON loaded from file property (url): {file_url}")
                 except Exception as e:
                     print(f"[DELETE] Failed to fetch manifest JSON from Notion: {e}")
 

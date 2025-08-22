@@ -2,10 +2,11 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for, s
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_socketio import SocketIO
 from flask_cors import CORS
-from uploader import NotionFileUploader, ChunkProcessor
+from uploader import NotionFileUploader, ChunkProcessor, download_s3_file_from_url
 from uploader.streaming_uploader import StreamingUploadManager
 from dotenv import load_dotenv
 import os
+import tempfile
 import secrets
 import hashlib
 import concurrent.futures
@@ -193,6 +194,24 @@ streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, so
 def fetch_download_metadata(page_id: str, filename: str) -> Dict[str, Any]:
     """Fetch fresh file download metadata without caching."""
     return uploader.get_file_download_metadata(page_id, filename)
+
+
+def fetch_json_from_url(url: str) -> Dict[str, Any]:
+    """Retrieve JSON content from a URL, using the S3 downloader for S3 links."""
+    if 'amazonaws.com' in url:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            download_s3_file_from_url(url, tmp_path)
+            with open(tmp_path, 'rb') as f:
+                return json.loads(f.read())
+        finally:
+            os.remove(tmp_path)
+    else:
+        import requests
+        resp = requests.get(url)
+        resp.raise_for_status()
+        return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
 
 # User class for Flask-Login
 class User(UserMixin):
@@ -550,9 +569,7 @@ def download_by_hash(salted_sha512_hash):
                 if not manifest_url:
                     return "Manifest file not found", 404
 
-                resp = requests.get(manifest_url)
-                resp.raise_for_status()
-                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+                manifest = fetch_json_from_url(manifest_url)
                 orig_name = manifest.get('original_filename', 'download')
                 total_size = manifest.get('total_size', 0)
                 # Use video mimetype if possible, fallback to octet-stream
@@ -708,9 +725,7 @@ def stream_by_hash(salted_sha512_hash):
                 if not manifest_url:
                     return "Manifest file not found", 404
 
-                resp = requests.get(manifest_url)
-                resp.raise_for_status()
-                manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+                manifest = fetch_json_from_url(manifest_url)
 
                 orig_name = manifest.get('original_filename', 'file')
                 total_size = manifest.get('total_size', 0)
@@ -2129,9 +2144,7 @@ def download_multipart_by_page_id(manifest_page_id):
         if not manifest_url:
             return "Manifest file not found", 404
 
-        resp = requests.get(manifest_url)
-        resp.raise_for_status()
-        manifest = resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        manifest = fetch_json_from_url(manifest_url)
         orig_name = manifest.get('original_filename', 'download')
         total_size = manifest.get('total_size', 0)
         import mimetypes
