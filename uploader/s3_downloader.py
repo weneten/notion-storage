@@ -115,3 +115,73 @@ def _download_presigned_url(url: str, dest: str) -> None:
             if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1:
                 raise
             time.sleep(2**attempt)
+
+
+def _stream_presigned_url(
+    url: str,
+    *,
+    headers: Optional[dict[str, str]] = None,
+    chunk_size: int = 8192,
+):
+    """Yield content from a pre-signed S3 URL with retries."""
+
+    def generator():
+        for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
+            try:
+                with requests.get(url, headers=headers, stream=True) as resp:
+                    if resp.status_code not in (200, 206):
+                        resp.raise_for_status()
+
+                    skip = 0
+                    target_bytes = None
+                    if headers and "Range" in headers:
+                        range_spec = headers["Range"].split("=", 1)[1]
+                        start_str, end_str = range_spec.split("-")
+                        start = int(start_str)
+                        end = int(end_str)
+                        target_bytes = end - start + 1
+                        if resp.status_code == 200:
+                            skip = start
+
+                    bytes_read = 0
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if skip:
+                            if len(chunk) <= skip:
+                                skip -= len(chunk)
+                                continue
+                            chunk = chunk[skip:]
+                            skip = 0
+
+                        if target_bytes is not None:
+                            to_yield = min(len(chunk), target_bytes - bytes_read)
+                            if to_yield <= 0:
+                                break
+                            yield chunk[:to_yield]
+                            bytes_read += to_yield
+                            if bytes_read >= target_bytes:
+                                break
+                        else:
+                            if chunk:
+                                yield chunk
+                return
+            except Exception:
+                if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1:
+                    raise
+                time.sleep(2**attempt)
+
+    return generator()
+
+
+def stream_file_from_url(url: str, chunk_size: int = 8192):
+    """Stream an object using its full pre-signed URL."""
+
+    return _stream_presigned_url(url, chunk_size=chunk_size)
+
+
+def stream_file_range_from_url(
+    url: str, start: int, end: int, chunk_size: int = 8192
+):
+    """Stream a specific byte range from a pre-signed S3 URL."""
+
+    headers = {"Range": f"bytes={start}-{end}"}
+    return _stream_presigned_url(url, headers=headers, chunk_size=chunk_size)
