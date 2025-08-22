@@ -14,10 +14,10 @@ import random
 import mimetypes
 
 
-# Default chunk size for downloading files from Notion (64KB). Can be overridden
+# Default chunk size for downloading files from Notion (5 MiB). Can be overridden
 # by setting the ``DOWNLOAD_CHUNK_SIZE`` environment variable or by passing a
 # ``chunk_size`` parameter to streaming functions.
-DOWNLOAD_CHUNK_SIZE = int(os.getenv("DOWNLOAD_CHUNK_SIZE", 64 * 1024))
+DOWNLOAD_CHUNK_SIZE = int(os.getenv("DOWNLOAD_CHUNK_SIZE", 5 * 1024 * 1024))
 
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):
@@ -2325,7 +2325,7 @@ class NotionFileUploader:
             download_url: Optional pre-fetched download URL. If provided, the
                 method will skip fetching a new URL from Notion.
             chunk_size: Size of chunks to download in bytes. Defaults to
-                ``DOWNLOAD_CHUNK_SIZE``.
+                ``DOWNLOAD_CHUNK_SIZE`` (5 MiB).
 
         Yields:
             Iterator of file content chunks.
@@ -2361,7 +2361,7 @@ class NotionFileUploader:
             end: Ending byte position (inclusive).
             download_url: Optional pre-fetched download URL.
             chunk_size: Size of chunks to download in bytes. Defaults to
-                ``DOWNLOAD_CHUNK_SIZE``.
+                ``DOWNLOAD_CHUNK_SIZE`` (5 MiB).
 
         Yields:
             Iterator of file content chunks for the requested range.
