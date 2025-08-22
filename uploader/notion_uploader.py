@@ -674,10 +674,44 @@ class NotionFileUploader:
         url, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
         return url
 
+    def _convert_to_notion_signed_url(self, file_url: str, filename: str, file_id: str) -> str:
+        """Convert a direct S3 URL into a Notion signed download URL.
+
+        The Notion web client wraps S3 links with a special proxy URL of the form:
+        ``https://www.notion.so/signed/<encoded_s3_url>?id=<file_id>&table=block&spaceId=<space_id>&name=<filename>``.
+        Using this wrapper avoids AWS throttling seen with direct S3 links.
+
+        Args:
+            file_url: Direct S3 URL returned by Notion's API.
+            filename: Name of the file for the ``name`` query parameter.
+            file_id: Notion block/page ID for the ``id`` query parameter.
+
+        Returns:
+            str: Notion signed URL if conversion is successful, otherwise the original URL.
+        """
+        try:
+            parsed = urllib.parse.urlparse(file_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            path_parts = parsed.path.strip('/').split('/')
+            if len(path_parts) < 1:
+                return file_url
+            space_id = path_parts[0]
+
+            encoded = urllib.parse.quote(base_url, safe='')
+            params = {
+                'id': file_id,
+                'table': 'block',
+                'spaceId': space_id,
+                'name': filename,
+            }
+            return f"https://www.notion.so/signed/{encoded}?{urllib.parse.urlencode(params)}"
+        except Exception:
+            return file_url
+
     def _fetch_fresh_download_url_with_metadata(self, page_id: str, original_filename: str) -> tuple:
         """
         Fetch a fresh download URL from Notion API with file size and content type detection.
-        
+
         Returns:
             tuple: (download_url, file_size, content_type)
         """
@@ -708,6 +742,11 @@ class NotionFileUploader:
                 file_info = files_array[0]  # fallback to first if not found
 
             file_url = file_info.get('file', {}).get('url', '')
+            file_url = self._convert_to_notion_signed_url(
+                file_url,
+                file_info.get('name', original_filename),
+                page_id,
+            )
 
             if not file_url:
                 print(f"No valid URL found in file_data property for page ID: {page_id}")
