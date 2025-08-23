@@ -20,6 +20,7 @@ from flask_socketio import SocketIO
 from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
 from .s3_downloader import download_file_from_url
+import gc
 
 
 def _fetch_text(url: str) -> str:
@@ -1159,13 +1160,24 @@ class StreamingUploadManager:
         Clean up old upload sessions
         """
         current_time = time.time()
-        
+
         with self.upload_lock:
-            expired_sessions = [
-                upload_id for upload_id, session in self.active_uploads.items()
-                if current_time - session['created_at'] > max_age_seconds
-            ]
-            
+            expired_sessions = []
+            for upload_id, session in self.active_uploads.items():
+                status = session.get('status')
+                last_activity = session.get('last_activity', session.get('created_at', 0))
+                if status == 'completed':
+                    last_activity = session.get('completed_at', last_activity)
+                elif status == 'failed':
+                    last_activity = session.get('failed_at', last_activity)
+                elif status == 'aborted':
+                    last_activity = session.get('aborted_at', last_activity)
+                if current_time - last_activity > max_age_seconds:
+                    expired_sessions.append(upload_id)
+
             for upload_id in expired_sessions:
                 del self.active_uploads[upload_id]
+                self.session_locks.pop(upload_id, None)
                 print(f"Cleaned up expired upload session: {upload_id}")
+
+        gc.collect()
