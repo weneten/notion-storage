@@ -68,6 +68,13 @@ _ACTIVE_STREAMS = weakref.WeakKeyDictionary()
 _ACTIVE_STREAMS_LOCK = threading.Lock()
 
 
+def _finalize_presigned_stream(stream_ref: "weakref.ReferenceType") -> None:
+    """Callback to close streams without keeping strong references."""
+    stream = stream_ref()
+    if stream is not None:
+        stream.close()
+
+
 def _get_transfer(concurrency: int, *, anonymous: bool = False) -> S3Transfer:
     """Return an ``S3Transfer`` for the desired concurrency."""
 
@@ -187,7 +194,7 @@ class _PresignedStream:
         self._resp: Optional[requests.Response] = None
         with _ACTIVE_STREAMS_LOCK:
             _ACTIVE_STREAMS[self] = time.time()
-        weakref.finalize(self, self.close)
+        weakref.finalize(self, _finalize_presigned_stream, weakref.ref(self))
 
     def __enter__(self):
         return self
