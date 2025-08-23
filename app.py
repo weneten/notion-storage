@@ -4,6 +4,7 @@ from flask_socketio import SocketIO
 from flask_cors import CORS
 from uploader import NotionFileUploader, ChunkProcessor, download_s3_file_from_url
 from uploader.streaming_uploader import StreamingUploadManager
+from uploader.s3_downloader import cleanup_stale_streams
 from dotenv import load_dotenv
 import os
 import tempfile
@@ -75,7 +76,7 @@ def cleanup_old_sessions():
 
     except Exception as e:
         print(f"Error in session cleanup: {e}")
-
+    cleanup_stale_streams()
     gc.collect()
     # Schedule next check
     threading.Timer(60, cleanup_old_sessions).start()

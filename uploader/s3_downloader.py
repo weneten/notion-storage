@@ -13,6 +13,8 @@ the shared S3 client's connection pool used for all transfers.
 import os
 import time
 import atexit
+import gc
+import threading
 from typing import Optional
 import weakref
 from urllib.parse import urlparse
@@ -60,6 +62,10 @@ _SESSION.mount(
     ),
 )
 atexit.register(_SESSION.close)
+
+# Registry to track active presigned URL streams
+_ACTIVE_STREAMS = weakref.WeakKeyDictionary()
+_ACTIVE_STREAMS_LOCK = threading.Lock()
 
 
 def _get_transfer(concurrency: int, *, anonymous: bool = False) -> S3Transfer:
@@ -179,6 +185,8 @@ class _PresignedStream:
         self.headers = headers
         self.chunk_size = chunk_size
         self._resp: Optional[requests.Response] = None
+        with _ACTIVE_STREAMS_LOCK:
+            _ACTIVE_STREAMS[self] = time.time()
         weakref.finalize(self, self.close)
 
     def __enter__(self):
@@ -207,6 +215,8 @@ class _PresignedStream:
 
                 bytes_read = 0
                 for chunk in self._resp.iter_content(chunk_size=self.chunk_size):
+                    with _ACTIVE_STREAMS_LOCK:
+                        _ACTIVE_STREAMS[self] = time.time()
                     if skip:
                         if len(chunk) <= skip:
                             skip -= len(chunk)
@@ -237,6 +247,22 @@ class _PresignedStream:
         if self._resp is not None:
             self._resp.close()
             self._resp = None
+        with _ACTIVE_STREAMS_LOCK:
+            _ACTIVE_STREAMS.pop(self, None)
+
+
+def cleanup_stale_streams(max_age_seconds: int = 300) -> None:
+    """Close presigned URL streams that have been inactive longer than ``max_age_seconds``."""
+    current_time = time.time()
+    with _ACTIVE_STREAMS_LOCK:
+        stale = [s for s, ts in _ACTIVE_STREAMS.items() if current_time - ts > max_age_seconds]
+    for stream in stale:
+        try:
+            stream.close()
+        finally:
+            with _ACTIVE_STREAMS_LOCK:
+                _ACTIVE_STREAMS.pop(stream, None)
+    gc.collect()
 
 
 def _stream_presigned_url(
