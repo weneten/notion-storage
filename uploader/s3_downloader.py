@@ -59,6 +59,7 @@ _SESSION.mount(
         pool_connections=_MAX_S3_CONCURRENCY, pool_maxsize=_MAX_S3_CONCURRENCY
     ),
 )
+atexit.register(_SESSION.close)
 
 
 def _get_transfer(concurrency: int, *, anonymous: bool = False) -> S3Transfer:
@@ -179,6 +180,12 @@ class _PresignedStream:
         self.chunk_size = chunk_size
         self._resp: Optional[requests.Response] = None
         weakref.finalize(self, self.close)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
     def __iter__(self):
         for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
