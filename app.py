@@ -24,6 +24,7 @@ import string
 import json
 from flask_socketio import emit
 from collections import defaultdict
+import gc
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -36,15 +37,26 @@ def cleanup_old_sessions():
                 with streaming_upload_manager.upload_lock:
                     expired_uploads = []
                     for upload_id, session in streaming_upload_manager.active_uploads.items():
+                        status = session.get('status')
                         last_activity = session.get('last_activity', session.get('created_at', 0))
-                        # Use failure timestamp if available so failed uploads clean up reliably
-                        if session.get('status') == 'failed':
+                        if status == 'completed':
+                            last_activity = session.get('completed_at', last_activity)
+                            timeout = 60  # 1 minute retention for completed uploads
+                        elif status == 'failed':
                             last_activity = session.get('failed_at', last_activity)
-                        if session.get('status') != 'completed' and current_time - last_activity > 900:  # 15 minutes
-                            expired_uploads.append(upload_id)
+                            timeout = 300
+                        elif status == 'aborted':
+                            last_activity = session.get('aborted_at', last_activity)
+                            timeout = 60
+                        else:
+                            timeout = 900  # 15 minutes for active sessions
 
-                    for upload_id in expired_uploads:
+                        if current_time - last_activity > timeout:
+                            expired_uploads.append((upload_id, status))
+
+                    for upload_id, status in expired_uploads:
                         session = streaming_upload_manager.active_uploads.pop(upload_id, None)
+                        streaming_upload_manager.session_locks.pop(upload_id, None)
                         if session:
                             for part_id in session.get('uploaded_parts', []):
                                 try:
@@ -54,7 +66,7 @@ def cleanup_old_sessions():
                                     print(f"Deleted orphan part: {part_id}")
                                 except Exception as e:
                                     print(f"Error deleting orphan part {part_id}: {e}")
-                            print(f"Cleaned up stalled upload session: {upload_id}")
+                        print(f"Cleaned up {status or 'stalled'} upload session: {upload_id}")
             except Exception as e:
                 print(f"Error cleaning streaming uploads: {e}")
 
@@ -64,6 +76,7 @@ def cleanup_old_sessions():
     except Exception as e:
         print(f"Error in session cleanup: {e}")
 
+    gc.collect()
     # Schedule next check
     threading.Timer(60, cleanup_old_sessions).start()
     
@@ -2085,6 +2098,12 @@ def abort_upload(upload_id):
             except Exception as e:
                 print(f"Error deleting orphan part {part_id}: {e}")
         upload_session['uploaded_parts'] = []
+
+        # Remove session and release resources
+        with streaming_upload_manager.upload_lock:
+            streaming_upload_manager.active_uploads.pop(upload_id, None)
+            streaming_upload_manager.session_locks.pop(upload_id, None)
+        gc.collect()
 
         return jsonify({'message': 'Upload aborted successfully'})
         
