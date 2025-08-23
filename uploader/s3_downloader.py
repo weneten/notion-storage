@@ -14,6 +14,7 @@ import os
 import time
 import atexit
 from typing import Optional
+import weakref
 from urllib.parse import urlparse
 
 import boto3
@@ -159,59 +160,87 @@ def _download_presigned_url(url: str, dest: str) -> None:
             time.sleep(2**attempt)
 
 
+class _PresignedStream:
+    """Iterable wrapper around a streaming ``requests`` response.
+
+    Ensures the underlying HTTP connection is released back to the shared
+    session's connection pool even if the consumer aborts iteration early.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        headers: Optional[dict[str, str]] = None,
+        chunk_size: int = 8192,
+    ):
+        self.url = url
+        self.headers = headers
+        self.chunk_size = chunk_size
+        self._resp: Optional[requests.Response] = None
+        weakref.finalize(self, self.close)
+
+    def __iter__(self):
+        for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
+            self._resp = _SESSION.get(self.url, headers=self.headers, stream=True)
+            try:
+                if self._resp.status_code not in (200, 206):
+                    self._resp.raise_for_status()
+
+                skip = 0
+                target_bytes = None
+                if self.headers and "Range" in self.headers:
+                    range_spec = self.headers["Range"].split("=", 1)[1]
+                    start_str, end_str = range_spec.split("-")
+                    start = int(start_str)
+                    end = int(end_str)
+                    target_bytes = end - start + 1
+                    if self._resp.status_code == 200:
+                        skip = start
+
+                bytes_read = 0
+                for chunk in self._resp.iter_content(chunk_size=self.chunk_size):
+                    if skip:
+                        if len(chunk) <= skip:
+                            skip -= len(chunk)
+                            continue
+                        chunk = chunk[skip:]
+                        skip = 0
+
+                    if target_bytes is not None:
+                        to_yield = min(len(chunk), target_bytes - bytes_read)
+                        if to_yield <= 0:
+                            break
+                        yield chunk[:to_yield]
+                        bytes_read += to_yield
+                        if bytes_read >= target_bytes:
+                            break
+                    else:
+                        if chunk:
+                            yield chunk
+                return
+            except Exception:
+                if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1:
+                    raise
+                time.sleep(2**attempt)
+            finally:
+                self.close()
+
+    def close(self) -> None:
+        if self._resp is not None:
+            self._resp.close()
+            self._resp = None
+
+
 def _stream_presigned_url(
     url: str,
     *,
     headers: Optional[dict[str, str]] = None,
     chunk_size: int = 8192,
 ):
-    """Yield content from a pre-signed S3 URL with retries."""
+    """Return an iterable that streams a pre-signed S3 URL."""
 
-    def generator():
-        for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
-            try:
-                with _SESSION.get(url, headers=headers, stream=True) as resp:
-                    if resp.status_code not in (200, 206):
-                        resp.raise_for_status()
-
-                    skip = 0
-                    target_bytes = None
-                    if headers and "Range" in headers:
-                        range_spec = headers["Range"].split("=", 1)[1]
-                        start_str, end_str = range_spec.split("-")
-                        start = int(start_str)
-                        end = int(end_str)
-                        target_bytes = end - start + 1
-                        if resp.status_code == 200:
-                            skip = start
-
-                    bytes_read = 0
-                    for chunk in resp.iter_content(chunk_size=chunk_size):
-                        if skip:
-                            if len(chunk) <= skip:
-                                skip -= len(chunk)
-                                continue
-                            chunk = chunk[skip:]
-                            skip = 0
-
-                        if target_bytes is not None:
-                            to_yield = min(len(chunk), target_bytes - bytes_read)
-                            if to_yield <= 0:
-                                break
-                            yield chunk[:to_yield]
-                            bytes_read += to_yield
-                            if bytes_read >= target_bytes:
-                                break
-                        else:
-                            if chunk:
-                                yield chunk
-                return
-            except Exception:
-                if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1:
-                    raise
-                time.sleep(2**attempt)
-
-    return generator()
+    return _PresignedStream(url, headers=headers, chunk_size=chunk_size)
 
 
 def stream_file_from_url(url: str, chunk_size: int = 8192):
