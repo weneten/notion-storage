@@ -1909,30 +1909,26 @@ def stream_file_upload(upload_id):
                 result = upload_with_circuit_breaker()
             
             print(f"✅ Upload processing completed: {result}")
-            
-            # LEGACY CODE REMOVAL: Removed problematic add_file_to_user_database call
-            # This was causing file upload ID mismatch errors after upload completion
-            # The file is already successfully uploaded to Notion at this point
-            print("💾 Upload completed successfully - legacy database integration step removed")
+
+            print("💾 Upload completed successfully - database integration continuing in background")
             print(f"🔍 Upload result: {result.get('filename')} ({result.get('bytes_uploaded', 0)} bytes)")
-            
-            # Final progress update
+
             if socketio:
                 socketio.emit('upload_progress', {
                     'upload_id': upload_id,
-                    'status': 'completed',
+                    'status': 'finalizing',
                     'progress': 100,
                     'bytes_uploaded': result['bytes_uploaded'],
                     'total_size': result['bytes_uploaded']
                 })
-            
+
             return jsonify({
-                'status': 'completed',
+                'status': 'finalizing',
                 'upload_id': upload_id,
                 'filename': result['filename'],
                 'file_size': result['bytes_uploaded'],
-                'file_hash': result['file_hash'],
-                'file_id': result.get('file_id'),  # Return the file ID from upload result
+                'file_hash': result.get('file_hash'),
+                'file_id': result.get('file_id'),  # May be None until DB integration completes
                 'is_public': False,
                 'name': result.get('original_filename', result['filename']),
                 'size': result['bytes_uploaded']
@@ -1980,18 +1976,18 @@ def resume_stream_file_upload(upload_id):
         if socketio:
             socketio.emit('upload_progress', {
                 'upload_id': upload_id,
-                'status': 'completed',
+                'status': 'finalizing',
                 'progress': 100,
                 'bytes_uploaded': result['bytes_uploaded'],
                 'total_size': result['bytes_uploaded']
             })
 
         return jsonify({
-            'status': 'completed',
+            'status': 'finalizing',
             'upload_id': upload_id,
             'filename': result['filename'],
             'file_size': result['bytes_uploaded'],
-            'file_hash': result['file_hash'],
+            'file_hash': result.get('file_hash'),
             'file_id': result.get('file_id'),
             'is_public': False,
             'name': result.get('original_filename', result['filename']),
@@ -2029,7 +2025,9 @@ def get_upload_status(upload_id):
             'file_size': upload_session['file_size'],
             'bytes_uploaded': upload_session['bytes_uploaded'],
             'is_multipart': upload_session['is_multipart'],
-            'created_at': upload_session['created_at']
+            'created_at': upload_session['created_at'],
+            'file_id': upload_session.get('notion_file_id'),
+            'file_hash': upload_session.get('file_hash')
         }
         
         # Add circuit breaker status if available
