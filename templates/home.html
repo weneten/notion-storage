@@ -47,6 +47,10 @@
 
 
     <h2 style="margin-top: 40px;"><i class="fas fa-file-alt mr-2"></i>Your Files</h2>
+    <div class="form-inline mb-3">
+        <input type="text" id="searchInput" class="form-control mr-2" placeholder="Search files...">
+        <button id="searchButton" class="btn btn-primary btn-sm"><i class="fas fa-search mr-1"></i>Search</button>
+    </div>
     <div id="files-container">
         <!-- Files will be loaded here via JavaScript or directly from Flask context -->
         {% if entries %}
