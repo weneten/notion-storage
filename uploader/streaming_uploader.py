@@ -887,14 +887,14 @@ class NotionStreamingUploader:
                 print(f"INFO: File split and uploaded in {len(parts_metadata)} parts + metadata JSON.")
 
                 upload_session.update({
-                    'status': 'database_pending',
+                    'status': 'finalizing',
                     'bytes_uploaded': file_size,
                     'file_hash': manifest_salted_hash
                 })
 
                 upload_session.pop('uploaded_parts', None)
                 return {
-                    "status": "uploaded",
+                    "status": "finalizing",
                     "split": True,
                     "parts": parts_metadata,
                     "metadata_file_id": None,
@@ -991,7 +991,7 @@ class NotionStreamingUploader:
                 if self.socketio:
                     self.socketio.emit('upload_progress', {
                         'upload_id': upload_session['upload_id'],
-                        'status': 'uploaded',
+                        'status': 'finalizing',
                         'progress': 100
                     })
 
@@ -1003,14 +1003,14 @@ class NotionStreamingUploader:
                 )
 
                 upload_session.update({
-                    'status': 'database_pending',
+                    'status': 'finalizing',
                     'bytes_uploaded': bytes_received,
                     'file_hash': salted_hash
                 })
                 return {
                     'notion_file_upload_id': notion_result.get('file_upload_id'),
                     'file_id': None,
-                    'status': 'uploaded',
+                    'status': 'finalizing',
                     'filename': upload_session['filename'],
                     'bytes_uploaded': bytes_received,
                     'file_hash': salted_hash
@@ -1067,7 +1067,7 @@ class NotionStreamingUploader:
                 if self.socketio:
                     self.socketio.emit('upload_progress', {
                         'upload_id': upload_session['upload_id'],
-                        'status': 'uploaded',
+                        'status': 'finalizing',
                         'progress': 100
                     })
 
@@ -1079,14 +1079,14 @@ class NotionStreamingUploader:
                 )
 
                 upload_session.update({
-                    'status': 'database_pending',
+                    'status': 'finalizing',
                     'bytes_uploaded': upload_session['file_size'],
                     'file_hash': salted_hash
                 })
                 return {
                     'notion_file_upload_id': notion_result.get('file_upload_id'),
                     'file_id': None,
-                    'status': 'uploaded',
+                    'status': 'finalizing',
                     'filename': upload_session['filename'],
                     'bytes_uploaded': upload_session['file_size'],
                     'file_hash': salted_hash

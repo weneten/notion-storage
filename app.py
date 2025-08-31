@@ -1916,14 +1916,14 @@ def stream_file_upload(upload_id):
             if socketio:
                 socketio.emit('upload_progress', {
                     'upload_id': upload_id,
-                    'status': result.get('status'),
+                    'status': 'finalizing',
                     'progress': 100,
                     'bytes_uploaded': result['bytes_uploaded'],
                     'total_size': result['bytes_uploaded']
                 })
 
             return jsonify({
-                'status': result.get('status'),
+                'status': 'finalizing',
                 'upload_id': upload_id,
                 'filename': result['filename'],
                 'file_size': result['bytes_uploaded'],
@@ -1976,14 +1976,14 @@ def resume_stream_file_upload(upload_id):
         if socketio:
             socketio.emit('upload_progress', {
                 'upload_id': upload_id,
-                'status': result.get('status'),
+                'status': 'finalizing',
                 'progress': 100,
                 'bytes_uploaded': result['bytes_uploaded'],
                 'total_size': result['bytes_uploaded']
             })
 
         return jsonify({
-            'status': result.get('status'),
+            'status': 'finalizing',
             'upload_id': upload_id,
             'filename': result['filename'],
             'file_size': result['bytes_uploaded'],
