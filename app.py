@@ -26,6 +26,7 @@ import json
 from flask_socketio import emit
 from collections import defaultdict
 import gc
+import zipstream
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -494,6 +495,78 @@ def download_file(filename):
             return redirect(url_for('download_by_hash', salted_sha512_hash=file_hash))
         else:
             return "File not found in database", 404
+    except Exception as e:
+        return str(e), 500
+
+
+@app.route('/download_folder')
+@login_required
+def download_folder():
+    """Download all files within a folder as a ZIP archive."""
+    folder_path = request.args.get('folder', '/')
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return "User database not found", 404
+
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        results = files_data.get('results', [])
+
+        prefix = folder_path.rstrip('/') + '/'
+        files_to_zip = []
+        for entry in results:
+            props = entry.get('properties', {})
+            name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            is_folder = props.get('is_folder', {}).get('checkbox', False)
+            is_visible = props.get('is_visible', {}).get('checkbox', True)
+            is_manifest = props.get('is_manifest', {}).get('checkbox', False)
+            entry_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+
+            if not name or is_folder or not is_visible:
+                continue
+            if entry_path != folder_path and not entry_path.startswith(prefix):
+                continue
+
+            rel_path = entry_path[len(folder_path):].lstrip('/') if entry_path.startswith(folder_path) else ''
+            files_to_zip.append(
+                {
+                    'id': entry.get('id'),
+                    'name': name,
+                    'rel_path': rel_path,
+                    'is_manifest': is_manifest,
+                }
+            )
+
+        z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED)
+
+        for item in files_to_zip:
+            if item['is_manifest']:
+                manifest_metadata = fetch_download_metadata(item['id'], item['name'])
+                manifest_url = manifest_metadata.get('url', '')
+                if not manifest_url:
+                    continue
+                manifest = fetch_json_from_url(manifest_url)
+                orig_name = manifest.get('original_filename', item['name'])
+                archive_name = os.path.join(item['rel_path'], orig_name) if item['rel_path'] else orig_name
+                z.write_iter(archive_name, uploader.stream_multi_part_file(item['id']))
+            else:
+                file_metadata = fetch_download_metadata(item['id'], item['name'])
+                if not file_metadata.get('url'):
+                    continue
+                archive_name = os.path.join(item['rel_path'], item['name']) if item['rel_path'] else item['name']
+                z.write_iter(
+                    archive_name,
+                    uploader.stream_file_from_notion(
+                        item['id'],
+                        item['name'],
+                        download_url=file_metadata['url'],
+                    ),
+                )
+
+        response = Response(stream_with_context(z), mimetype='application/zip')
+        zip_name = folder_path.strip('/').split('/')[-1] or 'root'
+        response.headers['Content-Disposition'] = f'attachment; filename="{zip_name}.zip"'
+        return response
     except Exception as e:
         return str(e), 500
 
