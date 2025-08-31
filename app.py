@@ -544,29 +544,40 @@ def download_folder():
                 }
             )
 
-        z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED)
+        def build_zip():
+            """Create a ZipFile object with all requested files."""
+            zf = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED)
 
-        for item in files_to_zip:
-            archive_name = (
-                os.path.join(item['rel_path'], item['orig_name'])
-                if item['rel_path']
-                else item['orig_name']
-            )
-            if item['is_manifest']:
-                z.write_iter(archive_name, uploader.stream_multi_part_file(item['id']))
-            else:
-                def file_generator(file_id=item['id'], filename=item['orig_name']):
-                    metadata = fetch_download_metadata(file_id, filename)
-                    url = metadata.get('url')
-                    if not url:
-                        return
-                    yield from uploader.stream_file_from_notion(
-                        file_id, filename, download_url=url
-                    )
+            for item in files_to_zip:
+                archive_name = (
+                    os.path.join(item['rel_path'], item['orig_name'])
+                    if item['rel_path']
+                    else item['orig_name']
+                )
+                if item['is_manifest']:
+                    zf.write_iter(archive_name, uploader.stream_multi_part_file(item['id']))
+                else:
+                    def file_generator(file_id=item['id'], filename=item['orig_name']):
+                        metadata = fetch_download_metadata(file_id, filename)
+                        url = metadata.get('url')
+                        if not url:
+                            return
+                        yield from uploader.stream_file_from_notion(
+                            file_id, filename, download_url=url
+                        )
 
-                z.write_iter(archive_name, file_generator())
+                    zf.write_iter(archive_name, file_generator())
+            return zf
 
-        response = Response(stream_with_context(z), mimetype='application/zip')
+        # Calculate the total zip size without storing the archive in memory
+        size_zip = build_zip()
+        total_size = sum(len(chunk) for chunk in size_zip)
+
+        # Create a new zip generator for streaming to the client
+        stream_zip = build_zip()
+        response = Response(stream_with_context(stream_zip), mimetype='application/zip')
+        if total_size > 0:
+            response.headers['Content-Length'] = str(total_size)
         zip_name = folder_path.strip('/').split('/')[-1] or 'root'
         response.headers['Content-Disposition'] = f'attachment; filename="{zip_name}.zip"'
         return response
