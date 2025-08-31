@@ -533,6 +533,9 @@ const uploadFile = async () => {
                 console.error('Upload error:', error);
                 showStatus(`Upload failed: ${error.message}`, 'error');
                 showRetryButton();
+                if (streamingUploader.failedUpload) {
+                    streamingUploader.failedUpload.elements = elements;
+                }
             }
         };
 
@@ -573,7 +576,13 @@ async function resumeFailedUpload() {
         showStatus('No failed upload to resume.', 'error');
         return;
     }
-    const { uploadId, file } = streamingUploader.failedUpload;
+    const { uploadId, file, elements } = streamingUploader.failedUpload;
+
+    let progressElements = elements;
+    if (!progressElements) {
+        progressElements = createProgressBarElements(file.name, file.size);
+        streamingUploader.failedUpload.elements = progressElements;
+    }
 
     // Get authoritative progress from the server before resuming
     try {
@@ -587,8 +596,16 @@ async function resumeFailedUpload() {
     } catch (statusErr) {
         console.warn('Failed to fetch resume status:', statusErr);
     }
+
+    const alreadyUploaded = streamingUploader.failedUpload.bytesUploaded || 0;
+    updateIndividualProgressBar(
+        progressElements,
+        Math.floor((alreadyUploaded / file.size) * 100),
+        alreadyUploaded
+    );
+
     const progressCallback = (progress, bytesUploaded) => {
-        updateProgressBar(Math.floor(progress), `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`);
+        updateIndividualProgressBar(progressElements, Math.floor(progress), bytesUploaded);
     };
     const statusCallback = (message, type) => { showStatus(message, type); };
     try {
