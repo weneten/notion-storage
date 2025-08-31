@@ -423,16 +423,23 @@ class NotionStreamingUploader:
             'part_etags': {}     # Store ETags from completed parts
         }
     
-    def complete_upload_with_database_integration(self, upload_session, notion_result):
-        """Complete upload and integrate with databases"""
+    def complete_upload_with_database_integration(self, upload_session, notion_result,
+                                                  precomputed_hash: str = None,
+                                                  precomputed_salt: str = None):
+        """Complete upload and integrate with databases.
+
+        This method can accept a precomputed file hash and salt.  Providing
+        these allows the caller to return a response to the client immediately
+        after the file bytes finish uploading while database work continues in
+        a background thread.
+        """
         try:
             print(f"DEBUG: Starting database integration for upload {upload_session['upload_id']}")
-            
-            # Generate salt for public access
-            salt = generate_salt()
-            
-            # Calculate file hash
-            file_hash = upload_session['hasher'].hexdigest()
+
+            # Generate salt and hash if not provided by caller
+            salt = precomputed_salt or generate_salt()
+
+            file_hash = precomputed_hash or upload_session['hasher'].hexdigest()
             salted_hash = calculate_salted_hash(file_hash, salt)
             
             print(f"DEBUG: File hash calculated: {file_hash[:16]}...")
@@ -504,6 +511,66 @@ class NotionStreamingUploader:
                 # Note: Notion API doesn't provide direct file deletion
         except Exception as cleanup_error:
             print(f"Warning: Failed to cleanup Notion upload: {cleanup_error}")
+
+    def _start_database_integration_async(self, upload_session, notion_result,
+                                          file_hash: str, salt: str) -> None:
+        """Kick off database integration in a background thread.
+
+        Args:
+            upload_session: Active upload session metadata
+            notion_result:  Response from Notion upload API
+            file_hash:      Precomputed SHA512 hash of file contents
+            salt:           Salt to use when storing in database
+        """
+
+        def _bg_task():
+            try:
+                final_result = self.complete_upload_with_database_integration(
+                    upload_session,
+                    notion_result,
+                    precomputed_hash=file_hash,
+                    precomputed_salt=salt,
+                )
+
+                # Patch visibility metadata now that the DB entry exists
+                try:
+                    db_entry = self.notion_uploader.get_user_by_id(final_result['file_id'])
+                    self.notion_uploader.update_user_properties(final_result['file_id'], {
+                        "is_visible": {"checkbox": True},
+                        "file_data": db_entry.get('properties', {}).get('file_data', {})
+                    })
+                except Exception as patch_err:
+                    print(f"WARNING: Failed to patch visibility properties: {patch_err}")
+
+                upload_session.update({
+                    'status': 'completed',
+                    'file_hash': final_result['file_hash'],
+                    'notion_file_id': final_result['file_id'],
+                    'completed_at': time.time()
+                })
+                if self.socketio:
+                    self.socketio.emit('upload_progress', {
+                        'upload_id': upload_session['upload_id'],
+                        'status': 'completed',
+                        'progress': 100,
+                        'bytes_uploaded': upload_session['file_size'],
+                        'total_size': upload_session['file_size'],
+                        'file_id': final_result['file_id']
+                    })
+            except Exception as e:
+                upload_session.update({
+                    'status': 'failed',
+                    'error': str(e),
+                    'failed_at': time.time()
+                })
+                if self.socketio:
+                    self.socketio.emit('upload_progress', {
+                        'upload_id': upload_session['upload_id'],
+                        'status': 'failed',
+                        'error': str(e)
+                    })
+
+        threading.Thread(target=_bg_task, daemon=True).start()
 
     def _store_part_in_database(
         self,
@@ -757,48 +824,82 @@ class NotionStreamingUploader:
                 # Store the original file's size so the manifest entry reflects
                 # the combined size of all parts rather than the JSON manifest
                 # payload itself.
-                metadata_db_entry = self.notion_uploader.add_file_to_user_database(
-                    database_id=user_database_id,
-                    filename=metadata_filename,
-                    file_size=file_size,
-                    file_hash=manifest_salted_hash,
-                    file_upload_id=metadata_result.get('file_upload_id'),
-                    is_public=False,
-                    salt=manifest_salt,
-                    original_filename=filename,
-                    file_url=metadata_file_url,
-                    is_manifest=True,
-                    folder_path=upload_session.get('folder_path', '/')
-                )
+                def _manifest_db_task():
+                    try:
+                        metadata_db_entry = self.notion_uploader.add_file_to_user_database(
+                            database_id=user_database_id,
+                            filename=metadata_filename,
+                            file_size=file_size,
+                            file_hash=manifest_salted_hash,
+                            file_upload_id=metadata_result.get('file_upload_id'),
+                            is_public=False,
+                            salt=manifest_salt,
+                            original_filename=filename,
+                            file_url=metadata_file_url,
+                            is_manifest=True,
+                            folder_path=upload_session.get('folder_path', '/')
+                        )
 
-                self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
-                    "is_visible": {"checkbox": True},
-                    "file_data": metadata_db_entry.get('properties', {}).get('file_data', {})
-                })
+                        self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
+                            "is_visible": {"checkbox": True},
+                            "file_data": metadata_db_entry.get('properties', {}).get('file_data', {})
+                        })
 
-                if self.notion_uploader.global_file_index_db_id:
-                    self.notion_uploader.add_file_to_index(
-                        salted_sha512_hash=manifest_salted_hash,
-                        file_page_id=metadata_db_entry['id'],
-                        user_database_id=user_database_id,
-                        original_filename=metadata_filename,
-                        is_public=False
-                    )
+                        if self.notion_uploader.global_file_index_db_id:
+                            self.notion_uploader.add_file_to_index(
+                                salted_sha512_hash=manifest_salted_hash,
+                                file_page_id=metadata_db_entry['id'],
+                                user_database_id=user_database_id,
+                                original_filename=metadata_filename,
+                                is_public=False
+                            )
+
+                        upload_session.update({
+                            'status': 'completed',
+                            'file_hash': manifest_salted_hash,
+                            'notion_file_id': metadata_db_entry['id'],
+                            'completed_at': time.time()
+                        })
+                        if self.socketio:
+                            self.socketio.emit('upload_progress', {
+                                'upload_id': upload_session['upload_id'],
+                                'status': 'completed',
+                                'progress': 100,
+                                'bytes_uploaded': file_size,
+                                'total_size': file_size,
+                                'file_id': metadata_db_entry['id']
+                            })
+                    except Exception as e:
+                        upload_session.update({
+                            'status': 'failed',
+                            'error': str(e),
+                            'failed_at': time.time()
+                        })
+                        if self.socketio:
+                            self.socketio.emit('upload_progress', {
+                                'upload_id': upload_session['upload_id'],
+                                'status': 'failed',
+                                'error': str(e)
+                            })
+
+                threading.Thread(target=_manifest_db_task, daemon=True).start()
 
                 print(f"INFO: File split and uploaded in {len(parts_metadata)} parts + metadata JSON.")
 
-                # Include bytes_uploaded and file_hash in the result so callers
-                # can report progress and offer download links just like the
-                # single-file path.  We use the manifest's salted hash since
-                # that entry is what gets indexed for downloads.
+                upload_session.update({
+                    'status': 'database_pending',
+                    'bytes_uploaded': file_size,
+                    'file_hash': manifest_salted_hash
+                })
+
                 upload_session.pop('uploaded_parts', None)
                 return {
-                    "status": "completed",
+                    "status": "uploaded",
                     "split": True,
                     "parts": parts_metadata,
-                    "metadata_file_id": metadata_db_entry['id'],
+                    "metadata_file_id": None,
                     "metadata_filename": metadata_filename,
-                    "file_id": metadata_db_entry['id'],
+                    "file_id": None,
                     "bytes_uploaded": file_size,
                     "file_hash": manifest_salted_hash,
                     "filename": metadata_filename,
@@ -882,24 +983,38 @@ class NotionStreamingUploader:
                 bytes_received
             )
             if db_integration:
-                # Database integration
+                # Start database integration in background and return immediately
+                file_hash = upload_session['hasher'].hexdigest()
+                salt = generate_salt()
+                salted_hash = calculate_salted_hash(file_hash, salt)
+
                 if self.socketio:
                     self.socketio.emit('upload_progress', {
                         'upload_id': upload_session['upload_id'],
-                        'status': 'finalizing',
-                        'progress': 95
+                        'status': 'uploaded',
+                        'progress': 100
                     })
-                final_result = self.complete_upload_with_database_integration(
-                    upload_session, notion_result['result']
+
+                self._start_database_integration_async(
+                    upload_session,
+                    notion_result['result'],
+                    file_hash,
+                    salt
                 )
+
                 upload_session.update({
-                    'status': 'completed',
+                    'status': 'database_pending',
                     'bytes_uploaded': bytes_received,
-                    'file_hash': final_result['file_hash'],
-                    'notion_file_id': final_result['file_id'],
-                    'completed_at': time.time()
+                    'file_hash': salted_hash
                 })
-                return final_result
+                return {
+                    'notion_file_upload_id': notion_result.get('file_upload_id'),
+                    'file_id': None,
+                    'status': 'uploaded',
+                    'filename': upload_session['filename'],
+                    'bytes_uploaded': bytes_received,
+                    'file_hash': salted_hash
+                }
             else:
                 # Only return Notion upload result, skip DB integration
                 upload_session.update({
@@ -941,29 +1056,41 @@ class NotionStreamingUploader:
 
             # Process stream with parallel uploads
             notion_result = parallel_processor.process_stream(stream_generator, resume_from=resume_from)
-            
+
             print(f"DEBUG: Parallel upload completed, starting database integration")
-            
+
             if db_integration:
-                # Database integration
+                file_hash = upload_session['hasher'].hexdigest()
+                salt = generate_salt()
+                salted_hash = calculate_salted_hash(file_hash, salt)
+
                 if self.socketio:
                     self.socketio.emit('upload_progress', {
                         'upload_id': upload_session['upload_id'],
-                        'status': 'finalizing',
-                        'progress': 95
+                        'status': 'uploaded',
+                        'progress': 100
                     })
-                final_result = self.complete_upload_with_database_integration(
-                    upload_session, notion_result
+
+                self._start_database_integration_async(
+                    upload_session,
+                    notion_result,
+                    file_hash,
+                    salt
                 )
+
                 upload_session.update({
-                    'status': 'completed',
+                    'status': 'database_pending',
                     'bytes_uploaded': upload_session['file_size'],
-                    'file_hash': final_result['file_hash'],
-                    'notion_file_id': final_result['file_id'],
-                    'completed_at': time.time()
+                    'file_hash': salted_hash
                 })
-                print(f"DEBUG: Multipart upload with database integration completed successfully")
-                return final_result
+                return {
+                    'notion_file_upload_id': notion_result.get('file_upload_id'),
+                    'file_id': None,
+                    'status': 'uploaded',
+                    'filename': upload_session['filename'],
+                    'bytes_uploaded': upload_session['file_size'],
+                    'file_hash': salted_hash
+                }
             else:
                 upload_session.update({
                     'status': 'completed',
