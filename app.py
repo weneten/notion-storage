@@ -514,7 +514,6 @@ def download_folder():
 
         prefix = folder_path.rstrip('/') + '/'
         files_to_zip = []
-        total_size = 0
         for entry in results:
             props = entry.get('properties', {})
             name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
@@ -527,9 +526,6 @@ def download_folder():
                 continue
             if entry_path != folder_path and not entry_path.startswith(prefix):
                 continue
-
-            size = props.get('filesize', {}).get('number', 0)
-            total_size += size
 
             rel_path = entry_path[len(folder_path):].lstrip('/') if entry_path.startswith(folder_path) else ''
             orig_name = (
@@ -573,8 +569,6 @@ def download_folder():
         response = Response(stream_with_context(z), mimetype='application/zip')
         zip_name = folder_path.strip('/').split('/')[-1] or 'root'
         response.headers['Content-Disposition'] = f'attachment; filename="{zip_name}.zip"'
-        if total_size > 0:
-            response.headers['Content-Length'] = str(total_size)
         return response
     except Exception as e:
         return str(e), 500
