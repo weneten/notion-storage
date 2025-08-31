@@ -23,6 +23,7 @@ import string
 import json
 from flask_socketio import emit
 from collections import defaultdict
+import zipstream
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -461,6 +462,53 @@ def download_file(filename):
             return "File not found in database", 404
     except Exception as e:
         return str(e), 500
+
+
+@app.route('/download_folder')
+@login_required
+def download_folder_route():
+    """Stream a ZIP of all files in the requested folder."""
+    try:
+        folder = request.args.get('folder', '/')
+        user_db_id = uploader.get_user_database_id(current_user.id)
+        if not user_db_id:
+            return "User database not found", 404
+
+        files_data = uploader.get_files_from_user_database(user_db_id)
+        results = files_data.get('results', [])
+
+        entries = []
+        for file_data in results:
+            props = file_data.get('properties', {})
+            is_folder = props.get('is_folder', {}).get('checkbox', False)
+            folder_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            if not is_folder and folder_path == folder:
+                name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'file')
+                entries.append({'id': file_data.get('id'), 'name': name})
+
+        z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED)
+        for entry in entries:
+            file_page_id = entry['id']
+            filename = entry['name']
+
+            def file_iter(file_page_id=file_page_id, filename=filename):
+                metadata = uploader.get_file_download_metadata(file_page_id, filename)
+                if not metadata.get('url'):
+                    return
+                yield from uploader.stream_file_from_notion(file_page_id, filename)
+
+            z.write_iter(filename, file_iter())
+
+        zip_name = (folder.strip('/') or 'root').replace('/', '_') + '.zip'
+        response = Response(stream_with_context(z), mimetype='application/zip')
+        response.headers['Content-Disposition'] = f'attachment; filename="{zip_name}"'
+        return response
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"DEBUG: Error zipping folder: {str(e)}\n{error_trace}")
+        return f"Error zipping folder: {str(e)}", 500
 
 
 @app.route('/d/<salted_sha512_hash>')
