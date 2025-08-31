@@ -490,13 +490,17 @@ const uploadFile = async () => {
         progressContainer.innerHTML = '';
     }
 
+    // Create progress bars for all files immediately
+    const fileEntries = files.map(file => ({
+        file,
+        elements: createProgressBarElements(file.name, file.size)
+    }));
+
     const maxConcurrent = 3;
     const executing = [];
     const allUploads = [];
 
-    for (const file of files) {
-        const elements = createProgressBarElements(file.name, file.size);
-
+    for (const { file, elements } of fileEntries) {
         const uploadTask = async () => {
             const progressCallback = (progress, bytesUploaded) => {
                 updateIndividualProgressBar(elements, Math.floor(progress), bytesUploaded);
