@@ -4,6 +4,9 @@
  * Addresses performance issues by eliminating artificial delays and reducing overhead
  */
 
+// Track uploads awaiting database integration before refreshing UI
+window.pendingUploads = window.pendingUploads || new Set();
+
 // Essential utility functions for UI updates
 function showStatus(message, type) {
     const messageContainer = document.getElementById('messageContainer');
@@ -527,7 +530,10 @@ const uploadFile = async () => {
             }
 
             try {
-                await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
+                const result = await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
+                if (result && result.upload_id && window.pendingUploads) {
+                    window.pendingUploads.add(result.upload_id);
+                }
                 showStatus(`File "${file.name}" uploaded successfully!`, 'success');
             } catch (error) {
                 console.error('Upload error:', error);
@@ -558,11 +564,7 @@ const uploadFile = async () => {
         uploadForm.reset();
     }
 
-    if (typeof refreshFileList === 'function') {
-        refreshFileList();
-    } else if (typeof loadFiles === 'function') {
-        loadFiles();
-    }
+    showStatus('Finalizing uploads...', 'info');
 
     setTimeout(() => {
         if (progressContainer) {
@@ -609,13 +611,12 @@ async function resumeFailedUpload() {
     };
     const statusCallback = (message, type) => { showStatus(message, type); };
     try {
-        await streamingUploader.resumeUpload(uploadId, progressCallback, statusCallback);
-        showStatus(`File "${file.name}" uploaded successfully!`, 'success');
-        if (typeof refreshFileList === 'function') {
-            refreshFileList();
-        } else if (typeof loadFiles === 'function') {
-            loadFiles();
+        const result = await streamingUploader.resumeUpload(uploadId, progressCallback, statusCallback);
+        if (result && result.upload_id && window.pendingUploads) {
+            window.pendingUploads.add(result.upload_id);
         }
+        showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+        showStatus('Finalizing uploads...', 'info');
     } catch (error) {
         console.error('Resume upload error:', error);
         showStatus(`Resume failed: ${error.message}`, 'error');
