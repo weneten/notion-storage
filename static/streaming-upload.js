@@ -74,6 +74,47 @@ function showRetryButton() {
     container.appendChild(retryBtn);
 }
 
+// Create a progress bar element for a specific file
+function createProgressBarElements(filename, totalBytes) {
+    const container = document.createElement('div');
+    container.className = 'progress-item';
+
+    const bar = document.createElement('div');
+    bar.className = 'progress-bar';
+
+    const text = document.createElement('span');
+    text.className = 'progress-text';
+    text.textContent = '0%';
+    bar.appendChild(text);
+
+    container.appendChild(bar);
+
+    const subText = document.createElement('p');
+    subText.className = 'progress-subtext';
+    subText.textContent = `${filename}: 0/${streamingUploader ? streamingUploader.formatFileSize(totalBytes) : totalBytes}`;
+    container.appendChild(subText);
+
+    const progressContainer = document.getElementById('progressBars');
+    if (progressContainer) {
+        progressContainer.appendChild(container);
+    }
+
+    return { container, bar, text, subText, filename, totalBytes };
+}
+
+// Update a specific progress bar
+function updateIndividualProgressBar(elements, percentage, uploadedBytes) {
+    if (!elements) return;
+    elements.bar.style.width = percentage + '%';
+    elements.text.textContent = percentage + '%';
+    if (uploadedBytes != null) {
+        const totalFormatted = streamingUploader ? streamingUploader.formatFileSize(elements.totalBytes) : elements.totalBytes;
+        const uploadedFormatted = streamingUploader ? streamingUploader.formatFileSize(uploadedBytes) : uploadedBytes;
+        elements.subText.textContent = `${elements.filename}: ${uploadedFormatted}/${totalFormatted}`;
+    }
+}
+
+// Legacy single progress bar updater (retained for backwards compatibility)
 function updateProgressBar(percentage, statusText) {
     const progressBar = document.getElementById('progressBar');
     const progressText = document.getElementById('progressText');
@@ -444,51 +485,66 @@ const uploadFile = async () => {
         return;
     }
 
-    const progressContainer = document.getElementById('progressBarContainer');
+    const progressContainer = document.getElementById('progressBars');
     if (progressContainer) {
-        progressContainer.style.display = 'block';
+        progressContainer.innerHTML = '';
     }
+
+    const maxConcurrent = 3;
+    const executing = [];
+    const allUploads = [];
 
     for (const file of files) {
-        updateProgressBar(0, 'Preparing upload...');
+        const elements = createProgressBarElements(file.name, file.size);
 
-        const progressCallback = (progress, bytesUploaded) => {
-            updateProgressBar(
-                Math.floor(progress),
-                `Uploading: ${streamingUploader.formatFileSize(bytesUploaded)}/${streamingUploader.formatFileSize(file.size)}`
-            );
-        };
+        const uploadTask = async () => {
+            const progressCallback = (progress, bytesUploaded) => {
+                updateIndividualProgressBar(elements, Math.floor(progress), bytesUploaded);
+            };
 
-        const statusCallback = (message, type) => {
-            showStatus(message, type);
-        };
+            const statusCallback = (message, type) => {
+                showStatus(message, type);
+            };
 
-        // Determine target folder path for this file
-        let folderPath = window.currentFolder || '/';
-        if (file.webkitRelativePath) {
-            const parts = file.webkitRelativePath.split('/');
-            parts.pop(); // remove filename
-            const relativeFolder = parts.join('/');
-            if (relativeFolder) {
-                // Ensure base path always ends with a single slash before appending subfolder
-                const base = (window.currentFolder && window.currentFolder !== '/')
-                    ? window.currentFolder.replace(/\/$/, '') + '/'
-                    : '/';
-                // Join base and relative folder, collapsing any accidental double slashes
-                folderPath = `${base}${relativeFolder}`.replace(/\/+/g, '/');
+            // Determine target folder path for this file
+            let folderPath = window.currentFolder || '/';
+            if (file.webkitRelativePath) {
+                const parts = file.webkitRelativePath.split('/');
+                parts.pop(); // remove filename
+                const relativeFolder = parts.join('/');
+                if (relativeFolder) {
+                    // Ensure base path always ends with a single slash before appending subfolder
+                    const base = (window.currentFolder && window.currentFolder !== '/')
+                        ? window.currentFolder.replace(/\/$/, '') + '/'
+                        : '/';
+                    // Join base and relative folder, collapsing any accidental double slashes
+                    folderPath = `${base}${relativeFolder}`.replace(/\/+/g, '/');
+                }
             }
-        }
 
-        try {
-            await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
-            showStatus(`File "${file.name}" uploaded successfully!`, 'success');
-        } catch (error) {
-            console.error('Upload error:', error);
-            showStatus(`Upload failed: ${error.message}`, 'error');
-            showRetryButton();
-            break;
+            try {
+                await streamingUploader.uploadFile(file, progressCallback, statusCallback, folderPath);
+                showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+            } catch (error) {
+                console.error('Upload error:', error);
+                showStatus(`Upload failed: ${error.message}`, 'error');
+                showRetryButton();
+            }
+        };
+
+        const promise = uploadTask();
+        allUploads.push(promise);
+        executing.push(promise);
+        promise.finally(() => {
+            const index = executing.indexOf(promise);
+            if (index > -1) executing.splice(index, 1);
+        });
+        if (executing.length >= maxConcurrent) {
+            await Promise.race(executing);
         }
     }
+
+    await Promise.all(allUploads);
 
     const uploadForm = document.getElementById('uploadForm');
     if (uploadForm) {
@@ -503,7 +559,7 @@ const uploadFile = async () => {
 
     setTimeout(() => {
         if (progressContainer) {
-            progressContainer.style.display = 'none';
+            progressContainer.innerHTML = '';
         }
     }, 3000);
 };
