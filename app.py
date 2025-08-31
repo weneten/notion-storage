@@ -1142,6 +1142,68 @@ def get_entries_api():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/files/search')
+@login_required
+def search_files_api():
+    """Search for files matching a query string."""
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        query = request.args.get('q', '').lower()
+        files_response = uploader.get_files_from_user_database(user_database_id)
+        files = files_response.get('results', [])
+
+        entries = []
+        for file_data in files:
+            try:
+                properties = file_data.get('properties', {})
+                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                size = properties.get('filesize', {}).get('number', 0)
+                file_id = file_data.get('id')
+                is_public = properties.get('is_public', {}).get('checkbox', False)
+                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                if not is_visible:
+                    continue
+                if is_folder:
+                    if query in name.lower():
+                        full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
+                        entries.append({
+                            'type': 'folder',
+                            'name': name,
+                            'id': file_id,
+                            'full_path': full_path,
+                            'size': 0
+                        })
+                else:
+                    if query in name.lower():
+                        entries.append({
+                            'type': 'file',
+                            'name': name,
+                            'size': size,
+                            'id': file_id,
+                            'is_public': is_public,
+                            'file_hash': file_hash,
+                            'folder': folder_path
+                        })
+            except Exception as e:
+                print(f"Error processing file data in search_files_api: {e}")
+                continue
+
+        return jsonify({'entries': entries})
+
+    except Exception as e:
+        print(f"Error in /api/files/search: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/folders')
 @login_required
 def list_folders_api():

@@ -565,13 +565,31 @@ document.addEventListener('DOMContentLoaded', function () {
             }
         });
     }
+
+    const searchBtn = document.getElementById('searchButton');
+    const searchInput = document.getElementById('searchInput');
+    if (searchBtn && searchInput) {
+        searchBtn.addEventListener('click', () => {
+            const query = searchInput.value.trim();
+            if (query) {
+                searchFiles(query);
+            } else {
+                loadFiles();
+            }
+        });
+        searchInput.addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') {
+                searchBtn.click();
+            }
+        });
+    }
 });
 
 // Function to refresh file list - WITH DIAGNOSTIC LOGGING
 async function loadFiles() {
     try {
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
-    console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
+        console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
 
         const folderParam = encodeURIComponent(window.currentFolder || '/');
         const response = await fetch(`/api/entries?folder=${folderParam}`);
@@ -586,168 +604,153 @@ async function loadFiles() {
             throw new Error('Invalid response format');
         }
 
-        console.log('🔍 DIAGNOSTIC: Entries array length:', data.entries.length);
-        if (data.entries.length > 0) {
-            console.log('🔍 DIAGNOSTIC: First entry structure:', data.entries[0]);
-
-            // Check what properties each file has for buttons
-            data.entries.filter(e => e.type === 'file').forEach((file, index) => {
-                console.log(`🔍 DIAGNOSTIC: File ${index + 1} - ${file.name}:`, {
-                    id: file.id,
-                    file_hash: file.file_hash,
-                    is_public: file.is_public,
-                    has_toggle_data: !!(file.id && file.file_hash !== undefined && file.is_public !== undefined),
-                    has_delete_data: !!file.id
-                });
-            });
-        }
-
-        const filesContainer = document.getElementById('files-container');
-        if (!filesContainer) {
-            console.error('🚨 DIAGNOSTIC: Files container not found');
-            return;
-        }
-
-        if (data.entries.length === 0) {
-            filesContainer.innerHTML = `
-                <div class="alert alert-info text-center">
-                    <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
-                </div>
-            `;
-            return;
-        }
-
-        console.log('✅ DIAGNOSTIC: ISSUE FIXED - Template now includes Public Access column and Delete button!');
-        console.log('🔍 DIAGNOSTIC: Generating COMPLETE table HTML (with toggle and delete)...');
-
-        // Generate table HTML (FIXED VERSION - COMPLETE WITH ALL COLUMNS AND BUTTONS)
-        let tableHTML = `
-            <div class="table-responsive">
-                <table class="table" id="fileTable">
-                    <thead>
-                        <tr>
-                            <th></th>
-                            <th><i class="fas fa-file mr-1"></i> Filename</th>
-                            <th><i class="fas fa-weight mr-1"></i> Size</th>
-                            <th>Folder</th>
-                            <th><i class="fas fa-link mr-1"></i> Public Link</th>
-                            <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
-                            <th><i class="fas fa-cogs mr-1"></i> Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        `;
-
-        data.entries.forEach(entry => {
-            if (entry.type === 'folder') {
-                tableHTML += `
-                <tr class="folder-row" data-folder-path="${entry.full_path}">
-                    <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
-                    <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
-                    <td class="filesize-cell">${formatFileSize(entry.size)}</td>
-                    <td>${entry.full_path}</td>
-                    <td></td>
-                    <td></td>
-                    <td>
-                        <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
-                            <i class="fas fa-folder-open mr-1"></i>Open
-                        </a>
-                        <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}">
-                            <i class="fas fa-edit mr-1"></i>Rename
-                        </button>
-                        <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}">
-                            <i class="fas fa-trash-alt mr-1"></i>Delete
-                        </button>
-                    </td>
-                </tr>`;
-            } else {
-                const fileId = entry.id || '';
-                const fileHash = entry.file_hash || '';
-                const isPublic = entry.is_public || false;
-                const fileInfo = getFileTypeInfo(entry.name);
-
-                const viewButtonHTML = fileInfo.isViewable && fileHash ?
-                    createViewButton(fileHash, fileInfo.type, entry.name) : '';
-
-                tableHTML += `
-                <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
-                    <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
-                    <td>
-                        <span style="margin-right: 8px;">${fileInfo.icon}</span>
-                        <strong>${entry.name}</strong>
-                    </td>
-                    <td class="filesize-cell">${formatFileSize(entry.size)}</td>
-                    <td>${entry.folder}</td>
-                    <td>
-                        ${fileHash ?
-                    `<a href="/d/${fileHash}" target="_blank" class="public-link">
-                                <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0,10)}...
-                            </a>` :
-                    '<span class="text-muted">N/A</span>'}
-                    </td>
-                    <td>
-                        <label class="switch">
-                            <input type="checkbox" class="public-toggle" data-file-id="${fileId}" data-file-hash="${fileHash}" ${isPublic ? 'checked' : ''}>
-                            <span class="slider round"></span>
-                        </label>
-                    </td>
-                    <td class="action-buttons">
-                        ${viewButtonHTML}
-                        <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
-                            <i class="fas fa-download mr-1"></i>Download
-                        </a>
-                        <div class="btn-group">
-                            <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                <i class="fas fa-bars"></i>
-                            </button>
-                            <div class="dropdown-menu dropdown-menu-right">
-                                <button type="button" class="dropdown-item rename-btn" data-file-id="${fileId}"><i class="fas fa-edit mr-1"></i>Rename</button>
-                                <button type="button" class="dropdown-item move-btn" data-file-id="${fileId}"><i class="fas fa-folder-open mr-1"></i>Move</button>
-                                <button type="button" class="dropdown-item delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
-                            </div>
-                        </div>
-                    </td>
-                </tr>`;
-            }
-        });
-
-        tableHTML += `</tbody></table></div>`;
-        filesContainer.innerHTML = tableHTML;        // DIAGNOSTIC: Verify what elements were actually created
-        const toggles = document.querySelectorAll('.public-toggle');
-        const deleteButtons = document.querySelectorAll('.delete-btn');
-
-        console.log('✅ DIAGNOSTIC: CONFIRMED FIX - Created elements:', {
-            toggleCount: toggles.length,
-            deleteButtonCount: deleteButtons.length,
-            expectedCount: data.entries.length,
-            SUCCESS: 'All toggle switches and delete buttons created!'
-        });
-
-        // Set up event handlers for the new elements
-        setupFileActionEventHandlers();
-        setupFolderActionEventHandlers();
-
-        // Initialize bulk selection handlers for new checkboxes
-        document.querySelectorAll('.select-item').forEach(cb => {
-            cb.addEventListener('change', updateBulkActionButtons);
-        });
-        updateBulkActionButtons();
-
-        // Reinitialize file type icons for newly loaded content
-        if (typeof initializeFileTypeIcons === 'function') {
-            initializeFileTypeIcons();
-        }
-
-        // Trigger content update event for modal system
-        document.dispatchEvent(new CustomEvent('contentUpdated'));
-
-        console.log('🔍 DIAGNOSTIC: File list refresh completed (WITH ALL BUTTONS WORKING)');
+        renderEntries(data.entries);
     } catch (error) {
         console.error('🚨 DIAGNOSTIC: Error loading files:', error);
         showStatus('Failed to refresh file list: ' + error.message, 'error');
     }
 }
 
+function renderEntries(entries) {
+    console.log('🔍 DIAGNOSTIC: Entries array length:', entries.length);
+    if (entries.length > 0) {
+        console.log('🔍 DIAGNOSTIC: First entry structure:', entries[0]);
+    }
+
+    const filesContainer = document.getElementById('files-container');
+    if (!filesContainer) {
+        console.error('🚨 DIAGNOSTIC: Files container not found');
+        return;
+    }
+
+    if (entries.length === 0) {
+        filesContainer.innerHTML = `
+            <div class="alert alert-info text-center">
+                <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
+            </div>
+        `;
+        return;
+    }
+
+    let tableHTML = `
+        <div class="table-responsive">
+            <table class="table" id="fileTable">
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th><i class="fas fa-file mr-1"></i> Filename</th>
+                        <th><i class="fas fa-weight mr-1"></i> Size</th>
+                        <th>Folder</th>
+                        <th><i class="fas fa-link mr-1"></i> Public Link</th>
+                        <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
+                        <th><i class="fas fa-cogs mr-1"></i> Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+
+    entries.forEach(entry => {
+        if (entry.type === 'folder') {
+            tableHTML += `
+            <tr class="folder-row" data-folder-path="${entry.full_path}">
+                <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
+                <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                <td class="filesize-cell">${formatFileSize(entry.size)}</td>
+                <td>${entry.full_path}</td>
+                <td></td>
+                <td></td>
+                <td>
+                    <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-folder-open mr-1"></i>Open
+                    </a>
+                    <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}">
+                        <i class="fas fa-edit mr-1"></i>Rename
+                    </button>
+                    <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}">
+                        <i class="fas fa-trash-alt mr-1"></i>Delete
+                    </button>
+                </td>
+            </tr>`;
+        } else {
+            const fileId = entry.id || '';
+            const fileHash = entry.file_hash || '';
+            const isPublic = entry.is_public || false;
+            const fileInfo = getFileTypeInfo(entry.name);
+            const viewButtonHTML = fileInfo.isViewable && fileHash ? createViewButton(fileHash, fileInfo.type, entry.name) : '';
+
+            tableHTML += `
+            <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
+                <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
+                <td>
+                    <span style="margin-right: 8px;">${fileInfo.icon}</span>
+                    <strong>${entry.name}</strong>
+                </td>
+                <td class="filesize-cell">${formatFileSize(entry.size)}</td>
+                <td>${entry.folder}</td>
+                <td>
+                    ${fileHash ?
+                `<a href="/d/${fileHash}" target="_blank" class="public-link">
+                        <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0,10)}...
+                    </a>` :
+                '<span class="text-muted">N/A</span>'}
+                </td>
+                <td>
+                    <label class="switch">
+                        <input type="checkbox" class="public-toggle" data-file-id="${fileId}" data-file-hash="${fileHash}" ${isPublic ? 'checked' : ''}>
+                        <span class="slider round"></span>
+                    </label>
+                </td>
+                <td class="action-buttons">
+                    ${viewButtonHTML}
+                    <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-download mr-1"></i>Download
+                    </a>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                            <i class="fas fa-bars"></i>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-right">
+                            <button type="button" class="dropdown-item rename-btn" data-file-id="${fileId}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                            <button type="button" class="dropdown-item move-btn" data-file-id="${fileId}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                            <button type="button" class="dropdown-item delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                        </div>
+                    </div>
+                </td>
+            </tr>`;
+        }
+    });
+
+    tableHTML += `</tbody></table></div>`;
+    filesContainer.innerHTML = tableHTML;
+
+    setupFileActionEventHandlers();
+    setupFolderActionEventHandlers();
+    document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
+    updateBulkActionButtons();
+
+    if (typeof initializeFileTypeIcons === 'function') {
+        initializeFileTypeIcons();
+    }
+
+    document.dispatchEvent(new CustomEvent('contentUpdated'));
+}
+
+async function searchFiles(query) {
+    try {
+        const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`);
+        if (!response.ok) {
+            throw new Error('Failed to search files');
+        }
+        const data = await response.json();
+        if (!data.entries) {
+            throw new Error('Invalid response format');
+        }
+        renderEntries(data.entries);
+    } catch (error) {
+        console.error('🚨 DIAGNOSTIC: Error searching files:', error);
+        showStatus('Failed to search files: ' + error.message, 'error');
+    }
+}
 // Utility function to format file sizes (matching the server-side filter)
 function formatFileSize(bytes, decimals = 2) {
     if (bytes === 0) return '0 Bytes';
