@@ -528,40 +528,43 @@ def download_folder():
                 continue
 
             rel_path = entry_path[len(folder_path):].lstrip('/') if entry_path.startswith(folder_path) else ''
+            orig_name = (
+                props.get('Original Filename', {})
+                .get('title', [{}])[0]
+                .get('text', {})
+                .get('content', name)
+            )
             files_to_zip.append(
                 {
                     'id': entry.get('id'),
                     'name': name,
                     'rel_path': rel_path,
                     'is_manifest': is_manifest,
+                    'orig_name': orig_name,
                 }
             )
 
         z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED)
 
         for item in files_to_zip:
+            archive_name = (
+                os.path.join(item['rel_path'], item['orig_name'])
+                if item['rel_path']
+                else item['orig_name']
+            )
             if item['is_manifest']:
-                manifest_metadata = fetch_download_metadata(item['id'], item['name'])
-                manifest_url = manifest_metadata.get('url', '')
-                if not manifest_url:
-                    continue
-                manifest = fetch_json_from_url(manifest_url)
-                orig_name = manifest.get('original_filename', item['name'])
-                archive_name = os.path.join(item['rel_path'], orig_name) if item['rel_path'] else orig_name
                 z.write_iter(archive_name, uploader.stream_multi_part_file(item['id']))
             else:
-                file_metadata = fetch_download_metadata(item['id'], item['name'])
-                if not file_metadata.get('url'):
-                    continue
-                archive_name = os.path.join(item['rel_path'], item['name']) if item['rel_path'] else item['name']
-                z.write_iter(
-                    archive_name,
-                    uploader.stream_file_from_notion(
-                        item['id'],
-                        item['name'],
-                        download_url=file_metadata['url'],
-                    ),
-                )
+                def file_generator(file_id=item['id'], filename=item['orig_name']):
+                    metadata = fetch_download_metadata(file_id, filename)
+                    url = metadata.get('url')
+                    if not url:
+                        return
+                    yield from uploader.stream_file_from_notion(
+                        file_id, filename, download_url=url
+                    )
+
+                z.write_iter(archive_name, file_generator())
 
         response = Response(stream_with_context(z), mimetype='application/zip')
         zip_name = folder_path.strip('/').split('/')[-1] or 'root'
