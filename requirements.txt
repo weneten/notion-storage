@@ -10,3 +10,4 @@ gunicorn
 eventlet
 psutil==5.9.8
 boto3
+zipstream-new
