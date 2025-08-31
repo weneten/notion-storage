@@ -1237,11 +1237,18 @@ class StreamingUploadManager:
         # Process with session-specific lock to prevent concurrent processing of same upload
         with session_lock:
             print(f"🔒 THREAD SAFETY: Acquired session lock for {upload_id}")
-            
+
             # Additional check to prevent race conditions
-            if upload_session.get('status') == 'processing':
+            current_status = upload_session.get('status')
+            if current_status == 'processing':
                 raise ValueError(f"Upload session {upload_id} is already being processed")
-            
+
+            # Reject attempts to re-process uploads in terminal states
+            if current_status in {'finalizing', 'completed', 'failed'}:
+                raise ValueError(
+                    f"Upload session {upload_id} is {current_status} and cannot be resumed"
+                )
+
             upload_session['status'] = 'processing'
             upload_session['processing_thread'] = threading.current_thread().ident
             
@@ -1279,6 +1286,13 @@ class StreamingUploadManager:
         status = self.get_upload_status(upload_id)
         if not status:
             raise ValueError(f"Upload session {upload_id} not found")
+
+        current_status = status.get('status')
+        if current_status in {'finalizing', 'completed', 'failed'}:
+            raise ValueError(
+                f"Upload session {upload_id} is {current_status} and cannot be resumed"
+            )
+
         resume_from = status.get('bytes_uploaded', 0)
         return self.process_upload_stream(upload_id, stream_generator, resume_from=resume_from)
     
