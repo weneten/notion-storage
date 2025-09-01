@@ -214,14 +214,12 @@
                 showStatus(`File uploaded successfully. ID: ${data.file_id}`, 'success');
                 if (data.upload_id && window.pendingUploads) {
                     window.pendingUploads.delete(data.upload_id);
-                    if (window.pendingUploads.size === 0) {
-                        setTimeout(() => {
-                            if (typeof loadFiles === 'function') {
-                                loadFiles();
-                            }
-                        }, 500);
-                    }
                 }
+                setTimeout(() => {
+                    if (typeof loadFiles === 'function') {
+                        loadFiles();
+                    }
+                }, 500);
             }
         });
 
