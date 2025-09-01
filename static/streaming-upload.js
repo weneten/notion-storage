@@ -142,11 +142,18 @@ function updateProgressBar(percentage, statusText) {
 // Bulk selection helpers
 const deleteSelectedBtn = document.getElementById('deleteSelectedButton');
 const moveSelectedBtn = document.getElementById('moveSelectedButton');
+const selectAllBtn = document.getElementById('selectAllButton');
 
 function updateBulkActionButtons() {
-    const anyChecked = document.querySelectorAll('.select-item:checked').length > 0;
+    const checkboxes = document.querySelectorAll('.select-item');
+    const checkedBoxes = document.querySelectorAll('.select-item:checked');
+    const anyChecked = checkedBoxes.length > 0;
     if (deleteSelectedBtn) deleteSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
     if (moveSelectedBtn) moveSelectedBtn.style.display = anyChecked ? 'inline-block' : 'none';
+    if (selectAllBtn) {
+        const allChecked = checkboxes.length > 0 && checkedBoxes.length === checkboxes.length;
+        selectAllBtn.textContent = allChecked ? 'Deselect All' : 'Select All';
+    }
 }
 
 class StreamingFileUploader {
@@ -660,6 +667,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 searchBtn.click();
             }
         });
+    }
+
+    if (selectAllBtn && !selectAllBtn.dataset.listenerAdded) {
+        selectAllBtn.addEventListener('click', () => {
+            const checkboxes = document.querySelectorAll('.select-item');
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+            checkboxes.forEach(cb => { cb.checked = !allChecked; });
+            updateBulkActionButtons();
+        });
+        selectAllBtn.dataset.listenerAdded = 'true';
     }
 });
 
