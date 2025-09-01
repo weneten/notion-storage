@@ -1594,13 +1594,21 @@ def delete_folder():
         # sort deepest first
         to_delete.sort(key=lambda e: e.get('properties', {}).get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/').count('/'), reverse=True)
 
-        for entry in to_delete:
+        def _delete_entry(entry):
             e_id = entry.get('id')
             is_folder = entry.get('properties', {}).get('is_folder', {}).get('checkbox', False)
-            if is_folder:
-                uploader.delete_file_from_user_database(e_id)
-            else:
-                streaming_upload_manager.uploader.delete_file_entry(e_id, user_database_id)
+            try:
+                if is_folder:
+                    uploader.delete_file_from_user_database(e_id)
+                else:
+                    streaming_upload_manager.uploader.delete_file_entry(e_id, user_database_id)
+            except Exception as e:
+                print(f"Error deleting entry {e_id}: {e}")
+
+        if to_delete:
+            max_workers = min(10, len(to_delete))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                list(executor.map(_delete_entry, to_delete))
 
         uploader.delete_file_from_user_database(folder_id)
         return jsonify({'status': 'success'})
@@ -1661,11 +1669,16 @@ def delete_selected():
                 'independent_file_count': len(independent_files)
             })
 
-        for file_id in file_ids:
+        def _delete_file(file_id: str) -> None:
             try:
                 streaming_upload_manager.uploader.delete_file_entry(file_id, user_database_id)
             except Exception as e:
                 print(f"Error deleting file {file_id}: {e}")
+
+        if file_ids:
+            max_workers = min(10, len(file_ids))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                list(executor.map(_delete_file, file_ids))
 
         for folder_id in folder_ids:
             try:
@@ -1684,13 +1697,22 @@ def delete_selected():
                     if path == folder_path or path.startswith(prefix):
                         to_delete.append(entry)
                 to_delete.sort(key=lambda e: e.get('properties', {}).get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/').count('/'), reverse=True)
-                for entry in to_delete:
+
+                def _delete_entry(entry):
                     e_id = entry.get('id')
                     is_folder = entry.get('properties', {}).get('is_folder', {}).get('checkbox', False)
-                    if is_folder:
-                        uploader.delete_file_from_user_database(e_id)
-                    else:
-                        streaming_upload_manager.uploader.delete_file_entry(e_id, user_database_id)
+                    try:
+                        if is_folder:
+                            uploader.delete_file_from_user_database(e_id)
+                        else:
+                            streaming_upload_manager.uploader.delete_file_entry(e_id, user_database_id)
+                    except Exception as e:
+                        print(f"Error deleting entry {e_id}: {e}")
+
+                if to_delete:
+                    max_workers = min(10, len(to_delete))
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        list(executor.map(_delete_entry, to_delete))
                 uploader.delete_file_from_user_database(folder_id)
             except Exception as e:
                 print(f"Error deleting folder {folder_id}: {e}")
