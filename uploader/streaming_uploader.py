@@ -156,7 +156,7 @@ class NotionStreamingUploader:
                 return False
 
         if parts:
-            max_workers = min(5, len(parts))
+            max_workers = min(10, len(parts))
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(_delete_part, part) for part in parts]
                 for future in concurrent.futures.as_completed(futures):
@@ -287,7 +287,7 @@ class NotionStreamingUploader:
                 return False
 
         if parts:
-            max_workers = min(5, len(parts))
+            max_workers = min(10, len(parts))
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = [executor.submit(_delete_part, part) for part in parts]
                 for future in concurrent.futures.as_completed(futures):
