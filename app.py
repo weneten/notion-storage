@@ -1150,21 +1150,26 @@ def files_sync():
         folder = request.args.get('folder', '/')
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
-            return jsonify({'entries': [], 'next_cursor': None})
+            return jsonify({'entries': [], 'next_cursor': None, 'pending': False})
 
         results = get_cached_results(current_user.id)
         if results is None:
+            # Fallback to direct fetch to avoid missing cache in multi-worker setups
             files_data = uploader.get_files_from_user_database(user_database_id)
             results = files_data.get('results', [])
             set_cached_results(current_user.id, results)
         else:
-            threading.Thread(target=refresh_user_cache, args=(current_user.id, user_database_id), daemon=True).start()
+            threading.Thread(
+                target=refresh_user_cache,
+                args=(current_user.id, user_database_id),
+                daemon=True,
+            ).start()
 
         entries = build_entries_from_results(results, folder)
         PAGE_SIZE = 50
         page = entries[cursor:cursor + PAGE_SIZE]
         next_cursor = cursor + PAGE_SIZE if cursor + PAGE_SIZE < len(entries) else None
-        return jsonify({'entries': page, 'next_cursor': next_cursor})
+        return jsonify({'entries': page, 'next_cursor': next_cursor, 'pending': False})
     except Exception as e:
         print(f"Error in files_sync: {e}")
         return jsonify({'error': str(e)}), 500
