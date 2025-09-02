@@ -487,6 +487,8 @@ const uploadFile = async () => {
         loadFiles();
     }
 
+    triggerCacheRefresh();
+
     setTimeout(() => {
         if (progressContainer) {
             progressContainer.style.display = 'none';
@@ -525,6 +527,7 @@ async function resumeFailedUpload() {
         } else if (typeof loadFiles === 'function') {
             loadFiles();
         }
+        triggerCacheRefresh();
     } catch (error) {
         console.error('Resume upload error:', error);
         showStatus(`Resume failed: ${error.message}`, 'error');
@@ -913,6 +916,7 @@ function setupFileActionEventHandlers() {
                 if (responseData.status === 'success') {
                     this.closest('tr').remove();
                     showStatus('File deleted successfully', 'success');
+                    triggerCacheRefresh();
 
                     // Check if there are any remaining files
                     if (document.querySelectorAll('#fileTable tbody tr').length === 0) {
@@ -983,6 +987,7 @@ function setupFileActionEventHandlers() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ file_id: fileId, filename: newName })
             });
+            triggerCacheRefresh();
             location.reload();
         });
     });
@@ -1015,6 +1020,7 @@ function setupFolderActionEventHandlers() {
                     return;
                 }
                 loadFiles();
+                triggerCacheRefresh();
             } catch (error) {
                 console.error('Rename folder error:', error);
                 alert('Error renaming folder: ' + error.message);
@@ -1061,6 +1067,7 @@ function setupFolderActionEventHandlers() {
                 }
             }
             loadFiles();
+            triggerCacheRefresh();
         });
     });
 }
@@ -1116,6 +1123,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         body: JSON.stringify({ file_ids: moveTargets.fileIds, folder_ids: moveTargets.folderIds, destination: path })
                     });
                 }
+                triggerCacheRefresh();
                 location.reload();
             } catch (error) {
                 console.error('🚨 DIAGNOSTIC: Error moving file', error);
@@ -1124,6 +1132,85 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 });
+
+// ---------------------------------------------------------------------------
+// Progressive rendering helpers
+// ---------------------------------------------------------------------------
+async function fetchMorePages() {
+    if (window.nextCursor === null) {
+        const spinner = document.getElementById('loading-spinner');
+        if (spinner) spinner.style.display = 'none';
+        return;
+    }
+    try {
+        const folderParam = encodeURIComponent(window.currentFolder || '/');
+        const resp = await fetch(`/api/files/sync?cursor=${window.nextCursor}&folder=${folderParam}`);
+        if (!resp.ok) throw new Error('Failed to fetch next page');
+        const data = await resp.json();
+        appendEntries(data.entries || []);
+        window.nextCursor = data.next_cursor;
+        if (window.nextCursor !== null) {
+            fetchMorePages();
+        } else {
+            const spinner = document.getElementById('loading-spinner');
+            if (spinner) spinner.style.display = 'none';
+        }
+    } catch (err) {
+        console.error('Error loading more files:', err);
+        const spinner = document.getElementById('loading-spinner');
+        if (spinner) spinner.style.display = 'none';
+    }
+}
+
+function appendEntries(entries) {
+    const tbody = document.querySelector('#files-container tbody');
+    if (!tbody) return;
+    entries.forEach(entry => {
+        const tr = document.createElement('tr');
+        if (entry.type === 'folder') {
+            tr.className = 'folder-row';
+            tr.setAttribute('data-folder-path', entry.full_path);
+            tr.innerHTML = `
+                <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
+                <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                <td class="filesize-cell">${formatFileSize(entry.size)}</td>
+                <td>${entry.full_path}</td>
+                <td></td>
+                <td></td>
+                <td>
+                    <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
+                    <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                    <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                </td>`;
+        } else {
+            const fileInfo = getFileTypeInfo(entry.name);
+            const publicLink = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class=\"fas fa-external-link-alt mr-1\"></i>${window.location.origin}/d/${entry.file_hash.substring(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
+            const checked = entry.is_public ? 'checked' : '';
+            const viewButton = entry.file_hash ? createViewButton(entry.file_hash, fileInfo.type, entry.name) : '';
+            tr.setAttribute('data-file-id', entry.id);
+            tr.setAttribute('data-file-hash', entry.file_hash);
+            tr.innerHTML = `
+                <td><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
+                <td><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
+                <td class="filesize-cell">${formatFileSize(entry.size)}</td>
+                <td>${entry.folder}</td>
+                <td>${publicLink}</td>
+                <td><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash}" ${checked}><span class="slider round"></span></label></td>
+                <td class="action-buttons">${viewButton}<a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a><div class="btn-group"><button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false"><i class="fas fa-bars"></i></button><div class="dropdown-menu dropdown-menu-right"><button type="button" class="dropdown-item rename-btn" data-file-id="${entry.id}"><i class="fas fa-edit mr-1"></i>Rename</button><button type="button" class="dropdown-item move-btn" data-file-id="${entry.id}"><i class="fas fa-folder-open mr-1"></i>Move</button><button type="button" class="dropdown-item delete-btn" data-file-id="${entry.id}" data-file-hash="${entry.file_hash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button></div></div></td>`;
+        }
+        tbody.appendChild(tr);
+    });
+    setupFileActionEventHandlers();
+    setupFolderActionEventHandlers();
+    if (typeof initializeFileTypeIcons === 'function') {
+        initializeFileTypeIcons();
+    }
+    document.dispatchEvent(new CustomEvent('contentUpdated'));
+}
+
+function triggerCacheRefresh() {
+    fetch('/api/files/refresh', {method: 'POST'}).catch(() => {});
+}
 
 /**
  * Performance Improvements Explanation:
