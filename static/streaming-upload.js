@@ -211,11 +211,17 @@ function appendEntries(entries) {
                 <td>${entry.full_path}</td>
                 <td></td>
                 <td></td>
-                <td><a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a></td>`;
+                <td>
+                    <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
+                    <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                    <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                    <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                </td>`;
         } else {
             row.dataset.fileId = entry.id;
             row.dataset.fileHash = entry.file_hash || '';
             const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
+            const viewContainer = entry.file_hash ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${entry.file_hash}" data-filesize="${formatBytes(entry.size)}"></span>` : '';
             row.innerHTML = `
                 <td><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
                 <td><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
@@ -223,16 +229,35 @@ function appendEntries(entries) {
                 <td>${entry.folder}</td>
                 <td>${link}</td>
                 <td><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
-                <td class="action-buttons"><a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a></td>`;
+                <td class="action-buttons">
+                    ${viewContainer}
+                    <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                            <i class="fas fa-bars"></i>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-right">
+                            <button type="button" class="dropdown-item rename-btn" data-file-id="${entry.id}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                            <button type="button" class="dropdown-item move-btn" data-file-id="${entry.id}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                            <button type="button" class="dropdown-item delete-btn" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                        </div>
+                    </div>
+                </td>`;
         }
         tbody.appendChild(row);
+
+        const checkbox = row.querySelector('.select-item');
+        if (checkbox) {
+            checkbox.addEventListener('change', updateBulkActionButtons);
+        }
+
+        setupFileActionEventHandlers(row);
+        setupFolderActionEventHandlers(row);
     });
+
     if (typeof initializeFileTypeIcons === 'function') {
         initializeFileTypeIcons();
     }
-    setupFileActionEventHandlers();
-    setupFolderActionEventHandlers();
-    document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
     updateBulkActionButtons();
 }
 
@@ -1088,12 +1113,14 @@ function toggleMute(videoId) {
 }
 
 // Set up event handlers for file actions (delete, public toggle)
-function setupFileActionEventHandlers() {
+function setupFileActionEventHandlers(root = document) {
     // Add event handlers for delete buttons
-    document.querySelectorAll('.delete-btn').forEach(button => {
+    root.querySelectorAll('.delete-btn').forEach(button => {
+        if (button.dataset.listenerAttached) return;
+        button.dataset.listenerAttached = 'true';
         button.addEventListener('click', async function () {
             const fileId = this.dataset.fileId;
-            const fileHash = this.dataset.fileHash;
+            const fileHash = this.dataset.fileHash || this.closest('tr').dataset.fileHash;
 
             if (!confirm('Are you sure you want to delete this file?')) {
                 return;
@@ -1139,8 +1166,11 @@ function setupFileActionEventHandlers() {
                 showStatus('Error deleting file: ' + error.message, 'error');
             }
         });
-    });    // Add event handlers for public toggles
-    document.querySelectorAll('.public-toggle').forEach(toggle => {
+    });
+    // Add event handlers for public toggles
+    root.querySelectorAll('.public-toggle').forEach(toggle => {
+        if (toggle.dataset.listenerAttached) return;
+        toggle.dataset.listenerAttached = 'true';
         toggle.addEventListener('change', async function () {
             const fileId = this.dataset.fileId;
             const fileHash = this.dataset.fileHash;
@@ -1181,7 +1211,9 @@ function setupFileActionEventHandlers() {
     });
 
     // Add event handlers for rename buttons
-    document.querySelectorAll('.rename-btn').forEach(btn => {
+    root.querySelectorAll('.rename-btn').forEach(btn => {
+        if (btn.dataset.listenerAttached) return;
+        btn.dataset.listenerAttached = 'true';
         btn.addEventListener('click', async function () {
             const fileId = this.dataset.fileId;
             const newName = prompt('New filename:');
@@ -1197,7 +1229,9 @@ function setupFileActionEventHandlers() {
     });
 
     // Add event handlers for move buttons
-    document.querySelectorAll('.move-btn').forEach(btn => {
+    root.querySelectorAll('.move-btn').forEach(btn => {
+        if (btn.dataset.listenerAttached) return;
+        btn.dataset.listenerAttached = 'true';
         btn.addEventListener('click', function () {
             const fileId = this.dataset.fileId;
             openMoveDialog([fileId], []);
@@ -1206,8 +1240,10 @@ function setupFileActionEventHandlers() {
 }
 
 // Set up event handlers for folder actions (rename, delete)
-function setupFolderActionEventHandlers() {
-    document.querySelectorAll('.rename-folder-btn').forEach(btn => {
+function setupFolderActionEventHandlers(root = document) {
+    root.querySelectorAll('.rename-folder-btn').forEach(btn => {
+        if (btn.dataset.listenerAttached) return;
+        btn.dataset.listenerAttached = 'true';
         btn.addEventListener('click', async function () {
             const folderId = this.dataset.folderId;
             const currentName = this.dataset.folderName || '';
@@ -1231,7 +1267,9 @@ function setupFolderActionEventHandlers() {
         });
     });
 
-    document.querySelectorAll('.delete-folder-btn').forEach(btn => {
+    root.querySelectorAll('.delete-folder-btn').forEach(btn => {
+        if (btn.dataset.listenerAttached) return;
+        btn.dataset.listenerAttached = 'true';
         btn.addEventListener('click', async function () {
             const folderId = this.dataset.folderId;
             let resp = await fetch('/delete_folder', {
