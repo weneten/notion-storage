@@ -678,16 +678,33 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         selectAllBtn.dataset.listenerAdded = 'true';
     }
+
+    window.addEventListener('scroll', async () => {
+        if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 100) {
+            if (!window.isLoadingEntries && window.nextCursor) {
+                window.isLoadingEntries = true;
+                const indicator = document.getElementById('loadingIndicator');
+                if (indicator) indicator.style.display = 'block';
+                await loadFiles(window.nextCursor);
+                if (indicator) indicator.style.display = 'none';
+                window.isLoadingEntries = false;
+            }
+        }
+    });
 });
 
 // Function to refresh file list - WITH DIAGNOSTIC LOGGING
-async function loadFiles() {
+async function loadFiles(cursor = null) {
     try {
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
         console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
 
-        const folderParam = encodeURIComponent(window.currentFolder || '/');
-        const response = await fetch(`/api/entries?folder=${folderParam}`);
+        const params = new URLSearchParams();
+        params.set('folder', window.currentFolder || '/');
+        if (cursor) {
+            params.set('start_cursor', cursor);
+        }
+        const response = await fetch(`/api/entries?${params.toString()}`);
         if (!response.ok) {
             throw new Error('Failed to fetch file list');
         }
@@ -699,14 +716,15 @@ async function loadFiles() {
             throw new Error('Invalid response format');
         }
 
-        renderEntries(data.entries);
+        renderEntries(data.entries, cursor !== null);
+        window.nextCursor = data.next_cursor || null;
     } catch (error) {
         console.error('🚨 DIAGNOSTIC: Error loading files:', error);
         showStatus('Failed to refresh file list: ' + error.message, 'error');
     }
 }
 
-function renderEntries(entries) {
+function renderEntries(entries, append = false) {
     console.log('🔍 DIAGNOSTIC: Entries array length:', entries.length);
     if (entries.length > 0) {
         console.log('🔍 DIAGNOSTIC: First entry structure:', entries[0]);
@@ -718,7 +736,7 @@ function renderEntries(entries) {
         return;
     }
 
-    if (entries.length === 0) {
+    if (!append && entries.length === 0) {
         filesContainer.innerHTML = `
             <div class="alert alert-info text-center">
                 <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
@@ -727,26 +745,52 @@ function renderEntries(entries) {
         return;
     }
 
-    let tableHTML = `
-        <div class="table-responsive">
-            <table class="table" id="fileTable">
-                <thead>
-                    <tr>
-                        <th></th>
-                        <th><i class="fas fa-file mr-1"></i> Filename</th>
-                        <th><i class="fas fa-weight mr-1"></i> Size</th>
-                        <th>Folder</th>
-                        <th><i class="fas fa-link mr-1"></i> Public Link</th>
-                        <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
-                        <th><i class="fas fa-cogs mr-1"></i> Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-    `;
+    if (!append || !filesContainer.querySelector('table')) {
+        let tableHTML = `
+            <div class="table-responsive">
+                <table class="table" id="fileTable">
+                    <thead>
+                        <tr>
+                            <th></th>
+                            <th><i class="fas fa-file mr-1"></i> Filename</th>
+                            <th><i class="fas fa-weight mr-1"></i> Size</th>
+                            <th>Folder</th>
+                            <th><i class="fas fa-link mr-1"></i> Public Link</th>
+                            <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
+                            <th><i class="fas fa-cogs mr-1"></i> Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        `;
 
-    entries.forEach(entry => {
-        if (entry.type === 'folder') {
-            tableHTML += `
+        entries.forEach(entry => {
+            tableHTML += generateRowHTML(entry);
+        });
+
+        tableHTML += `</tbody></table></div>`;
+        filesContainer.innerHTML = tableHTML;
+    } else {
+        const tbody = filesContainer.querySelector('tbody');
+        entries.forEach(entry => {
+            tbody.insertAdjacentHTML('beforeend', generateRowHTML(entry));
+        });
+    }
+
+    setupFileActionEventHandlers();
+    setupFolderActionEventHandlers();
+    document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
+    updateBulkActionButtons();
+
+    if (typeof initializeFileTypeIcons === 'function') {
+        initializeFileTypeIcons();
+    }
+
+    document.dispatchEvent(new CustomEvent('contentUpdated'));
+}
+
+function generateRowHTML(entry) {
+    if (entry.type === 'folder') {
+        return `
             <tr class="folder-row" data-folder-path="${entry.full_path}">
                 <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
                 <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
@@ -766,14 +810,13 @@ function renderEntries(entries) {
                     </button>
                 </td>
             </tr>`;
-        } else {
-            const fileId = entry.id || '';
-            const fileHash = entry.file_hash || '';
-            const isPublic = entry.is_public || false;
-            const fileInfo = getFileTypeInfo(entry.name);
-            const viewButtonHTML = fileInfo.isViewable && fileHash ? createViewButton(fileHash, fileInfo.type, entry.name) : '';
-
-            tableHTML += `
+    } else {
+        const fileId = entry.id || '';
+        const fileHash = entry.file_hash || '';
+        const isPublic = entry.is_public || false;
+        const fileInfo = getFileTypeInfo(entry.name);
+        const viewButtonHTML = fileInfo.isViewable && fileHash ? createViewButton(fileHash, fileInfo.type, entry.name) : '';
+        return `
             <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
                 <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
                 <td>
@@ -812,22 +855,7 @@ function renderEntries(entries) {
                     </div>
                 </td>
             </tr>`;
-        }
-    });
-
-    tableHTML += `</tbody></table></div>`;
-    filesContainer.innerHTML = tableHTML;
-
-    setupFileActionEventHandlers();
-    setupFolderActionEventHandlers();
-    document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
-    updateBulkActionButtons();
-
-    if (typeof initializeFileTypeIcons === 'function') {
-        initializeFileTypeIcons();
     }
-
-    document.dispatchEvent(new CustomEvent('contentUpdated'));
 }
 
 async function searchFiles(query) {
