@@ -147,9 +147,6 @@
         </div>
         {% endif %}
     </div>
-    <div id="loadingIndicator" class="text-center my-3" style="display:none;">
-        <i class="fas fa-spinner fa-spin"></i> Loading...
-    </div>
 </div>
 
 <!-- Folder selection modal for moving files -->
@@ -176,8 +173,6 @@
     // Initialize socket connection
     const socket = io();
     window.currentFolder = "{{ current_folder }}";
-    window.nextCursor = "{{ next_cursor or '' }}";
-    window.isLoadingEntries = false;
     // Set up event handlers when DOM is fully loaded
     document.addEventListener('DOMContentLoaded', function () {
         // Initialize streaming uploader
