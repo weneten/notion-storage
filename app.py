@@ -1501,6 +1501,10 @@ def delete_file():
         if not user_database_id:
             return jsonify({'error': 'User database not found'}), 404
         streaming_upload_manager.uploader.delete_file_entry(file_id, user_database_id)
+        # Invalidate cached file listings for this user so subsequent requests
+        # reflect the deletion immediately
+        with _cache_lock:
+            _user_cache.pop(user_database_id, None)
         return jsonify({
             'status': 'success',
             'message': 'File deleted successfully'
@@ -1725,6 +1729,9 @@ def delete_folder():
                 list(executor.map(_delete_entry, to_delete))
 
         uploader.delete_file_from_user_database(folder_id)
+        # Remove cached data so folder deletion is reflected immediately
+        with _cache_lock:
+            _user_cache.pop(user_database_id, None)
         return jsonify({'status': 'success'})
     except Exception as e:
         import traceback
@@ -1831,6 +1838,9 @@ def delete_selected():
             except Exception as e:
                 print(f"Error deleting folder {folder_id}: {e}")
 
+        # Clear cache so that subsequent fetches reflect the deletions
+        with _cache_lock:
+            _user_cache.pop(user_database_id, None)
         return jsonify({'status': 'success'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
