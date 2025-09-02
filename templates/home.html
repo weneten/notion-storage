@@ -260,6 +260,10 @@
                     const responseData = await response.json();
                     if (responseData.status === 'success') {
                         this.closest('tr').remove();
+                        if (window.cachedEntries) {
+                            window.cachedEntries = window.cachedEntries.filter(e => e.id !== fileId);
+                        }
+                        refreshServerCache();
                         showStatus('File deleted successfully', 'success');
                     } else {
                         showStatus(responseData.error || 'Failed to delete file', 'error');
@@ -431,6 +435,10 @@
                     const result = await resp.json();
                     if (result.status === 'success') {
                         selected.forEach(cb => cb.closest('tr').remove());
+                        if (window.cachedEntries) {
+                            window.cachedEntries = window.cachedEntries.filter(e => !fileIds.includes(e.id) && !folderIds.includes(e.id));
+                        }
+                        refreshServerCache();
                         showStatus('Selected items deleted', 'success');
                     } else {
                         showStatus(result.error || 'Failed to delete selected items', 'error');

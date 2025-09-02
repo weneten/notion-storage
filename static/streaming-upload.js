@@ -1146,6 +1146,9 @@ function setupFileActionEventHandlers(root = document) {
                 const responseData = await response.json();
                 if (responseData.status === 'success') {
                     this.closest('tr').remove();
+                    if (window.cachedEntries) {
+                        window.cachedEntries = window.cachedEntries.filter(e => e.id !== fileId);
+                    }
                     showStatus('File deleted successfully', 'success');
                     refreshServerCache();
 
