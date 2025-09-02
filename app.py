@@ -91,6 +91,56 @@ app.upload_metadata = {}
 app.upload_session_lock = threading.Lock()  # Master lock for upload session operations
 app.id_validation_lock = threading.Lock()   # Lock for ID validation operations
 
+# ---------------------------------------------------------------------------
+# Simple in-memory cache for per-user file metadata
+# ---------------------------------------------------------------------------
+app.user_cache = {}
+app.cache_lock = threading.Lock()
+CACHE_EXPIRY = 600  # seconds
+CACHE_MAX_USERS = 100
+
+
+def get_cached_results(user_id: str):
+    with app.cache_lock:
+        entry = app.user_cache.get(user_id)
+        if entry and time.time() - entry.get("timestamp", 0) < CACHE_EXPIRY:
+            return entry.get("results")
+    return None
+
+
+def set_cached_results(user_id: str, results: List[Dict[str, Any]]):
+    with app.cache_lock:
+        if len(app.user_cache) >= CACHE_MAX_USERS and user_id not in app.user_cache:
+            # Remove the oldest entry
+            oldest = min(app.user_cache.items(), key=lambda item: item[1]["timestamp"])[0]
+            del app.user_cache[oldest]
+        app.user_cache[user_id] = {
+            "results": results,
+            "timestamp": time.time(),
+            "last_sync": time.time(),
+        }
+
+
+def refresh_user_cache(user_id: str, user_database_id: str):
+    try:
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        results = files_data.get("results", [])
+        set_cached_results(user_id, results)
+    except Exception as e:
+        print(f"Cache refresh error for {user_id}: {e}")
+
+
+def purge_stale_cache():
+    with app.cache_lock:
+        now = time.time()
+        stale = [uid for uid, val in app.user_cache.items() if now - val.get("timestamp", 0) > CACHE_EXPIRY]
+        for uid in stale:
+            del app.user_cache[uid]
+    threading.Timer(CACHE_EXPIRY, purge_stale_cache).start()
+
+
+purge_stale_cache()
+
 def ensure_folder_structure(user_database_id: str, folder_path: str):
     """Ensure that all folders in folder_path exist in the user's database."""
     try:
@@ -117,6 +167,71 @@ def ensure_folder_structure(user_database_id: str, folder_path: str):
             current = next_path
     except Exception as e:
         print(f"Error ensuring folder structure: {e}")
+
+
+def build_entries_from_results(results: List[Dict[str, Any]], current_folder: str) -> List[Dict[str, Any]]:
+    """Build entry metadata list for a specific folder from raw Notion results."""
+    try:
+        folder_sizes = defaultdict(int)
+        for file_data in results:
+            properties = file_data.get("properties", {})
+            name = properties.get("filename", {}).get("title", [{}])[0].get("text", {}).get("content", "")
+            size = properties.get("filesize", {}).get("number", 0)
+            folder_path = properties.get("folder_path", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "/")
+            is_folder = properties.get("is_folder", {}).get("checkbox", False)
+            is_visible = properties.get("is_visible", {}).get("checkbox", True)
+            if name and is_visible and not is_folder:
+                path = folder_path or "/"
+                while True:
+                    folder_sizes[path] += size
+                    if path == "/" or path == "":
+                        break
+                    path = "/" + "/".join(path.strip("/").split("/")[:-1])
+                    if path == "":
+                        path = "/"
+
+        entries = []
+        for file_data in results:
+            properties = file_data.get("properties", {})
+            name = properties.get("filename", {}).get("title", [{}])[0].get("text", {}).get("content", "")
+            size = properties.get("filesize", {}).get("number", 0)
+            file_id = file_data.get("id")
+            is_public = properties.get("is_public", {}).get("checkbox", False)
+            file_hash = properties.get("filehash", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "")
+            file_data_files = properties.get("file_data", {}).get("files", [])
+            folder_path = properties.get("folder_path", {}).get("rich_text", [{}])[0].get("text", {}).get("content", "/")
+            is_folder = properties.get("is_folder", {}).get("checkbox", False)
+            is_visible = properties.get("is_visible", {}).get("checkbox", True)
+            if name and is_visible and folder_path == current_folder:
+                if is_folder:
+                    full_path = folder_path.rstrip("/") + "/" + name if folder_path != "/" else "/" + name
+                    entries.append(
+                        {
+                            "type": "folder",
+                            "name": name,
+                            "id": file_id,
+                            "full_path": full_path,
+                            "size": folder_sizes.get(full_path, 0),
+                        }
+                    )
+                else:
+                    entries.append(
+                        {
+                            "type": "file",
+                            "name": name,
+                            "size": size,
+                            "id": file_id,
+                            "is_public": is_public,
+                            "file_hash": file_hash,
+                            "salted_hash": "",
+                            "file_data": file_data_files,
+                            "folder": folder_path,
+                        }
+                    )
+        return entries
+    except Exception as e:
+        print(f"Error building entries: {e}")
+        return []
 
 def format_bytes(bytes, decimals=2):
     if bytes == 0:
@@ -193,76 +308,22 @@ def home():
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
         current_folder = request.args.get('folder', '/')
-        entries = []
-        if user_database_id:
+        if not user_database_id:
+            return render_template('home.html', entries=[], current_folder=current_folder, next_cursor=None)
+
+        results = get_cached_results(current_user.id)
+        if results is None:
             files_data = uploader.get_files_from_user_database(user_database_id)
             results = files_data.get('results', [])
+            set_cached_results(current_user.id, results)
+        else:
+            threading.Thread(target=refresh_user_cache, args=(current_user.id, user_database_id), daemon=True).start()
 
-            # Pre-calculate cumulative sizes for all folders
-            folder_sizes = defaultdict(int)
-            for file_data in results:
-                try:
-                    properties = file_data.get('properties', {})
-                    name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                    size = properties.get('filesize', {}).get('number', 0)
-                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
-                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
-
-                    if name and is_visible and not is_folder:
-                        path = folder_path or '/'
-                        while True:
-                            folder_sizes[path] += size
-                            if path == '/' or path == '':
-                                break
-                            path = '/' + '/'.join(path.strip('/').split('/')[:-1])
-                            if path == '':
-                                path = '/'
-                except Exception as e:
-                    print(f"Error calculating folder sizes in home route: {e}")
-                    continue
-
-            # Build entries list including folder sizes
-            for file_data in results:
-                try:
-                    properties = file_data.get('properties', {})
-                    # The filename in title property is the original filename
-                    name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                    size = properties.get('filesize', {}).get('number', 0)
-                    file_id = file_data.get('id')  # Extract the Notion page ID
-                    is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
-                    file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')  # Get filehash
-                    # Only use file_data for file storage
-                    file_data_files = properties.get('file_data', {}).get('files', [])
-                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
-                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
-                    if name and is_visible and folder_path == current_folder:
-                        if is_folder:
-                            full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
-                            entries.append({
-                                "type": "folder",
-                                "name": name,
-                                "id": file_id,
-                                "full_path": full_path,
-                                "size": folder_sizes.get(full_path, 0)
-                            })
-                        else:
-                            entries.append({
-                                "type": "file",
-                                "name": name,
-                                "size": size,
-                                "id": file_id,
-                                "is_public": is_public,
-                                "file_hash": file_hash,
-                                "salted_hash": "",
-                                "file_data": file_data_files,
-                                "folder": folder_path
-                            })
-                except Exception as e:
-                    print(f"Error processing file data in home route: {e}")
-                    continue
-        return render_template('home.html', entries=entries, current_folder=current_folder)
+        entries = build_entries_from_results(results, current_folder)
+        PAGE_SIZE = 50
+        page = entries[:PAGE_SIZE]
+        next_cursor = PAGE_SIZE if len(entries) > PAGE_SIZE else None
+        return render_template('home.html', entries=page, current_folder=current_folder, next_cursor=next_cursor)
     except Exception as e:
         return f"Error loading home page: {str(e)}", 500
 
@@ -1062,70 +1123,15 @@ def get_entries_api():
             return jsonify({'error': 'User database not found'}), 404
 
         current_folder = request.args.get('folder', '/')
-        files_response = uploader.get_files_from_user_database(user_database_id)
-        files = files_response.get('results', [])
+        results = get_cached_results(current_user.id)
+        if results is None:
+            files_response = uploader.get_files_from_user_database(user_database_id)
+            results = files_response.get('results', [])
+            set_cached_results(current_user.id, results)
+        else:
+            threading.Thread(target=refresh_user_cache, args=(current_user.id, user_database_id), daemon=True).start()
 
-        # Pre-calculate cumulative sizes for all folders
-        folder_sizes = defaultdict(int)
-        for file_data in files:
-            try:
-                properties = file_data.get('properties', {})
-                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                size = properties.get('filesize', {}).get('number', 0)
-                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                is_folder = properties.get('is_folder', {}).get('checkbox', False)
-                is_visible = properties.get('is_visible', {}).get('checkbox', True)
-
-                if name and is_visible and not is_folder:
-                    path = folder_path or '/'
-                    while True:
-                        folder_sizes[path] += size
-                        if path == '/' or path == '':
-                            break
-                        path = '/' + '/'.join(path.strip('/').split('/')[:-1])
-                        if path == '':
-                            path = '/'
-            except Exception as e:
-                print(f"Error calculating folder sizes in get_entries_api: {e}")
-                continue
-
-        entries = []
-        for file_data in files:
-            try:
-                properties = file_data.get('properties', {})
-                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                size = properties.get('filesize', {}).get('number', 0)
-                file_id = file_data.get('id')
-                is_public = properties.get('is_public', {}).get('checkbox', False)
-                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                is_folder = properties.get('is_folder', {}).get('checkbox', False)
-                is_visible = properties.get('is_visible', {}).get('checkbox', True)
-
-                if name and is_visible and folder_path == current_folder:
-                    if is_folder:
-                        full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
-                        entries.append({
-                            'type': 'folder',
-                            'name': name,
-                            'id': file_id,
-                            'full_path': full_path,
-                            'size': folder_sizes.get(full_path, 0)
-                        })
-                    else:
-                        entries.append({
-                            'type': 'file',
-                            'name': name,
-                            'size': size,
-                            'id': file_id,
-                            'is_public': is_public,
-                            'file_hash': file_hash,
-                            'folder': folder_path
-                        })
-            except Exception as e:
-                print(f"Error processing file data in get_entries_api: {e}")
-                continue
-
+        entries = build_entries_from_results(results, current_folder)
         return jsonify({'entries': entries})
 
     except Exception as e:
@@ -1133,6 +1139,57 @@ def get_entries_api():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/files/sync')
+@login_required
+def files_sync():
+    """Incremental fetch endpoint returning paginated entries."""
+    try:
+        cursor = int(request.args.get('cursor', 0))
+        folder = request.args.get('folder', '/')
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'entries': [], 'next_cursor': None})
+
+        results = get_cached_results(current_user.id)
+        if results is None:
+            files_data = uploader.get_files_from_user_database(user_database_id)
+            results = files_data.get('results', [])
+            set_cached_results(current_user.id, results)
+        else:
+            threading.Thread(target=refresh_user_cache, args=(current_user.id, user_database_id), daemon=True).start()
+
+        entries = build_entries_from_results(results, folder)
+        PAGE_SIZE = 50
+        page = entries[cursor:cursor + PAGE_SIZE]
+        next_cursor = cursor + PAGE_SIZE if cursor + PAGE_SIZE < len(entries) else None
+        return jsonify({'entries': page, 'next_cursor': next_cursor})
+    except Exception as e:
+        print(f"Error in files_sync: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/files/refresh', methods=['POST'])
+@login_required
+def refresh_files():
+    """Trigger background refresh of the user's cache."""
+    try:
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if user_database_id:
+            threading.Thread(target=refresh_user_cache, args=(current_user.id, user_database_id), daemon=True).start()
+        return jsonify({'status': 'refreshing'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/admin/cache/purge', methods=['POST'])
+@login_required
+def purge_cache_endpoint():
+    """Admin endpoint to clear all cached entries."""
+    with app.cache_lock:
+        app.user_cache.clear()
+    return jsonify({'status': 'purged'})
 
 
 @app.route('/api/folders')
