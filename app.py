@@ -371,8 +371,8 @@ def purge_cache_endpoint():
 
 
 def ensure_folder_structure(user_database_id: str, folder_path: str):
-    """Ensure that all folders in folder_path exist in the user's database.
-
+    """Ensure that all folders in folder_path exist in the user's database."""
+    try:
         files_data, _ = get_cached_files(user_database_id, force_refresh=True)
         existing_paths = set()
         for entry in files_data.get('results', []):
