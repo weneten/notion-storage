@@ -174,28 +174,35 @@ def purge_cache_endpoint():
 
 
 def ensure_folder_structure(user_database_id: str, folder_path: str):
-    """Ensure that all folders in folder_path exist in the user's database."""
-    try:
-        files_data, _ = get_cached_files(user_database_id, force_refresh=True)
-        existing_paths = set()
-        for entry in files_data.get('results', []):
-            props = entry.get('properties', {})
-            if props.get('is_folder', {}).get('checkbox'):
-                parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
-                existing_paths.add(path)
+    """Ensure that all folders in ``folder_path`` exist in the user's database."""
+    # Normalize the incoming path to avoid duplicates caused by varying slashes
+    normalized_path = '/' + '/'.join(filter(None, folder_path.strip('/').split('/')))
+    if normalized_path == '/':
+        return  # Root path doesn't need any folders created
 
-        parts = folder_path.strip('/').split('/')
-        current = '/'
-        for part in parts:
-            next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
-            if next_path not in existing_paths:
-                uploader.create_folder(user_database_id, part, current)
-                existing_paths.add(next_path)
-            current = next_path
-    except Exception as e:
-        print(f"Error ensuring folder structure: {e}")
+    # Prevent concurrent uploads from creating the same folder hierarchy
+    with app.folder_structure_lock:
+        try:
+            files_data, _ = get_cached_files(user_database_id, force_refresh=True)
+            existing_paths = set()
+            for entry in files_data.get('results', []):
+                props = entry.get('properties', {})
+                if props.get('is_folder', {}).get('checkbox'):
+                    parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                    path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
+                    existing_paths.add(path)
+
+            parts = normalized_path.strip('/').split('/')
+            current = '/'
+            for part in parts:
+                next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
+                if next_path not in existing_paths:
+                    uploader.create_folder(user_database_id, part, current)
+                    existing_paths.add(next_path)
+                current = next_path
+        except Exception as e:
+            print(f"Error ensuring folder structure: {e}")
 
 def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Dict[str, Any]]:
     """Convert raw Notion results into UI-friendly entries for a folder."""
