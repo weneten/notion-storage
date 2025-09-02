@@ -1927,6 +1927,67 @@ class NotionFileUploader:
             print(f"Error querying user database {database_id}: {e}")
             raise
 
+    def query_children_by_folder_path(
+        self,
+        database_id: str,
+        folder_path: str,
+        page_size: Optional[int] = None,
+        start_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Query a user's database for entries directly under ``folder_path``.
+
+        This helper leverages Notion's query API to filter results by the
+        ``folder_path`` property so that only immediate children are returned.
+        Deeper descendants should be fetched with separate requests.
+
+        Args:
+            database_id: The Notion database identifier.
+            folder_path: Path of the parent folder (e.g. ``"/"`` or
+                ``"/photos"``).
+            page_size: Optional page size for pagination support.
+            start_cursor: Optional cursor for pagination.
+
+        Returns:
+            The raw Notion API response containing matching results and any
+            pagination cursors.
+        """
+
+        url = f"{self.base_url}/databases/{database_id}/query"
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        payload: Dict[str, Any] = {
+            "filter": {
+                "and": [
+                    {
+                        "property": "folder_path",
+                        "rich_text": {"equals": folder_path},
+                    },
+                    {
+                        "property": "is_visible",
+                        "checkbox": {"equals": True},
+                    },
+                ]
+            }
+        }
+
+        if page_size is not None:
+            payload["page_size"] = page_size
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
+
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code != 200:
+                raise Exception(
+                    f"Failed to query user database: {response.text}"
+                )
+            return response.json()
+        except Exception as e:
+            print(
+                f"Error querying user database {database_id} for folder '{folder_path}': {e}"
+            )
+            raise
+
     def delete_file_from_db(self, file_page_id: str) -> Dict[str, Any]:
         """Deletes a file entry (page) from a Notion database and the Global File Index."""
         url = f"{self.base_url}/pages/{file_page_id}"
