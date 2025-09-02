@@ -1315,6 +1315,8 @@ def sync_files_api():
     since = request.args.get('since', type=float)
     files_data, last_sync = get_cached_files(user_database_id, fetch_if_missing=False)
     if files_data is None:
+        # If the cache is missing (e.g., in another worker process), populate it
+        refresh_cache_async(user_database_id)
         return jsonify({'results': [], 'next_cursor': 0, 'last_sync': 0, 'pending': True})
     if since and since >= last_sync:
         return jsonify({'results': [], 'next_cursor': None, 'last_sync': last_sync})
