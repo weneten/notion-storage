@@ -302,6 +302,74 @@ def purge_cache_endpoint():
     return jsonify({'status': 'purged'})
 
 
+# -------------------------------------------------------------
+# Simple in-memory cache for per-user file metadata
+# -------------------------------------------------------------
+from collections import OrderedDict
+
+CACHE_TTL = 600  # 10 minutes
+CACHE_MAX_USERS = 100
+_user_cache = OrderedDict()  # user_id -> {"data": ..., "timestamp": ...}
+
+def _purge_stale_cache():
+    """Remove expired cache entries and enforce size limit."""
+    now = time.time()
+    stale = [uid for uid, entry in _user_cache.items() if now - entry["timestamp"] > CACHE_TTL]
+    for uid in stale:
+        _user_cache.pop(uid, None)
+    while len(_user_cache) > CACHE_MAX_USERS:
+        _user_cache.popitem(last=False)
+
+def get_cached_files(
+    user_database_id: str,
+    force_refresh: bool = False,
+    fetch_if_missing: bool = True,
+):
+    """Retrieve Notion files for a user, using in-memory cache."""
+    _purge_stale_cache()
+    now = time.time()
+    entry = _user_cache.get(user_database_id)
+    if entry and not force_refresh and now - entry["timestamp"] < CACHE_TTL:
+        _user_cache.move_to_end(user_database_id)
+        return entry["data"], entry["timestamp"]
+
+    if not fetch_if_missing and not force_refresh and entry is None:
+        return None, 0
+
+    data = uploader.get_files_from_user_database(user_database_id)
+    _user_cache[user_database_id] = {"data": data, "timestamp": now}
+    _purge_stale_cache()
+    return data, now
+
+def refresh_cache_async(user_database_id: str):
+    """Refresh a user's cache in a background thread."""
+    def _refresh():
+        try:
+            get_cached_files(user_database_id, force_refresh=True)
+        except Exception as e:
+            print(f"Error refreshing cache for {user_database_id}: {e}")
+
+    threading.Thread(target=_refresh, daemon=True).start()
+
+
+@app.route('/api/cache/refresh', methods=['POST'])
+@login_required
+def refresh_cache_endpoint():
+    """Endpoint to trigger background cache refresh for current user."""
+    user_database_id = uploader.get_user_database_id(current_user.id)
+    if user_database_id:
+        refresh_cache_async(user_database_id)
+    return jsonify({'status': 'refreshing'})
+
+
+@app.route('/admin/cache/purge', methods=['POST'])
+@login_required
+def purge_cache_endpoint():
+    """Admin endpoint to purge stale cache entries."""
+    _purge_stale_cache()
+    return jsonify({'status': 'purged'})
+
+
 def ensure_folder_structure(user_database_id: str, folder_path: str):
     """Ensure that all folders in folder_path exist in the user's database.
 
@@ -933,7 +1001,8 @@ def download_by_hash(salted_sha512_hash):
 
 @app.route('/v/<salted_sha512_hash>', methods=['GET', 'HEAD'])
 def stream_by_hash(salted_sha512_hash):
-    """Stream a file by hash with HTTP range support.
+    """
+    Stream a file by hash with HTTP range support.
 
     iOS Safari issues a ``HEAD`` request before attempting to play media. The
     original implementation relied on Flask's automatic ``HEAD`` handling which
