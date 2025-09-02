@@ -49,7 +49,6 @@
     </div>
     <div id="files-container">
         <!-- Files will be loaded here via JavaScript or directly from Flask context -->
-        {% if entries %}
         <div class="table-responsive">
             <table class="table">
                 <thead>
@@ -141,12 +140,15 @@
                 </tbody>
             </table>
         </div>
-        {% else %}
+        {% if not entries and next_cursor is none %}
         <div class="alert alert-info text-center">
             <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
         </div>
         {% endif %}
     </div>
+</div>
+<div id="loadingSpinner" class="text-center my-3" style="{% if next_cursor is none %}display:none;{% endif %}">
+    <div class="spinner-border" role="status"><span class="sr-only">Loading...</span></div>
 </div>
 
 <!-- Folder selection modal for moving files -->
@@ -167,6 +169,11 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+<script>
+    window.nextCursor = {{ next_cursor if next_cursor is not none else 'null' }};
+    window.cacheTimestamp = {{ cache_timestamp or 0 }};
+    window.cachedEntries = {{ entries | tojson }};
+</script>
 <script src="{{ url_for('static', filename='streaming-upload.js') }}"></script>
 
 <script>

@@ -156,6 +156,86 @@ function updateBulkActionButtons() {
     }
 }
 
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1000;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function refreshServerCache() {
+    fetch('/api/cache/refresh', { method: 'POST' }).catch(() => {});
+}
+
+async function fetchRemainingEntries() {
+    const spinner = document.getElementById('loadingSpinner');
+    while (window.nextCursor !== null && window.nextCursor !== undefined) {
+        if (spinner) spinner.style.display = 'block';
+        const params = new URLSearchParams({
+            cursor: window.nextCursor,
+            folder: window.currentFolder || '/',
+            since: window.cacheTimestamp || 0
+        });
+        const resp = await fetch(`/api/files/sync?${params.toString()}`);
+        if (!resp.ok) break;
+        const data = await resp.json();
+        window.cacheTimestamp = data.last_sync;
+        if (Array.isArray(data.results) && data.results.length) {
+            appendEntries(data.results);
+        }
+        if (data.pending) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
+        window.nextCursor = data.next_cursor;
+        if ((window.nextCursor === null || window.nextCursor === undefined) && spinner) {
+            spinner.style.display = 'none';
+        }
+    }
+}
+
+function appendEntries(entries) {
+    if (!window.cachedEntries) window.cachedEntries = [];
+    window.cachedEntries = window.cachedEntries.concat(entries);
+    const tbody = document.querySelector('#files-container tbody');
+    if (!tbody) return;
+    entries.forEach(entry => {
+        let row = document.createElement('tr');
+        if (entry.type === 'folder') {
+            row.className = 'folder-row';
+            row.dataset.folderPath = entry.full_path;
+            row.innerHTML = `
+                <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
+                <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                <td class="filesize-cell">${formatBytes(entry.size)}</td>
+                <td>${entry.full_path}</td>
+                <td></td>
+                <td></td>
+                <td><a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a></td>`;
+        } else {
+            row.dataset.fileId = entry.id;
+            row.dataset.fileHash = entry.file_hash || '';
+            const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
+            row.innerHTML = `
+                <td><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
+                <td><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
+                <td class="filesize-cell">${formatBytes(entry.size)}</td>
+                <td>${entry.folder}</td>
+                <td>${link}</td>
+                <td><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
+                <td class="action-buttons"><a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a></td>`;
+        }
+        tbody.appendChild(row);
+    });
+    if (typeof initializeFileTypeIcons === 'function') {
+        initializeFileTypeIcons();
+    }
+    setupFileActionEventHandlers();
+    setupFolderActionEventHandlers();
+    document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
+    updateBulkActionButtons();
+}
+
 class StreamingFileUploader {
     constructor() {
         this.activeUploads = new Map();
@@ -678,6 +758,11 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         selectAllBtn.dataset.listenerAdded = 'true';
     }
+    document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
+    updateBulkActionButtons();
+    if (window.nextCursor !== null && window.nextCursor !== undefined) {
+        fetchRemainingEntries();
+    }
 });
 
 // Function to refresh file list - WITH DIAGNOSTIC LOGGING
@@ -700,6 +785,7 @@ async function loadFiles() {
         }
 
         renderEntries(data.entries);
+        refreshServerCache();
     } catch (error) {
         console.error('🚨 DIAGNOSTIC: Error loading files:', error);
         showStatus('Failed to refresh file list: ' + error.message, 'error');
@@ -1034,6 +1120,7 @@ function setupFileActionEventHandlers() {
                 if (responseData.status === 'success') {
                     this.closest('tr').remove();
                     showStatus('File deleted successfully', 'success');
+                    refreshServerCache();
 
                     // Check if there are any remaining files
                     if (document.querySelectorAll('#fileTable tbody tr').length === 0) {
@@ -1104,6 +1191,7 @@ function setupFileActionEventHandlers() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ file_id: fileId, filename: newName })
             });
+            refreshServerCache();
             location.reload();
         });
     });
@@ -1237,6 +1325,7 @@ document.addEventListener('DOMContentLoaded', function () {
                         body: JSON.stringify({ file_ids: moveTargets.fileIds, folder_ids: moveTargets.folderIds, destination: path })
                     });
                 }
+                refreshServerCache();
                 location.reload();
             } catch (error) {
                 console.error('🚨 DIAGNOSTIC: Error moving file', error);
