@@ -228,10 +228,18 @@ def home():
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
         current_folder = request.args.get('folder', '/')
+        page_size = request.args.get('page_size', type=int)
+        start_cursor = request.args.get('start_cursor')
         entries = []
+        next_cursor = None
         if user_database_id:
-            files_data = uploader.get_files_from_user_database(user_database_id)
+            files_data = uploader.get_files_from_user_database(
+                user_database_id,
+                page_size=page_size,
+                start_cursor=start_cursor,
+            )
             results = files_data.get('results', [])
+            next_cursor = files_data.get('next_cursor')
 
             # Pre-calculate cumulative sizes for all folders
             folder_sizes = defaultdict(int)
@@ -297,7 +305,12 @@ def home():
                 except Exception as e:
                     print(f"Error processing file data in home route: {e}")
                     continue
-        return render_template('home.html', entries=entries, current_folder=current_folder)
+        return render_template(
+            'home.html',
+            entries=entries,
+            current_folder=current_folder,
+            next_cursor=next_cursor,
+        )
     except Exception as e:
         return f"Error loading home page: {str(e)}", 500
 
@@ -1074,8 +1087,15 @@ def get_files_api():
             return jsonify({'error': 'User database not found'}), 404
         
         current_folder = request.args.get('folder', '/')
-        files_response = uploader.get_files_from_user_database(user_database_id)
+        page_size = request.args.get('page_size', type=int)
+        start_cursor = request.args.get('start_cursor')
+        files_response = uploader.get_files_from_user_database(
+            user_database_id,
+            page_size=page_size,
+            start_cursor=start_cursor,
+        )
         files = files_response.get('results', [])
+        next_cursor = files_response.get('next_cursor')
         
         print(f"🔍 DIAGNOSTIC: Raw files from database: {len(files)} files")
         
@@ -1126,7 +1146,7 @@ def get_files_api():
         if formatted_files:
             print(f"🔍 DIAGNOSTIC: First file in response: {formatted_files[0]}")
         
-        return jsonify({'files': formatted_files})
+        return jsonify({'files': formatted_files, 'next_cursor': next_cursor})
 
     except Exception as e:
         print(f"🚨 DIAGNOSTIC: Error in /api/files: {e}")
@@ -1145,8 +1165,15 @@ def get_entries_api():
             return jsonify({'error': 'User database not found'}), 404
 
         current_folder = request.args.get('folder', '/')
-        files_response = uploader.get_files_from_user_database(user_database_id)
+        page_size = request.args.get('page_size', type=int)
+        start_cursor = request.args.get('start_cursor')
+        files_response = uploader.get_files_from_user_database(
+            user_database_id,
+            page_size=page_size,
+            start_cursor=start_cursor,
+        )
         files = files_response.get('results', [])
+        next_cursor = files_response.get('next_cursor')
 
         # Pre-calculate cumulative sizes for all folders
         folder_sizes = defaultdict(int)
@@ -1209,7 +1236,7 @@ def get_entries_api():
                 print(f"Error processing file data in get_entries_api: {e}")
                 continue
 
-        return jsonify({'entries': entries})
+        return jsonify({'entries': entries, 'next_cursor': next_cursor})
 
     except Exception as e:
         print(f"Error in /api/entries: {e}")

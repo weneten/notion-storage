@@ -1891,41 +1891,38 @@ class NotionFileUploader:
         result['url'] = f"https://www.notion.so/{result['id'].replace('-', '')}"
         return result
 
-    def get_files_from_user_database(self, database_id: str) -> Dict[str, Any]:
-        """Queries a user's Notion database for all file entries.
+    def get_files_from_user_database(
+        self,
+        database_id: str,
+        page_size: Optional[int] = None,
+        start_cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Query a user's Notion database for file entries with pagination.
 
-        The Notion API returns results in pages (maximum 100 per request).
-        Previously this method only fetched the first page which meant users
-        with more than 100 files couldn't see their entire collection. This
-        method now follows pagination cursors until all results have been
-        retrieved and returns a single combined response.
+        The previous implementation walked through all pages of results and
+        combined them into a single list. For large databases this was
+        inefficient and unnecessary when clients only need a subset of results.
+        This updated version allows callers to specify ``page_size`` and
+        ``start_cursor`` which are sent directly to the Notion API. The raw
+        response from Notion (including ``next_cursor`` and ``has_more``) is
+        returned so that callers can request additional pages as needed.
         """
+
         url = f"{self.base_url}/databases/{database_id}/query"
         headers = {**self.headers, "Content-Type": "application/json"}
-        all_results: List[Dict[str, Any]] = []
         payload: Dict[str, Any] = {}
+        if page_size is not None:
+            payload["page_size"] = page_size
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
 
         try:
-            while True:
-                response = requests.post(url, headers=headers, json=payload)
-                if response.status_code != 200:
-                    raise Exception(f"Failed to query user database: {response.text}")
-
-                data = response.json()
-                all_results.extend(data.get('results', []))
-
-                if not data.get('has_more'):
-                    break
-
-                # Prepare next request with start_cursor
-                payload['start_cursor'] = data.get('next_cursor')
-
-            return {
-                "object": "list",
-                "results": all_results,
-                "next_cursor": None,
-                "has_more": False
-            }
+            response = requests.post(url, headers=headers, json=payload)
+            if response.status_code != 200:
+                raise Exception(
+                    f"Failed to query user database: {response.text}"
+                )
+            return response.json()
         except Exception as e:
             print(f"Error querying user database {database_id}: {e}")
             raise
