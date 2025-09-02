@@ -320,7 +320,7 @@ class NotionStreamingUploader:
       # Notion API constants
     SINGLE_PART_THRESHOLD = 20 * 1024 * 1024  # 20 MiB
     MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024    # 5 MiB for multipart uploads
-    SPLIT_THRESHOLD = 500 * 1024 * 1024       # 500 MiB
+    SPLIT_THRESHOLD = 5 * 1024 * 1024       # 5 MiB
 
     class _PartStream:
         """Iterator that yields exactly ``part_size`` bytes from ``stream_iter``.
