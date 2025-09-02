@@ -184,8 +184,13 @@ async function fetchRemainingEntries() {
         if (Array.isArray(data.results) && data.results.length) {
             appendEntries(data.results);
         }
+        if (data.pending) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
         window.nextCursor = data.next_cursor;
-        if (window.nextCursor == null && spinner) spinner.style.display = 'none';
+        if ((window.nextCursor === null || window.nextCursor === undefined) && spinner) {
+            spinner.style.display = 'none';
+        }
     }
 }
 

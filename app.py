@@ -166,38 +166,95 @@ def purge_cache_endpoint():
     return jsonify({'status': 'purged'})
 
 
+# -------------------------------------------------------------
+# Simple in-memory cache for per-user file metadata
+# -------------------------------------------------------------
+from collections import OrderedDict
+
+CACHE_TTL = 600  # 10 minutes
+CACHE_MAX_USERS = 100
+_user_cache = OrderedDict()  # user_id -> {"data": ..., "timestamp": ...}
+
+def _purge_stale_cache():
+    """Remove expired cache entries and enforce size limit."""
+    now = time.time()
+    stale = [uid for uid, entry in _user_cache.items() if now - entry["timestamp"] > CACHE_TTL]
+    for uid in stale:
+        _user_cache.pop(uid, None)
+    while len(_user_cache) > CACHE_MAX_USERS:
+        _user_cache.popitem(last=False)
+
+def get_cached_files(
+    user_database_id: str,
+    force_refresh: bool = False,
+    fetch_if_missing: bool = True,
+):
+    """Retrieve Notion files for a user, using in-memory cache."""
+    _purge_stale_cache()
+    now = time.time()
+    entry = _user_cache.get(user_database_id)
+    if entry and not force_refresh and now - entry["timestamp"] < CACHE_TTL:
+        _user_cache.move_to_end(user_database_id)
+        return entry["data"], entry["timestamp"]
+
+    if not fetch_if_missing and not force_refresh and entry is None:
+        return None, 0
+
+    data = uploader.get_files_from_user_database(user_database_id)
+    _user_cache[user_database_id] = {"data": data, "timestamp": now}
+    _purge_stale_cache()
+    return data, now
+
+def refresh_cache_async(user_database_id: str):
+    """Refresh a user's cache in a background thread."""
+    def _refresh():
+        try:
+            get_cached_files(user_database_id, force_refresh=True)
+        except Exception as e:
+            print(f"Error refreshing cache for {user_database_id}: {e}")
+
+    threading.Thread(target=_refresh, daemon=True).start()
+
+
+@app.route('/api/cache/refresh', methods=['POST'])
+@login_required
+def refresh_cache_endpoint():
+    """Endpoint to trigger background cache refresh for current user."""
+    user_database_id = uploader.get_user_database_id(current_user.id)
+    if user_database_id:
+        refresh_cache_async(user_database_id)
+    return jsonify({'status': 'refreshing'})
+
+
+@app.route('/admin/cache/purge', methods=['POST'])
+@login_required
+def purge_cache_endpoint():
+    """Admin endpoint to purge stale cache entries."""
+    _purge_stale_cache()
+    return jsonify({'status': 'purged'})
+
+
 def ensure_folder_structure(user_database_id: str, folder_path: str):
     """Ensure that all folders in folder_path exist in the user's database.
 
-    This function is called once for every file upload. When multiple files
-    are uploaded concurrently, each request previously attempted to create
-    the same folder hierarchy, resulting in duplicate folder and file
-    entries. A global lock serializes folder creation to prevent the same
-    path from being created multiple times.
-    """
-    if not folder_path or folder_path == '/':
-        return
+        files_data, _ = get_cached_files(user_database_id, force_refresh=True)
+        existing_paths = set()
+        for entry in files_data.get('results', []):
+            props = entry.get('properties', {})
+            if props.get('is_folder', {}).get('checkbox'):
+                parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
+                existing_paths.add(path)
 
-    try:
-        with app.folder_structure_lock:
-            files_data, _ = get_cached_files(user_database_id, force_refresh=True)
-            existing_paths = set()
-            for entry in files_data.get('results', []):
-                props = entry.get('properties', {})
-                if props.get('is_folder', {}).get('checkbox'):
-                    parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                    name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                    path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
-                    existing_paths.add(path)
-
-            parts = folder_path.strip('/').split('/')
-            current = '/'
-            for part in parts:
-                next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
-                if next_path not in existing_paths:
-                    uploader.create_folder(user_database_id, part, current)
-                    existing_paths.add(next_path)
-                current = next_path
+        parts = folder_path.strip('/').split('/')
+        current = '/'
+        for part in parts:
+            next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
+            if next_path not in existing_paths:
+                uploader.create_folder(user_database_id, part, current)
+                existing_paths.add(next_path)
+            current = next_path
     except Exception as e:
         print(f"Error ensuring folder structure: {e}")
 
@@ -366,12 +423,16 @@ def home():
         next_cursor = None
         last_sync = 0
         if user_database_id:
-            files_data, last_sync = get_cached_files(user_database_id)
-            results = files_data.get('results', [])
-            all_entries = build_entries(results, current_folder)
-            entries = all_entries[:page_size]
-            if len(all_entries) > page_size:
-                next_cursor = page_size
+            files_data, last_sync = get_cached_files(user_database_id, fetch_if_missing=False)
+            if files_data:
+                results = files_data.get('results', [])
+                all_entries = build_entries(results, current_folder)
+                entries = all_entries[:page_size]
+                if len(all_entries) > page_size:
+                    next_cursor = page_size
+            else:
+                next_cursor = 0
+                last_sync = 0
             refresh_cache_async(user_database_id)
         return render_template('home.html', entries=entries, current_folder=current_folder, next_cursor=next_cursor, cache_timestamp=last_sync)
     except Exception as e:
@@ -1305,7 +1366,9 @@ def sync_files_api():
     page_size = request.args.get('page_size', type=int, default=50)
     folder = request.args.get('folder', '/')
     since = request.args.get('since', type=float)
-    files_data, last_sync = get_cached_files(user_database_id)
+    files_data, last_sync = get_cached_files(user_database_id, fetch_if_missing=False)
+    if files_data is None:
+        return jsonify({'results': [], 'next_cursor': 0, 'last_sync': 0, 'pending': True})
     if since and since >= last_sync:
         return jsonify({'results': [], 'next_cursor': None, 'last_sync': last_sync})
     results = files_data.get('results', [])
