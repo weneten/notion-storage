@@ -261,6 +261,27 @@ function appendEntries(entries) {
     updateBulkActionButtons();
 }
 
+// Periodically check server for updates
+async function checkForUpdates() {
+    try {
+        const params = new URLSearchParams({
+            folder: window.currentFolder || '/',
+            since: window.cacheTimestamp || 0
+        });
+        const resp = await fetch(`/api/files/sync?${params.toString()}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        if (Array.isArray(data.results) && data.results.length > 0) {
+            await loadFiles();
+        }
+        if (data.last_sync !== undefined) {
+            window.cacheTimestamp = data.last_sync;
+        }
+    } catch (err) {
+        console.error('🚨 DIAGNOSTIC: Error checking updates:', err);
+    }
+}
+
 class StreamingFileUploader {
     constructor() {
         this.activeUploads = new Map();
@@ -788,6 +809,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (window.nextCursor !== null && window.nextCursor !== undefined) {
         fetchRemainingEntries();
     }
+    setInterval(checkForUpdates, 5000);
 });
 
 // Function to refresh file list - WITH DIAGNOSTIC LOGGING
@@ -822,6 +844,9 @@ function renderEntries(entries) {
     if (entries.length > 0) {
         console.log('🔍 DIAGNOSTIC: First entry structure:', entries[0]);
     }
+
+    // Keep a copy of entries for local state updates
+    window.cachedEntries = entries;
 
     const filesContainer = document.getElementById('files-container');
     if (!filesContainer) {
@@ -1227,7 +1252,11 @@ function setupFileActionEventHandlers(root = document) {
                 body: JSON.stringify({ file_id: fileId, filename: newName })
             });
             refreshServerCache();
-            location.reload();
+            setTimeout(() => {
+                if (typeof loadFiles === 'function') {
+                    loadFiles();
+                }
+            }, 500);
         });
     });
 
@@ -1367,7 +1396,11 @@ document.addEventListener('DOMContentLoaded', function () {
                     });
                 }
                 refreshServerCache();
-                location.reload();
+                setTimeout(() => {
+                    if (typeof loadFiles === 'function') {
+                        loadFiles();
+                    }
+                }, 500);
             } catch (error) {
                 console.error('🚨 DIAGNOSTIC: Error moving file', error);
                 showStatus('Error moving file: ' + error.message, 'error');

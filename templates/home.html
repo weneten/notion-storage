@@ -329,7 +329,14 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({file_id: fileId, filename: newName})
                 });
-                location.reload();
+                if (typeof refreshServerCache === 'function') {
+                    refreshServerCache();
+                }
+                setTimeout(() => {
+                    if (typeof loadFiles === 'function') {
+                        loadFiles();
+                    }
+                }, 500);
             });
         });
 
@@ -350,7 +357,14 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({folder_name: folderName, parent_path: window.currentFolder || '/'})
                 });
-                location.reload();
+                if (typeof refreshServerCache === 'function') {
+                    refreshServerCache();
+                }
+                setTimeout(() => {
+                    if (typeof loadFiles === 'function') {
+                        loadFiles();
+                    }
+                }, 500);
             });
         }
 
@@ -478,7 +492,14 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({folder_id: folderId, new_name: newName})
                 });
-                location.reload();
+                if (typeof refreshServerCache === 'function') {
+                    refreshServerCache();
+                }
+                setTimeout(() => {
+                    if (typeof loadFiles === 'function') {
+                        loadFiles();
+                    }
+                }, 500);
             });
         });
 
@@ -520,7 +541,14 @@
                         return;
                     }
                 }
-                location.reload();
+                if (typeof refreshServerCache === 'function') {
+                    refreshServerCache();
+                }
+                setTimeout(() => {
+                    if (typeof loadFiles === 'function') {
+                        loadFiles();
+                    }
+                }, 500);
             });
         });
     });
