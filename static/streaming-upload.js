@@ -1190,44 +1190,28 @@ function setupFolderActionEventHandlers() {
 // Folder selection modal for moving files
 // =============================================
 let moveTargets = { fileIds: [], folderIds: [] };
-const folderCache = {};
-
-async function fetchFolderChildren(path) {
-    if (folderCache[path]) return folderCache[path];
-    const resp = await fetch(`/api/children?folder=${encodeURIComponent(path)}`);
-    const data = await resp.json();
-    folderCache[path] = data.entries || [];
-    return folderCache[path];
-}
-
-async function populateFolderList(path) {
-    const list = document.getElementById('folderList');
-    if (!list) return;
-    list.innerHTML = '';
-
-    if (path !== '/') {
-        const parent = '/' + path.trim('/').split('/').slice(0, -1).join('/');
-        const back = document.createElement('li');
-        back.className = 'list-group-item back-item';
-        back.dataset.path = parent === '//' ? '/' : parent;
-        back.textContent = '..';
-        list.appendChild(back);
-    }
-
-    const entries = await fetchFolderChildren(path);
-    entries.filter(e => e.type === 'folder').forEach(entry => {
-        const li = document.createElement('li');
-        li.className = 'list-group-item folder-option d-flex justify-content-between align-items-center';
-        li.dataset.path = entry.full_path;
-        li.innerHTML = `<span class="folder-name">${entry.name}</span>` +
-            `<button type="button" class="btn btn-link btn-sm expand-folder">▶</button>`;
-        list.appendChild(li);
-    });
-}
 
 async function openMoveDialog(fileIds = [], folderIds = []) {
     moveTargets = { fileIds, folderIds };
-    await populateFolderList('/');
+    const list = document.getElementById('folderList');
+    if (!list) {
+        return;
+    }
+    list.innerHTML = '';
+    try {
+        const resp = await fetch('/api/folders');
+        const data = await resp.json();
+        (data.folders || []).forEach(folder => {
+            const li = document.createElement('li');
+            li.className = 'list-group-item folder-option';
+            li.textContent = folder.path;
+            li.dataset.path = folder.path;
+            list.appendChild(li);
+        });
+    } catch (error) {
+        console.error('🚨 DIAGNOSTIC: Error loading folders', error);
+        showStatus('Failed to load folders: ' + error.message, 'error');
+    }
     $('#moveModal').modal('show');
 }
 
@@ -1235,19 +1219,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const list = document.getElementById('folderList');
     if (list) {
         list.addEventListener('click', async function (e) {
-            const back = e.target.closest('.back-item');
-            if (back) {
-                await populateFolderList(back.dataset.path);
-                return;
-            }
-            const expandBtn = e.target.closest('.expand-folder');
-            if (expandBtn) {
-                const parent = expandBtn.closest('.folder-option');
-                if (parent) {
-                    await populateFolderList(parent.dataset.path);
-                }
-                return;
-            }
             const item = e.target.closest('.folder-option');
             if (!item) return;
             const path = item.dataset.path;
