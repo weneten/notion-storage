@@ -102,6 +102,8 @@ socketio = SocketIO(
 # CRITICAL FIX 3: Thread Synchronization - Global locks for upload session management
 app.upload_session_lock = threading.Lock()  # Master lock for upload session operations
 app.id_validation_lock = threading.Lock()   # Lock for ID validation operations
+# Lock to prevent concurrent creation of the same folder structure
+app.folder_structure_lock = threading.Lock()
 
 # -------------------------------------------------------------
 # Simple in-memory cache for per-user file metadata
@@ -165,29 +167,37 @@ def purge_cache_endpoint():
 
 
 def ensure_folder_structure(user_database_id: str, folder_path: str):
-    """Ensure that all folders in folder_path exist in the user's database."""
+    """Ensure that all folders in folder_path exist in the user's database.
+
+    This function is called once for every file upload. When multiple files
+    are uploaded concurrently, each request previously attempted to create
+    the same folder hierarchy, resulting in duplicate folder and file
+    entries. A global lock serializes folder creation to prevent the same
+    path from being created multiple times.
+    """
+    if not folder_path or folder_path == '/':
+        return
+
     try:
-        if not folder_path or folder_path == '/':
-            return
+        with app.folder_structure_lock:
+            files_data, _ = get_cached_files(user_database_id, force_refresh=True)
+            existing_paths = set()
+            for entry in files_data.get('results', []):
+                props = entry.get('properties', {})
+                if props.get('is_folder', {}).get('checkbox'):
+                    parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                    path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
+                    existing_paths.add(path)
 
-        files_data, _ = get_cached_files(user_database_id, force_refresh=True)
-        existing_paths = set()
-        for entry in files_data.get('results', []):
-            props = entry.get('properties', {})
-            if props.get('is_folder', {}).get('checkbox'):
-                parent = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-                name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                path = parent.rstrip('/') + '/' + name if parent != '/' else '/' + name
-                existing_paths.add(path)
-
-        parts = folder_path.strip('/').split('/')
-        current = '/'
-        for part in parts:
-            next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
-            if next_path not in existing_paths:
-                uploader.create_folder(user_database_id, part, current)
-                existing_paths.add(next_path)
-            current = next_path
+            parts = folder_path.strip('/').split('/')
+            current = '/'
+            for part in parts:
+                next_path = current.rstrip('/') + '/' + part if current != '/' else '/' + part
+                if next_path not in existing_paths:
+                    uploader.create_folder(user_database_id, part, current)
+                    existing_paths.add(next_path)
+                current = next_path
     except Exception as e:
         print(f"Error ensuring folder structure: {e}")
 
