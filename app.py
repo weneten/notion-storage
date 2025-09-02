@@ -113,8 +113,9 @@ from collections import OrderedDict
 CACHE_TTL = 600  # 10 minutes
 CACHE_MAX_USERS = 100
 _user_cache = OrderedDict()  # user_id -> {"data": ..., "timestamp": ...}
+_cache_lock = threading.RLock()
 
-def _purge_stale_cache():
+def _purge_stale_cache_locked():
     """Remove expired cache entries and enforce size limit."""
     now = time.time()
     stale = [uid for uid, entry in _user_cache.items() if now - entry["timestamp"] > CACHE_TTL]
@@ -129,19 +130,22 @@ def get_cached_files(
     fetch_if_missing: bool = True,
 ):
     """Retrieve Notion files for a user, using in-memory cache."""
-    _purge_stale_cache()
-    now = time.time()
-    entry = _user_cache.get(user_database_id)
-    if entry and not force_refresh and now - entry["timestamp"] < CACHE_TTL:
-        _user_cache.move_to_end(user_database_id)
-        return entry["data"], entry["timestamp"]
+    with _cache_lock:
+        _purge_stale_cache_locked()
+        now = time.time()
+        entry = _user_cache.get(user_database_id)
+        if entry and not force_refresh and now - entry["timestamp"] < CACHE_TTL:
+            _user_cache.move_to_end(user_database_id)
+            return entry["data"], entry["timestamp"]
 
     if not fetch_if_missing and not force_refresh and entry is None:
         return None, 0
 
     data = uploader.get_files_from_user_database(user_database_id)
-    _user_cache[user_database_id] = {"data": data, "timestamp": now}
-    _purge_stale_cache()
+    now = time.time()
+    with _cache_lock:
+        _user_cache[user_database_id] = {"data": data, "timestamp": now}
+        _purge_stale_cache_locked()
     return data, now
 
 def refresh_cache_async(user_database_id: str):
@@ -169,7 +173,8 @@ def refresh_cache_endpoint():
 @login_required
 def purge_cache_endpoint():
     """Admin endpoint to purge stale cache entries."""
-    _purge_stale_cache()
+    with _cache_lock:
+        _purge_stale_cache_locked()
     return jsonify({'status': 'purged'})
 
 
