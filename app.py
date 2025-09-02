@@ -24,6 +24,7 @@ import random
 import string
 import json
 from flask_socketio import emit
+from collections import defaultdict
 import gc
 import zipstream
 
@@ -229,51 +230,57 @@ def home():
         current_folder = request.args.get('folder', '/')
         entries = []
         if user_database_id:
-            files_data = uploader.query_children_by_folder_path(
-                user_database_id,
-                current_folder,
-                page_size=page_size,
-                start_cursor=start_cursor,
-            )
+            files_data = uploader.get_files_from_user_database(user_database_id)
             results = files_data.get('results', [])
 
-            def get_folder_size(path: str) -> int:
-                total = 0
-                try:
-                    resp = uploader.query_children_by_folder_path(user_database_id, path)
-                    for item in resp.get('results', []):
-                        props = item.get('properties', {})
-                        if not props.get('is_visible', {}).get('checkbox', True):
-                            continue
-                        if props.get('is_folder', {}).get('checkbox', False):
-                            name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                            child_path = path.rstrip('/') + '/' + name if path != '/' else '/' + name
-                            total += get_folder_size(child_path)
-                        else:
-                            total += props.get('filesize', {}).get('number', 0)
-                except Exception as e:
-                    print(f"Error calculating folder size for {path}: {e}")
-                return total
-
+            # Pre-calculate cumulative sizes for all folders
+            folder_sizes = defaultdict(int)
             for file_data in results:
                 try:
                     properties = file_data.get('properties', {})
                     name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
                     size = properties.get('filesize', {}).get('number', 0)
-                    file_id = file_data.get('id')
-                    is_public = properties.get('is_public', {}).get('checkbox', False)
-                    file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                    file_data_files = properties.get('file_data', {}).get('files', [])
+                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
                     is_folder = properties.get('is_folder', {}).get('checkbox', False)
-                    if name:
+                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                    if name and is_visible and not is_folder:
+                        path = folder_path or '/'
+                        while True:
+                            folder_sizes[path] += size
+                            if path == '/' or path == '':
+                                break
+                            path = '/' + '/'.join(path.strip('/').split('/')[:-1])
+                            if path == '':
+                                path = '/'
+                except Exception as e:
+                    print(f"Error calculating folder sizes in home route: {e}")
+                    continue
+
+            # Build entries list including folder sizes
+            for file_data in results:
+                try:
+                    properties = file_data.get('properties', {})
+                    # The filename in title property is the original filename
+                    name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                    size = properties.get('filesize', {}).get('number', 0)
+                    file_id = file_data.get('id')  # Extract the Notion page ID
+                    is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
+                    file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')  # Get filehash
+                    # Only use file_data for file storage
+                    file_data_files = properties.get('file_data', {}).get('files', [])
+                    folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                    is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                    is_visible = properties.get('is_visible', {}).get('checkbox', True)
+                    if name and is_visible and folder_path == current_folder:
                         if is_folder:
-                            full_path = current_folder.rstrip('/') + '/' + name if current_folder != '/' else '/' + name
+                            full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
                             entries.append({
                                 "type": "folder",
                                 "name": name,
                                 "id": file_id,
                                 "full_path": full_path,
-                                "size": get_folder_size(full_path),
+                                "size": folder_sizes.get(full_path, 0)
                             })
                         else:
                             entries.append({
@@ -285,7 +292,7 @@ def home():
                                 "file_hash": file_hash,
                                 "salted_hash": "",
                                 "file_data": file_data_files,
-                                "folder": current_folder,
+                                "folder": folder_path
                             })
                 except Exception as e:
                     print(f"Error processing file data in home route: {e}")
@@ -502,40 +509,40 @@ def download_folder():
         if not user_database_id:
             return "User database not found", 404
 
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        results = files_data.get('results', [])
+
+        prefix = folder_path.rstrip('/') + '/'
         files_to_zip = []
+        for entry in results:
+            props = entry.get('properties', {})
+            name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            is_folder = props.get('is_folder', {}).get('checkbox', False)
+            is_visible = props.get('is_visible', {}).get('checkbox', True)
+            is_manifest = props.get('is_manifest', {}).get('checkbox', False)
+            entry_path = props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
 
-        def gather_files(path: str, rel_base: str = ''):
-            resp = uploader.query_children_by_folder_path(user_database_id, path)
-            for entry in resp.get('results', []):
-                props = entry.get('properties', {})
-                name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                is_folder = props.get('is_folder', {}).get('checkbox', False)
-                is_visible = props.get('is_visible', {}).get('checkbox', True)
-                is_manifest = props.get('is_manifest', {}).get('checkbox', False)
-                if not name or not is_visible:
-                    continue
-                if is_folder:
-                    child_path = path.rstrip('/') + '/' + name if path != '/' else '/' + name
-                    new_rel = os.path.join(rel_base, name) if rel_base else name
-                    gather_files(child_path, new_rel)
-                else:
-                    orig_name = (
-                        props.get('Original Filename', {})
-                        .get('title', [{}])[0]
-                        .get('text', {})
-                        .get('content', name)
-                    )
-                    files_to_zip.append(
-                        {
-                            'id': entry.get('id'),
-                            'name': name,
-                            'rel_path': rel_base,
-                            'is_manifest': is_manifest,
-                            'orig_name': orig_name,
-                        }
-                    )
+            if not name or is_folder or not is_visible:
+                continue
+            if entry_path != folder_path and not entry_path.startswith(prefix):
+                continue
 
-        gather_files(folder_path)
+            rel_path = entry_path[len(folder_path):].lstrip('/') if entry_path.startswith(folder_path) else ''
+            orig_name = (
+                props.get('Original Filename', {})
+                .get('title', [{}])[0]
+                .get('text', {})
+                .get('content', name)
+            )
+            files_to_zip.append(
+                {
+                    'id': entry.get('id'),
+                    'name': name,
+                    'rel_path': rel_path,
+                    'is_manifest': is_manifest,
+                    'orig_name': orig_name,
+                }
+            )
 
         z = zipstream.ZipFile(mode='w', compression=zipstream.ZIP_DEFLATED)
 
@@ -1067,14 +1074,7 @@ def get_files_api():
             return jsonify({'error': 'User database not found'}), 404
         
         current_folder = request.args.get('folder', '/')
-        page_size = request.args.get('page_size', type=int)
-        start_cursor = request.args.get('start_cursor')
-        files_response = uploader.query_children_by_folder_path(
-            user_database_id,
-            current_folder,
-            page_size=page_size,
-            start_cursor=start_cursor,
-        )
+        files_response = uploader.get_files_from_user_database(user_database_id)
         files = files_response.get('results', [])
         
         print(f"🔍 DIAGNOSTIC: Raw files from database: {len(files)} files")
@@ -1093,8 +1093,10 @@ def get_files_api():
             is_manifest = file_props.get('is_manifest', {}).get('checkbox', False)
             is_visible = file_props.get('is_visible', {}).get('checkbox', True)
             is_folder = file_props.get('is_folder', {}).get('checkbox', False)
+            folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
 
+            # Compute salted hash for download link if salt is present
             salted_hash = file_hash
             if salt and file_hash:
                 import hashlib
@@ -1108,8 +1110,8 @@ def get_files_api():
             print(f"  - Is Public: {is_public} (needed for toggle state)")
             print(f"  - Size: {size}")
             print(f"  - Has all button data: {bool(file_id and file_hash is not None and is_public is not None)}")
-
-            if is_visible and not is_folder:
+            
+            if is_visible and not is_folder and folder_path == current_folder:
                 formatted_file = {
                     'id': file_id,
                     'name': name,
@@ -1143,33 +1145,32 @@ def get_entries_api():
             return jsonify({'error': 'User database not found'}), 404
 
         current_folder = request.args.get('folder', '/')
-        page_size = request.args.get('page_size', type=int)
-        start_cursor = request.args.get('start_cursor')
-        files_response = uploader.query_children_by_folder_path(
-            user_database_id,
-            current_folder,
-            page_size=page_size,
-            start_cursor=start_cursor,
-        )
+        files_response = uploader.get_files_from_user_database(user_database_id)
         files = files_response.get('results', [])
 
-        def get_folder_size(path: str) -> int:
-            total = 0
+        # Pre-calculate cumulative sizes for all folders
+        folder_sizes = defaultdict(int)
+        for file_data in files:
             try:
-                resp = uploader.query_children_by_folder_path(user_database_id, path)
-                for item in resp.get('results', []):
-                    props = item.get('properties', {})
-                    if not props.get('is_visible', {}).get('checkbox', True):
-                        continue
-                    if props.get('is_folder', {}).get('checkbox', False):
-                        name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                        child_path = path.rstrip('/') + '/' + name if path != '/' else '/' + name
-                        total += get_folder_size(child_path)
-                    else:
-                        total += props.get('filesize', {}).get('number', 0)
+                properties = file_data.get('properties', {})
+                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                size = properties.get('filesize', {}).get('number', 0)
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                if name and is_visible and not is_folder:
+                    path = folder_path or '/'
+                    while True:
+                        folder_sizes[path] += size
+                        if path == '/' or path == '':
+                            break
+                        path = '/' + '/'.join(path.strip('/').split('/')[:-1])
+                        if path == '':
+                            path = '/'
             except Exception as e:
                 print(f"Error calculating folder sizes in get_entries_api: {e}")
-            return total
+                continue
 
         entries = []
         for file_data in files:
@@ -1180,16 +1181,19 @@ def get_entries_api():
                 file_id = file_data.get('id')
                 is_public = properties.get('is_public', {}).get('checkbox', False)
                 file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
-                if name:
+                is_visible = properties.get('is_visible', {}).get('checkbox', True)
+
+                if name and is_visible and folder_path == current_folder:
                     if is_folder:
-                        full_path = current_folder.rstrip('/') + '/' + name if current_folder != '/' else '/' + name
+                        full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
                         entries.append({
                             'type': 'folder',
                             'name': name,
                             'id': file_id,
                             'full_path': full_path,
-                            'size': get_folder_size(full_path)
+                            'size': folder_sizes.get(full_path, 0)
                         })
                     else:
                         entries.append({
@@ -1199,7 +1203,7 @@ def get_entries_api():
                             'id': file_id,
                             'is_public': is_public,
                             'file_hash': file_hash,
-                            'folder': current_folder
+                            'folder': folder_path
                         })
             except Exception as e:
                 print(f"Error processing file data in get_entries_api: {e}")
@@ -1212,13 +1216,6 @@ def get_entries_api():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/children')
-@login_required
-def get_children_api():
-    """Alias endpoint that fetches folder children on demand."""
-    return get_entries_api()
 
 
 @app.route('/api/files/search')
@@ -1292,19 +1289,20 @@ def list_folders_api():
         if not user_database_id:
             return jsonify({'error': 'User database not found'}), 404
 
-        folders: List[Dict[str, Any]] = []
+        files_response = uploader.get_files_from_user_database(user_database_id)
+        files = files_response.get('results', [])
 
-        def collect(path: str):
-            resp = uploader.query_children_by_folder_path(user_database_id, path)
-            for item in resp.get('results', []):
-                props = item.get('properties', {})
-                if props.get('is_folder', {}).get('checkbox', False):
-                    name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-                    full_path = path.rstrip('/') + '/' + name if path != '/' else '/' + name
-                    folders.append({'id': item.get('id'), 'path': full_path})
-                    collect(full_path)
+        folders = []
+        for file_data in files:
+            properties = file_data.get('properties', {})
+            is_folder = properties.get('is_folder', {}).get('checkbox', False)
+            if not is_folder:
+                continue
+            name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            parent_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            full_path = parent_path.rstrip('/') + '/' + name if parent_path != '/' else '/' + name
+            folders.append({'id': file_data.get('id'), 'path': full_path})
 
-        collect('/')
         folders.sort(key=lambda f: f['path'])
         folders.insert(0, {'id': None, 'path': '/'})
         return jsonify({'folders': folders})
@@ -1326,27 +1324,29 @@ def list_files_api():
             return jsonify({"error": "No user database ID found"}), 404
             
         current_folder = request.args.get('folder', '/')
-        files_data = uploader.query_children_by_folder_path(user_database_id, current_folder)
-
+        # Query files from Notion database using uploader's method
+        files_data = uploader.get_files_from_user_database(user_database_id)
+        
+        # Format files for API response (matches old code format)
         files = []
         for file_data in files_data.get('results', []):
             try:
                 properties = file_data.get('properties', {})
                 name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
                 size = properties.get('filesize', {}).get('number', 0)
-                file_id = file_data.get('id')
-                is_public = properties.get('is_public', {}).get('checkbox', False)
-                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                file_id = file_data.get('id')  # Extract the Notion page ID
+                is_public = properties.get('is_public', {}).get('checkbox', False)  # Get is_public status
+                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '') # Get filehash
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
+                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
 
-                if name and not is_folder:
+                if name and not is_folder and folder_path == current_folder:
                     files.append({
                         "name": name,
                         "size": size,
-                        "id": file_id,
-                        "is_public": is_public,
-                        "file_hash": file_hash,
-                        "folder": current_folder
+                        "id": file_id,  # Add the file_id to the dictionary
+                        "is_public": is_public,  # Add is_public status
+                        "file_hash": file_hash  # Add file_hash
                     })
             except Exception as e:
                 print(f"Error processing file data: {e}")
