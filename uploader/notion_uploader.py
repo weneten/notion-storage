@@ -19,7 +19,7 @@ from .s3_downloader import (
     stream_file_from_url,
     stream_file_range_from_url,
 )
-from .crypto_utils import encrypt_stream
+from .crypto_utils import encrypt_stream, decrypt_stream
 
 
 def _fetch_json(url: str):
@@ -184,7 +184,13 @@ class NotionFileUploader:
             print(f"[delete_file_from_index] Could not retrieve salted_sha512_hash for file_page_id: {file_page_id}. Skipping Global File Index deletion.")
             return None
         return self.delete_file_from_global_index(salted_sha512_hash)
-    def stream_multi_part_file(self, manifest_page_id: str, start: int = 0, end: Optional[int] = None) -> Iterable[bytes]:
+    def stream_multi_part_file(
+        self,
+        manifest_page_id: str,
+        start: int = 0,
+        end: Optional[int] = None,
+        file_key: Optional[bytes] = None,
+    ) -> Iterable[bytes]:
         """
         Streams a multi-part file described by a manifest JSON stored in Notion.
         Supports optional byte range streaming so clients can request only
@@ -274,6 +280,8 @@ class NotionFileUploader:
                     'size': part_size,
                     'start': part_start,
                     'end': part_end,
+                    'nonce': part.get('nonce'),
+                    'tag': part.get('tag'),
                 }
             return None
 
@@ -297,6 +305,16 @@ class NotionFileUploader:
                         iterator = self.stream_file_from_notion(
                             part_info['page_id'], part_info['filename']
                         )
+
+                    if (
+                        file_key
+                        and part_info.get('nonce')
+                        and part_info.get('tag')
+                    ):
+                        nonce = base64.b64decode(part_info['nonce'])
+                        tag = base64.b64decode(part_info['tag'])
+                        iterator = decrypt_stream(file_key, nonce, tag, iterator)
+
                     for chunk in iterator:
                         q.put(chunk)
                     q.put(None)  # Signal completion
