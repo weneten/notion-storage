@@ -256,9 +256,33 @@ class MediaModalLightbox {
 
         let finalUrl = mediaUrl;
         if (encryption && encryption.alg && encryption.alg !== 'none') {
+            if (!window.CryptoManager.hasKey(encryption.keyFingerprint)) {
+                throw new Error('Missing decryption key');
+            }
+            if (typeof showStatus === 'function') showStatus('Downloading encrypted media...', 'info');
+            if (typeof updateProgressBar === 'function') updateProgressBar(0, 'Downloading...');
             const resp = await fetch(mediaUrl);
-            const cipher = new Uint8Array(await resp.arrayBuffer());
-            const plain = await window.CryptoManager.decrypt(cipher, encryption.iv, encryption.keyFingerprint);
+            const total = parseInt(resp.headers.get('Content-Length')) || 0;
+            const reader = resp.body.getReader();
+            let received = 0;
+            const chunks = [];
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                received += value.length;
+                if (total && typeof updateProgressBar === 'function') {
+                    updateProgressBar((received / total) * 50, 'Downloading...');
+                }
+            }
+            const cipher = new Uint8Array(received);
+            let offset = 0;
+            for (const chunk of chunks) { cipher.set(chunk, offset); offset += chunk.length; }
+            if (typeof updateProgressBar === 'function') updateProgressBar(50, 'Decrypting...');
+            const plain = await window.CryptoManager.decrypt(cipher, encryption.iv, encryption.keyFingerprint, p => {
+                if (typeof updateProgressBar === 'function') updateProgressBar(50 + p / 2, 'Decrypting...');
+            });
+            if (typeof updateProgressBar === 'function') updateProgressBar(100, 'Done');
             finalUrl = URL.createObjectURL(new Blob([plain]));
         }
 

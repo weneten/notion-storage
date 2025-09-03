@@ -226,9 +226,10 @@ function appendEntries(entries) {
             row.dataset.keyFingerprint = entry.key_fingerprint || 'none';
             const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
             const viewContainer = entry.file_hash ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${entry.file_hash}" data-filesize="${formatBytes(entry.size)}"></span>` : '';
+            const encIcon = (entry.encryption_alg && entry.encryption_alg !== 'none') ? ` <i class="fas fa-lock text-info encrypted-indicator" title="Encrypted"></i><span class="missing-key-warning text-danger" style="display:none;" title="Missing decryption key"><i class="fas fa-exclamation-triangle"></i></span>` : '';
             row.innerHTML = `
                 <td><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
-                <td><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
+                <td><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong>${encIcon}</td>
                 <td class="filesize-cell">${formatBytes(entry.size)}</td>
                 <td>${entry.folder}</td>
                 <td>${link}</td>
@@ -257,6 +258,7 @@ function appendEntries(entries) {
 
         setupFileActionEventHandlers(row);
         setupFolderActionEventHandlers(row);
+        markEncryptedRows(row);
     });
 
     if (typeof initializeFileTypeIcons === 'function') {
@@ -264,6 +266,31 @@ function appendEntries(entries) {
     }
     updateBulkActionButtons();
 }
+
+function markEncryptedRows(root = document) {
+    let missing = false;
+    const rows = (root.matches && root.matches('tr[data-encryption-alg]')) ? [root] : root.querySelectorAll('tr[data-encryption-alg]');
+    rows.forEach(row => {
+        const alg = row.dataset.encryptionAlg || 'none';
+        if (alg !== 'none') {
+            const fp = row.dataset.keyFingerprint;
+            const has = window.CryptoManager && window.CryptoManager.hasKey(fp);
+            const warn = row.querySelector('.missing-key-warning');
+            if (warn) {
+                warn.style.display = has ? 'none' : 'inline';
+            }
+            if (!has) missing = true;
+        }
+    });
+    if (missing && typeof showStatus === 'function') {
+        if (!markEncryptedRows.warned) {
+            showStatus('Some encrypted files are missing keys. Import the correct keys to decrypt.', 'error');
+            markEncryptedRows.warned = true;
+        }
+    }
+}
+
+window.markEncryptedRows = markEncryptedRows;
 
 // Periodically check server for updates
 async function checkForUpdates() {
@@ -309,8 +336,12 @@ class StreamingFileUploader {
             console.log('Starting streaming upload for file:', file.name, 'Size:', file.size);
 
             // Encrypt file locally before uploading
-            const { ciphertext, iv, keyFingerprint } = await window.CryptoManager.encryptFile(file);
+            statusCallback('Encrypting file...', 'info');
+            const { ciphertext, iv, keyFingerprint } = await window.CryptoManager.encryptFile(file, (pct, bytes) => {
+                progressCallback(pct / 2, bytes / 2);
+            });
             const encryptedBlob = new Blob([ciphertext], { type: 'application/octet-stream' });
+            statusCallback('Uploading encrypted file...', 'info');
 
             // Step 1: Create upload session on server including encryption metadata
             console.log('Creating upload session...');
@@ -347,7 +378,7 @@ class StreamingFileUploader {
             const result = await this.streamFileToServer(
                 actualUploadId,
                 encryptedBlob,
-                progressCallback,
+                (pct, uploaded) => progressCallback(50 + pct / 2, (file.size / 2) + (uploaded / 2)),
                 statusCallback,
                 { alg: 'AES-GCM', iv: iv, keyFingerprint: keyFingerprint }
             );
@@ -826,6 +857,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
     updateBulkActionButtons();
+    markEncryptedRows();
     if (window.nextCursor !== null && window.nextCursor !== undefined) {
         fetchRemainingEntries();
     }
@@ -1267,10 +1299,33 @@ function setupFileActionEventHandlers(root = document) {
             const alg = row?.dataset.encryptionAlg || 'none';
             if (alg !== 'none') {
                 e.preventDefault();
+                if (!window.CryptoManager.hasKey(row.dataset.keyFingerprint)) {
+                    alert('Missing decryption key for this file.');
+                    return;
+                }
                 try {
+                    showStatus('Downloading encrypted file...', 'info');
+                    updateProgressBar(0, 'Downloading...');
                     const resp = await fetch(this.href);
-                    const cipher = new Uint8Array(await resp.arrayBuffer());
-                    const plain = await window.CryptoManager.decrypt(cipher, row.dataset.iv, row.dataset.keyFingerprint);
+                    const total = parseInt(resp.headers.get('Content-Length')) || 0;
+                    const reader = resp.body.getReader();
+                    let received = 0;
+                    const chunks = [];
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        chunks.push(value);
+                        received += value.length;
+                        if (total) {
+                            updateProgressBar((received / total) * 50, 'Downloading...');
+                        }
+                    }
+                    const cipher = new Uint8Array(received);
+                    let offset = 0;
+                    for (const chunk of chunks) { cipher.set(chunk, offset); offset += chunk.length; }
+                    updateProgressBar(50, 'Decrypting...');
+                    const plain = await window.CryptoManager.decrypt(cipher, row.dataset.iv, row.dataset.keyFingerprint, p => updateProgressBar(50 + p / 2, 'Decrypting...'));
+                    updateProgressBar(100, 'Done');
                     const blob = new Blob([plain]);
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
@@ -1280,8 +1335,9 @@ function setupFileActionEventHandlers(root = document) {
                     a.click();
                     a.remove();
                     URL.revokeObjectURL(url);
+                    showStatus('Download complete', 'success');
                 } catch (err) {
-                    alert('Failed to decrypt file: ' + err.message);
+                    showStatus('Failed to decrypt file: ' + err.message, 'error');
                 }
             }
         });
@@ -1318,6 +1374,9 @@ function setupFileActionEventHandlers(root = document) {
             openMoveDialog([fileId], []);
         });
     });
+
+    // Update encrypted file indicators
+    markEncryptedRows(root);
 }
 
 // Set up event handlers for folder actions (rename, delete)
