@@ -471,7 +471,8 @@ class NotionStreamingUploader:
                     file_upload_id=file_upload_id,
                     original_filename=upload_session['filename'],
                     salt=salt,
-                    folder_path=upload_session.get('folder_path', '/')
+                    folder_path=upload_session.get('folder_path', '/'),
+                    encryption_meta=upload_session.get('encryption_meta'),
                 )
                 database_page_id = user_db_result['id']  # This is the DATABASE PAGE ID - different from file upload ID
                 print(f"DEBUG: Added to user database with database page ID: {database_page_id}")
@@ -582,6 +583,7 @@ class NotionStreamingUploader:
         part_salt: str,
         notion_file_upload_id: str,
         file_url: Optional[str],
+        encryption_meta: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Persist a single part's metadata in Notion databases.
 
@@ -602,7 +604,8 @@ class NotionStreamingUploader:
                 original_filename=original_filename,
                 file_url=file_url,
                 # Store part entries at root to avoid orphaned parts when moving folders
-                folder_path='/'
+                folder_path='/',
+                encryption_meta=encryption_meta,
             )
 
             if self._validate_file_attachment(db_entry, notion_file_upload_id):
@@ -735,6 +738,7 @@ class NotionStreamingUploader:
                                     part_salt,
                                     upload_result['file_upload_id'],
                                     upload_result['file_url'],
+                                    upload_session.get('encryption_meta'),
                                 )
                                 with parts_lock:
                                     upload_session['uploaded_parts'].append(db_entry['id'])
@@ -837,7 +841,8 @@ class NotionStreamingUploader:
                             original_filename=filename,
                             file_url=metadata_file_url,
                             is_manifest=True,
-                            folder_path=upload_session.get('folder_path', '/')
+                            folder_path=upload_session.get('folder_path', '/'),
+                            encryption_meta=upload_session.get('encryption_meta'),
                         )
 
                         self.notion_uploader.update_user_properties(metadata_db_entry['id'], {

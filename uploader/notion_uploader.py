@@ -18,6 +18,7 @@ from .s3_downloader import (
     stream_file_from_url,
     stream_file_range_from_url,
 )
+from .crypto_utils import encrypt_stream
 
 
 def _fetch_json(url: str):
@@ -941,7 +942,15 @@ class NotionFileUploader:
             'fallback_on_error': True      # Use cached URL on validation errors
         })
         print("🤝 PERMISSIVE VALIDATION: Less aggressive validation enabled")
-    def upload_file_stream(self, file_stream: Iterable[bytes], filename: str, user_id: str, total_size: int, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
+    def upload_file_stream(
+        self,
+        file_stream: Iterable[bytes],
+        filename: str,
+        user_id: str,
+        total_size: int,
+        existing_upload_info: Dict[str, Any] = None,
+        encryption_meta: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
         """
         Uploads a file to Notion from a stream to the specified database.
         
@@ -951,6 +960,7 @@ class NotionFileUploader:
             user_id: Notion user ID
             total_size: Total file size in bytes
             existing_upload_info: Optional pre-created multipart upload info
+            encryption_meta: Optional encryption metadata (including key and IV)
         """
         # Get or create user's database
         database_id = self.get_user_database_id(user_id)
@@ -961,19 +971,37 @@ class NotionFileUploader:
         content_type = self.get_mime_type(filename)
 
         if total_size <= 5 * 1024 * 1024:  # 5 MiB limit for single file upload
-            return self.upload_single_file_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
+            return self.upload_single_file_stream(
+                file_stream,
+                filename,
+                database_id,
+                content_type,
+                total_size,
+                original_filename,
+                encryption_meta=encryption_meta,
+            )
         else:
             return self.upload_large_file_multipart_stream(
-                file_stream, 
-                filename, 
-                database_id, 
-                content_type, 
-                total_size, 
+                file_stream,
+                filename,
+                database_id,
+                content_type,
+                total_size,
                 original_filename,
-                existing_upload_info=existing_upload_info
+                existing_upload_info=existing_upload_info,
+                encryption_meta=encryption_meta,
             )
 
-    def upload_single_file_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str = None) -> Dict[str, Any]:
+    def upload_single_file_stream(
+        self,
+        file_stream: Iterable[bytes],
+        filename: str,
+        database_id: str,
+        content_type: str,
+        file_size: int,
+        original_filename: str = None,
+        encryption_meta: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
         """Handles the upload of a single file from a stream to user's database."""
         try:
             if original_filename is None:
@@ -992,11 +1020,18 @@ class NotionFileUploader:
                 self.socketio.emit('upload_progress', {'percentage': 10, 'bytes_uploaded': 0, 'total_bytes': file_size})
 
             # Step 2: Send file content
+            # Optionally encrypt the incoming stream on-the-fly
+            if encryption_meta:
+                key = encryption_meta.get("key")
+                iv = encryption_meta.get("iv")
+                if key and iv:
+                    file_stream = encrypt_stream(key, iv, file_stream)
+
             # Create an accumulator for the streamed data
             total_bytes_received = 0
             stream_buffer = io.BytesIO()
 
-            # Accumulate data from the stream and track progress
+            # Accumulate data from the (possibly encrypted) stream and track progress
             for chunk in file_stream:
                 stream_buffer.write(chunk)
                 total_bytes_received += len(chunk)
@@ -1051,7 +1086,18 @@ class NotionFileUploader:
             
             raise Exception(f"Error uploading single file: {e}")
 
-    def upload_large_file_multipart_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str, chunk_size: int = 5 * 1024 * 1024, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
+    def upload_large_file_multipart_stream(
+        self,
+        file_stream: Iterable[bytes],
+        filename: str,
+        database_id: str,
+        content_type: str,
+        file_size: int,
+        original_filename: str,
+        chunk_size: int = 5 * 1024 * 1024,
+        existing_upload_info: Dict[str, Any] = None,
+        encryption_meta: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
         """Handles the multipart upload of a large file from a stream."""
         try:
             # Always use "file.txt" for Notion's site (the original filename is preserved elsewhere)
@@ -1074,6 +1120,14 @@ class NotionFileUploader:
                 multipart_upload_info = self.create_file_upload(content_type, filename, "multi_part", number_of_parts)
             
             file_upload_id = multipart_upload_info['id']
+
+            # Optionally encrypt stream before chunking
+            if encryption_meta:
+                key = encryption_meta.get("key")
+                iv = encryption_meta.get("iv")
+                if key and iv:
+                    file_stream = encrypt_stream(key, iv, file_stream)
+
             chunk_processor = ChunkProcessor()
 
             def upload_chunk(part_number: int, chunk_data: bytes) -> Dict:
@@ -2010,12 +2064,31 @@ class NotionFileUploader:
             print(f"Error deleting file from Global File Index by hash {salted_sha512_hash}: {e}")
             raise
 
-    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False, folder_path: str = "/") -> Dict[str, Any]:
+    def add_file_to_user_database(
+        self,
+        database_id: str,
+        filename: str,
+        file_size: int,
+        file_hash: str,
+        file_upload_id: str,
+        is_public: bool = False,
+        salt: str = "",
+        original_filename: str = None,
+        file_url: str = None,
+        is_manifest: bool = False,
+        folder_path: str = "/",
+        encryption_meta: Dict[str, str] = None,
+    ) -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
         # Ensure the is_folder property exists for this database
         self.ensure_database_property(database_id, "is_folder", "checkbox")
+
+        if encryption_meta:
+            self.ensure_database_property(database_id, "encryption_iv", "rich_text")
+            self.ensure_database_property(database_id, "encryption_alg", "rich_text")
+            self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
@@ -2107,6 +2180,22 @@ class NotionFileUploader:
                 "checkbox": False
             }
         }
+        if encryption_meta:
+            properties["encryption_iv"] = {
+                "rich_text": [
+                    {"text": {"content": encryption_meta.get("iv", "")}}
+                ]
+            }
+            properties["encryption_alg"] = {
+                "rich_text": [
+                    {"text": {"content": encryption_meta.get("alg", "")}}
+                ]
+            }
+            properties["key_fingerprint"] = {
+                "rich_text": [
+                    {"text": {"content": encryption_meta.get("key_fingerprint", "")}}
+                ]
+            }
         # Add is_manifest property if this is a manifest entry
         if is_manifest:
             properties["is_manifest"] = {"checkbox": True}
@@ -2426,13 +2515,25 @@ class NotionFileUploader:
             print(f"Error adding file to Global File Index: {e}")
             raise
 
-    def handle_streaming_upload(self, stream: Iterable[bytes], total_size: int, upload_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle streaming upload by accumulating chunks efficiently with concurrent uploading"""
+    def handle_streaming_upload(
+        self,
+        stream: Iterable[bytes],
+        total_size: int,
+        upload_info: Dict[str, Any],
+        encryption_meta: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
+        """Handle streaming upload by accumulating chunks efficiently with optional encryption"""
         chunk_size = 5 * 1024 * 1024  # 5MB chunks for Notion API
         current_chunk = io.BytesIO()
         current_size = 0
         part_number = 1
         pending_uploads = []
+
+        if encryption_meta:
+            key = encryption_meta.get("key")
+            iv = encryption_meta.get("iv")
+            if key and iv:
+                stream = encrypt_stream(key, iv, stream)
 
         # Create thread pool for concurrent uploads
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
@@ -2501,19 +2602,26 @@ class NotionFileUploader:
                 self._abort_multipart_upload(upload_info['upload_url'], upload_info['upload_id'])
                 raise
 
-    def upload_file_stream(self, stream: Iterable[bytes], filename: str, user_id: str, total_size: int, 
-                          existing_upload_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def upload_file_stream(
+        self,
+        stream: Iterable[bytes],
+        filename: str,
+        user_id: str,
+        total_size: int,
+        existing_upload_info: Optional[Dict[str, Any]] = None,
+        encryption_meta: Dict[str, Any] = None,
+    ) -> Dict[str, Any]:
         """Handle file upload with proper streaming support"""
         try:
             if existing_upload_info:
                 # Use existing multipart upload info
                 print("Using existing multipart upload info")
-                return self.handle_streaming_upload(stream, total_size, existing_upload_info)
+                return self.handle_streaming_upload(stream, total_size, existing_upload_info, encryption_meta=encryption_meta)
             else:
                 # Create new upload for small files
                 print(f"Creating single-part upload for {filename}")
                 upload_info = self.create_file_upload(self.get_mime_type(filename))
-                return self.handle_streaming_upload(stream, total_size, upload_info)
+                return self.handle_streaming_upload(stream, total_size, upload_info, encryption_meta=encryption_meta)
         except Exception as e:
             print(f"Error in upload_file_stream: {e}")
             raise
