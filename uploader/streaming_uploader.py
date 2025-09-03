@@ -15,11 +15,13 @@ from typing import Optional, Callable, Dict, Any, List
 import concurrent.futures
 import queue
 import requests
+import base64
 from flask import Response
 from flask_socketio import SocketIO
 from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
 from .s3_downloader import download_file_from_url
+from .crypto_utils import generate_key
 import gc
 
 
@@ -398,6 +400,19 @@ class NotionStreamingUploader:
             'bytes_uploaded': 0,
             'last_activity': time.time(),
             'hasher': hashlib.sha512()  # For file integrity
+        }
+
+        # Generate encryption material for this upload session
+        key = generate_key()
+        iv = os.urandom(16)
+        fingerprint = hashlib.sha256(key).hexdigest()
+        session_data['encryption_meta'] = {
+            'alg': 'AES-CTR',
+            'key': key,
+            'iv': iv,
+            'iv_b64': base64.b64encode(iv).decode('utf-8'),
+            'key_b64': base64.b64encode(key).decode('utf-8'),
+            'key_fingerprint': fingerprint,
         }
         
         if is_multipart:

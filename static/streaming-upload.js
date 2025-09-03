@@ -268,26 +268,16 @@ function appendEntries(entries) {
 }
 
 function markEncryptedRows(root = document) {
-    let missing = false;
     const rows = (root.matches && root.matches('tr[data-encryption-alg]')) ? [root] : root.querySelectorAll('tr[data-encryption-alg]');
     rows.forEach(row => {
         const alg = row.dataset.encryptionAlg || 'none';
         if (alg !== 'none') {
-            const fp = row.dataset.keyFingerprint;
-            const has = window.CryptoManager && window.CryptoManager.hasKey(fp);
             const warn = row.querySelector('.missing-key-warning');
             if (warn) {
-                warn.style.display = has ? 'none' : 'inline';
+                warn.style.display = 'none';
             }
-            if (!has) missing = true;
         }
     });
-    if (missing && typeof showStatus === 'function') {
-        if (!markEncryptedRows.warned) {
-            showStatus('Some encrypted files are missing keys. Import the correct keys to decrypt.', 'error');
-            markEncryptedRows.warned = true;
-        }
-    }
 }
 
 window.markEncryptedRows = markEncryptedRows;
@@ -335,15 +325,8 @@ class StreamingFileUploader {
             statusCallback('Initializing streaming upload...', 'info');
             console.log('Starting streaming upload for file:', file.name, 'Size:', file.size);
 
-            // Encrypt file locally before uploading
-            statusCallback('Encrypting file...', 'info');
-            const { ciphertext, iv, keyFingerprint } = await window.CryptoManager.encryptFile(file, (pct, bytes) => {
-                progressCallback(pct / 2, bytes / 2);
-            });
-            const encryptedBlob = new Blob([ciphertext], { type: 'application/octet-stream' });
-            statusCallback('Uploading encrypted file...', 'info');
-
-            // Step 1: Create upload session on server including encryption metadata
+            // Step 1: Create upload session on server
+            statusCallback('Uploading file...', 'info');
             console.log('Creating upload session...');
             const sessionResponse = await fetch('/api/upload/create-session', {
                 method: 'POST',
@@ -352,10 +335,9 @@ class StreamingFileUploader {
                 },
                 body: JSON.stringify({
                     filename: file.name,
-                    fileSize: encryptedBlob.size,
+                    fileSize: file.size,
                     contentType: file.type || 'application/octet-stream',
-                    folderPath: folderPath,
-                    encryption: { alg: 'AES-GCM', iv: iv, key_fingerprint: keyFingerprint }
+                    folderPath: folderPath
                 })
             });
 
@@ -372,15 +354,14 @@ class StreamingFileUploader {
             const actualUploadId = sessionData.upload_id;
 
             // Step 2: Start streaming upload
-            statusCallback(`Streaming ${file.name} (${this.formatFileSize(encryptedBlob.size)})...`, 'info');
+            statusCallback(`Streaming ${file.name} (${this.formatFileSize(file.size)})...`, 'info');
             console.log('Starting file stream for upload ID:', actualUploadId);
 
             const result = await this.streamFileToServer(
                 actualUploadId,
-                encryptedBlob,
-                (pct, uploaded) => progressCallback(50 + pct / 2, (file.size / 2) + (uploaded / 2)),
-                statusCallback,
-                { alg: 'AES-GCM', iv: iv, keyFingerprint: keyFingerprint }
+                file,
+                (pct, uploaded) => progressCallback(pct, uploaded),
+                statusCallback
             );
 
             console.log('Upload completed:', result);
@@ -407,7 +388,7 @@ class StreamingFileUploader {
      * Stream file data directly to server using simple fetch approach
      * This eliminates complex ReadableStream and uses direct file upload
      */
-    async streamFileToServer(uploadId, file, progressCallback, statusCallback, encInfo = null) {
+    async streamFileToServer(uploadId, file, progressCallback, statusCallback) {
         const controller = new AbortController();
 
         // Store upload info for potential cancellation
@@ -464,13 +445,8 @@ class StreamingFileUploader {
 
                 // Set headers
                 xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name || 'encrypted'));
+                xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name || 'upload'));
                 xhr.setRequestHeader('X-File-Size', file.size.toString());
-                if (encInfo) {
-                    xhr.setRequestHeader('X-Encryption-Alg', encInfo.alg);
-                    xhr.setRequestHeader('X-Encryption-IV', encInfo.iv);
-                    xhr.setRequestHeader('X-Key-Fingerprint', encInfo.keyFingerprint);
-                }
 
                 // Send the file directly
                 xhr.send(file);
@@ -1290,58 +1266,7 @@ function setupFileActionEventHandlers(root = document) {
         });
     });
 
-    // Intercept download buttons to perform client-side decryption
-    root.querySelectorAll('.download-btn').forEach(btn => {
-        if (btn.dataset.listenerAttached) return;
-        btn.dataset.listenerAttached = 'true';
-        btn.addEventListener('click', async function (e) {
-            const row = this.closest('tr');
-            const alg = row?.dataset.encryptionAlg || 'none';
-            if (alg !== 'none') {
-                e.preventDefault();
-                if (!window.CryptoManager.hasKey(row.dataset.keyFingerprint)) {
-                    alert('Missing decryption key for this file.');
-                    return;
-                }
-                try {
-                    showStatus('Downloading encrypted file...', 'info');
-                    updateProgressBar(0, 'Downloading...');
-                    const resp = await fetch(this.href);
-                    const total = parseInt(resp.headers.get('Content-Length')) || 0;
-                    const reader = resp.body.getReader();
-                    let received = 0;
-                    const chunks = [];
-                    while (true) {
-                        const { done, value } = await reader.read();
-                        if (done) break;
-                        chunks.push(value);
-                        received += value.length;
-                        if (total) {
-                            updateProgressBar((received / total) * 50, 'Downloading...');
-                        }
-                    }
-                    const cipher = new Uint8Array(received);
-                    let offset = 0;
-                    for (const chunk of chunks) { cipher.set(chunk, offset); offset += chunk.length; }
-                    updateProgressBar(50, 'Decrypting...');
-                    const plain = await window.CryptoManager.decrypt(cipher, row.dataset.iv, row.dataset.keyFingerprint, p => updateProgressBar(50 + p / 2, 'Decrypting...'));
-                    updateProgressBar(100, 'Done');
-                    const blob = new Blob([plain]);
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = this.dataset.filename || row.dataset.filename || 'download';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
-                    showStatus('Download complete', 'success');
-                } catch (err) {
-                    showStatus('Failed to decrypt file: ' + err.message, 'error');
-                }
-            }
-        });
-    });
+    // No client-side decryption needed; downloads are served decrypted by server
 
     // Add event handlers for rename buttons
     root.querySelectorAll('.rename-btn').forEach(btn => {
