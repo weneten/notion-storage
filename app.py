@@ -302,22 +302,6 @@ def add_stream_headers(resp, mimetype=''):
         resp.headers.setdefault('Connection', 'keep-alive')
         resp.headers.setdefault('Content-Transfer-Encoding', 'binary')
     return resp
-
-
-def _get_request_key() -> bytes | None:
-    """Return the decryption key from header or session if provided."""
-    key_b64 = request.headers.get('X-File-Key')
-    if key_b64:
-        session['file_key'] = key_b64
-    else:
-        key_b64 = session.get('file_key')
-    if not key_b64:
-        return None
-    try:
-        return base64.b64decode(key_b64)
-    except Exception:
-        return None
-
 # Initialize Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -585,7 +569,6 @@ def download_file(filename):
     Download file by filename (authenticated route) - redirects to hash-based download
     """
     try:
-        _get_request_key()
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
             return "User database not found", 404
@@ -665,16 +648,36 @@ def download_folder():
                 else item['orig_name']
             )
             if item['is_manifest']:
-                z.write_iter(archive_name, uploader.stream_multi_part_file(item['id']))
+                def manifest_generator(manifest_id=item['id']):
+                    page = uploader.get_user_by_id(manifest_id)
+                    props = page.get('properties', {})
+                    key_str = props.get('encryption_key', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                    iv_str = props.get('iv', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                    key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
+                    iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
+                    iterator = uploader.stream_multi_part_file(manifest_id)
+                    if key and iv:
+                        iterator = decrypt_stream(key, iv, iterator)
+                    yield from iterator
+                z.write_iter(archive_name, manifest_generator())
             else:
                 def file_generator(file_id=item['id'], filename=item['orig_name']):
                     metadata = fetch_download_metadata(file_id, filename)
                     url = metadata.get('url')
                     if not url:
                         return
-                    yield from uploader.stream_file_from_notion(
+                    page = uploader.get_user_by_id(file_id)
+                    props = page.get('properties', {})
+                    key_str = props.get('encryption_key', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                    iv_str = props.get('iv', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                    key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
+                    iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
+                    iterator = uploader.stream_file_from_notion(
                         file_id, filename, download_url=url
                     )
+                    if key and iv:
+                        iterator = decrypt_stream(key, iv, iterator)
+                    yield from iterator
 
                 z.write_iter(archive_name, file_generator())
 
@@ -692,7 +695,6 @@ def download_by_hash(salted_sha512_hash):
     Download file by hash (public/private route with access control)
     """
     try:
-        key = _get_request_key()
         # Find the file in the global file index using the hash
         index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash, force_refresh=True)
 
@@ -715,10 +717,16 @@ def download_by_hash(salted_sha512_hash):
         file_props = file_details.get('properties', {})
         iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
         iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        key_prop = file_props.get('encryption_key', {})
+        key_str = key_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
         try:
             iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
         except Exception:
             iv = None
+        try:
+            key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
+        except Exception:
+            key = None
 
         # Check access control
         if not is_public:
@@ -866,7 +874,6 @@ def stream_by_hash(salted_sha512_hash):
     return only the appropriate headers without streaming any data.
     """
     try:
-        key = _get_request_key()
         # Find the file in the global file index using the hash
         index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash, force_refresh=True)
 
@@ -888,10 +895,16 @@ def stream_by_hash(salted_sha512_hash):
         file_props = file_details.get('properties', {})
         iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
         iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        key_prop = file_props.get('encryption_key', {})
+        key_str = key_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
         try:
             iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
         except Exception:
             iv = None
+        try:
+            key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
+        except Exception:
+            key = None
 
         # Check access control (same logic as download route)
         if not is_public:
@@ -2484,17 +2497,22 @@ def download_multipart_by_page_id(manifest_page_id):
     """
     try:
         import requests, json
-        key = _get_request_key()
         manifest_page = uploader.get_user_by_id(manifest_page_id)
         if not manifest_page:
             return "Manifest page not found", 404
         manifest_props = manifest_page.get('properties', {})
         iv_prop = manifest_props.get('iv', {}) or manifest_props.get('encryption_iv', {})
         iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        key_prop = manifest_props.get('encryption_key', {})
+        key_str = key_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
         try:
             iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
         except Exception:
             iv = None
+        try:
+            key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
+        except Exception:
+            key = None
         file_property = manifest_props.get('file_data', {})
         files_array = file_property.get('files', [])
         manifest_file = files_array[0] if files_array else None

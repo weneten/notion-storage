@@ -2115,6 +2115,7 @@ class NotionFileUploader:
         self.ensure_database_property(database_id, "encryption_alg", "rich_text")
         self.ensure_database_property(database_id, "iv", "rich_text")
         self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
+        self.ensure_database_property(database_id, "encryption_key", "rich_text")
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
@@ -2215,12 +2216,17 @@ class NotionFileUploader:
         }
         properties["iv"] = {
             "rich_text": [
-                {"text": {"content": encryption_meta.get("iv", "none")}}
+                {"text": {"content": encryption_meta.get("iv_b64", "none")}}
             ]
         }
         properties["key_fingerprint"] = {
             "rich_text": [
                 {"text": {"content": encryption_meta.get("key_fingerprint", "none")}}
+            ]
+        }
+        properties["encryption_key"] = {
+            "rich_text": [
+                {"text": {"content": encryption_meta.get("key_b64", "none")}}
             ]
         }
         # Add is_manifest property if this is a manifest entry
