@@ -1,4 +1,3 @@
-import io
 import os
 import sys
 from pathlib import Path
@@ -10,13 +9,13 @@ from uploader.crypto_utils import generate_key, encrypt_stream, decrypt_stream
 
 def test_round_trip_stream_encryption():
     key = generate_key()
-    plaintext = os.urandom(64)
-    plain_stream = io.BytesIO(plaintext)
+    iv = os.urandom(16)
+    plaintext_chunks = [os.urandom(64), os.urandom(128)]
 
-    encrypted = encrypt_stream(key, plain_stream)
-    assert encrypted != plaintext
+    encrypted_chunks = list(encrypt_stream(key, iv, iter(plaintext_chunks)))
+    # Ensure ciphertext differs from plaintext
+    assert b"".join(encrypted_chunks) != b"".join(plaintext_chunks)
 
-    encrypted_stream = io.BytesIO(encrypted)
-    decrypted = decrypt_stream(key, encrypted_stream)
+    decrypted_chunks = list(decrypt_stream(key, iv, iter(encrypted_chunks)))
 
-    assert decrypted == plaintext
+    assert b"".join(decrypted_chunks) == b"".join(plaintext_chunks)
