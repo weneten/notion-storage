@@ -410,6 +410,8 @@ class StreamingFileUploader {
             this.activeUploads.delete(uploadId);
         }
     }
+
+    /**
      * Create a ReadableStream from a File object
      * This streams the file in small chunks without loading everything into memory
      */
