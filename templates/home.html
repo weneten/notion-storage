@@ -174,6 +174,7 @@
     window.cacheTimestamp = {{ cache_timestamp or 0 }};
     window.cachedEntries = {{ entries | tojson }};
 </script>
+<script src="{{ url_for('static', filename='crypto.js') }}"></script>
 <script src="{{ url_for('static', filename='streaming-upload.js') }}"></script>
 
 <script>
