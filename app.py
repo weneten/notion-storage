@@ -160,6 +160,23 @@ def refresh_cache_async(user_database_id: str):
     threading.Thread(target=_refresh, daemon=True).start()
 
 
+def safe_get_property_text(prop: Dict[str, Any], key: str = "rich_text", default: str = "") -> str:
+    """Safely extract the first text content from a Notion property.
+
+    Notion properties like ``rich_text`` and ``title`` are represented as lists of
+    objects. In some cases the list may be empty which would normally cause an
+    ``IndexError`` when accessing the first element. This helper handles missing or
+    empty lists gracefully and returns ``default`` instead.
+    """
+    try:
+        values = prop.get(key, [])
+        if isinstance(values, list) and values:
+            return values[0].get("text", {}).get("content", default)
+    except Exception:
+        pass
+    return default
+
+
 @app.route('/api/cache/refresh', methods=['POST'])
 @login_required
 def refresh_cache_endpoint():
@@ -702,12 +719,16 @@ def download_by_hash(salted_sha512_hash):
             return "File not found", 404
 
         properties = index_entry.get('properties', {})
-        
+
         # Extract properties from the index_entry
         is_public = properties.get('Is Public', {}).get('checkbox', False)
-        file_page_id = properties.get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        file_user_db_id = properties.get('User Database ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        original_filename = properties.get('Original Filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'download')
+        file_page_id = safe_get_property_text(properties.get('File Page ID', {}))
+        file_user_db_id = safe_get_property_text(properties.get('User Database ID', {}))
+        original_filename = safe_get_property_text(
+            properties.get('Original Filename', {}),
+            key="title",
+            default="download",
+        )
 
         # Now fetch the actual file details from the user's specific database using file_page_id
         # This is necessary to get the actual download link and other file-specific properties
@@ -716,9 +737,9 @@ def download_by_hash(salted_sha512_hash):
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
         iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
-        iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        iv_str = safe_get_property_text(iv_prop)
         key_prop = file_props.get('encryption_key', {})
-        key_str = key_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        key_str = safe_get_property_text(key_prop)
         try:
             iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
         except Exception:
@@ -881,12 +902,16 @@ def stream_by_hash(salted_sha512_hash):
             return "File not found", 404
 
         properties = index_entry.get('properties', {})
-        
+
         # Extract properties from the index_entry
         is_public = properties.get('Is Public', {}).get('checkbox', False)
-        file_page_id = properties.get('File Page ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        file_user_db_id = properties.get('User Database ID', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        original_filename = properties.get('Original Filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'video')
+        file_page_id = safe_get_property_text(properties.get('File Page ID', {}))
+        file_user_db_id = safe_get_property_text(properties.get('User Database ID', {}))
+        original_filename = safe_get_property_text(
+            properties.get('Original Filename', {}),
+            key="title",
+            default="video",
+        )
 
         # Now fetch the actual file details from the user's specific database using file_page_id
         file_details = uploader.get_user_by_id(file_page_id)
@@ -894,9 +919,9 @@ def stream_by_hash(salted_sha512_hash):
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
         iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
-        iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        iv_str = safe_get_property_text(iv_prop)
         key_prop = file_props.get('encryption_key', {})
-        key_str = key_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        key_str = safe_get_property_text(key_prop)
         try:
             iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
         except Exception:
