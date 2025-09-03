@@ -91,7 +91,7 @@
                         </td>
                     </tr>
                     {% else %}
-                    <tr data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}">
+                    <tr data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}" data-encryption-alg="{{ entry.encryption_alg }}" data-iv="{{ entry.iv }}" data-key-fingerprint="{{ entry.key_fingerprint }}">
                         <td><input type="checkbox" class="select-item" data-type="file" data-id="{{ entry.id }}"></td>
                         <td>
                             <span class="file-type-icon" data-filename="{{ entry.name }}"></span>

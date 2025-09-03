@@ -1959,6 +1959,11 @@ class NotionFileUploader:
         all_results: List[Dict[str, Any]] = []
         payload: Dict[str, Any] = {}
 
+        # Ensure encryption properties exist for legacy databases
+        self.ensure_database_property(database_id, "encryption_alg", "rich_text")
+        self.ensure_database_property(database_id, "iv", "rich_text")
+        self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
+
         try:
             while True:
                 response = requests.post(url, headers=headers, json=payload)
@@ -1973,6 +1978,28 @@ class NotionFileUploader:
 
                 # Prepare next request with start_cursor
                 payload['start_cursor'] = data.get('next_cursor')
+
+            # Backfill missing encryption metadata with default 'none' values
+            for page in all_results:
+                props = page.get('properties', {})
+                # Support legacy "encryption_iv" property
+                if 'iv' not in props and 'encryption_iv' in props:
+                    props['iv'] = props.get('encryption_iv', {})
+                updates: Dict[str, Any] = {}
+                for prop_name in ("encryption_alg", "iv", "key_fingerprint"):
+                    rich = props.get(prop_name, {}).get('rich_text', [])
+                    value = rich[0].get('text', {}).get('content', '') if rich else ''
+                    if not value:
+                        props[prop_name] = {
+                            "rich_text": [{"text": {"content": "none"}}]
+                        }
+                        updates[prop_name] = props[prop_name]
+                if updates:
+                    try:
+                        page_url = f"{self.base_url}/pages/{page.get('id')}"
+                        requests.patch(page_url, json={"properties": updates}, headers=headers)
+                    except Exception as e:
+                        print(f"Error backfilling encryption metadata for {page.get('id')}: {e}")
 
             return {
                 "object": "list",
@@ -2082,13 +2109,12 @@ class NotionFileUploader:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
-        # Ensure the is_folder property exists for this database
+        # Ensure required properties exist for this database
         self.ensure_database_property(database_id, "is_folder", "checkbox")
-
-        if encryption_meta:
-            self.ensure_database_property(database_id, "encryption_iv", "rich_text")
-            self.ensure_database_property(database_id, "encryption_alg", "rich_text")
-            self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
+        # Always ensure encryption properties so clients can rely on them
+        self.ensure_database_property(database_id, "encryption_alg", "rich_text")
+        self.ensure_database_property(database_id, "iv", "rich_text")
+        self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
@@ -2180,22 +2206,23 @@ class NotionFileUploader:
                 "checkbox": False
             }
         }
-        if encryption_meta:
-            properties["encryption_iv"] = {
-                "rich_text": [
-                    {"text": {"content": encryption_meta.get("iv", "")}}
-                ]
-            }
-            properties["encryption_alg"] = {
-                "rich_text": [
-                    {"text": {"content": encryption_meta.get("alg", "")}}
-                ]
-            }
-            properties["key_fingerprint"] = {
-                "rich_text": [
-                    {"text": {"content": encryption_meta.get("key_fingerprint", "")}}
-                ]
-            }
+        # Encryption metadata - backfill defaults when not provided
+        encryption_meta = encryption_meta or {}
+        properties["encryption_alg"] = {
+            "rich_text": [
+                {"text": {"content": encryption_meta.get("alg", "none")}}
+            ]
+        }
+        properties["iv"] = {
+            "rich_text": [
+                {"text": {"content": encryption_meta.get("iv", "none")}}
+            ]
+        }
+        properties["key_fingerprint"] = {
+            "rich_text": [
+                {"text": {"content": encryption_meta.get("key_fingerprint", "none")}}
+            ]
+        }
         # Add is_manifest property if this is a manifest entry
         if is_manifest:
             properties["is_manifest"] = {"checkbox": True}
