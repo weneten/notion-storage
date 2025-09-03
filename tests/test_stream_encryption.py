@@ -47,9 +47,11 @@ class DummyNotionUploader:
                                    file_size, original_filename, encryption_meta=None):
         chunks = list(file_stream)
         if encryption_meta:
-            key = encryption_meta['key']
-            iv = encryption_meta['iv']
-            chunks = list(encrypt_stream(key, iv, iter(chunks)))
+            fk = encryption_meta['file_key']
+            nonce = os.urandom(12)
+            chunks_iter, tag = encrypt_stream(fk, nonce, iter(chunks))
+            chunks = list(chunks_iter)
+            encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
         self.uploaded_bytes = b"".join(chunks)
         self.encryption_meta = encryption_meta
         return {'file_upload_id': '1', 'result': {}}
@@ -65,7 +67,8 @@ def test_single_part_stream_encrypted():
     encrypted = dummy.uploaded_bytes
     assert encrypted != data
     enc = session['encryption_meta']
-    decrypted = b"".join(decrypt_stream(enc['key'], enc['iv'], [encrypted]))
+    part = enc['parts'][0]
+    decrypted = b"".join(decrypt_stream(enc['file_key'], part['nonce'], part['tag'], [encrypted]))
     assert decrypted == data
 
 
@@ -91,5 +94,6 @@ def test_multipart_stream_encrypted(monkeypatch):
     encrypted = capture['data']
     assert encrypted != data
     enc = session['encryption_meta']
-    decrypted = b"".join(decrypt_stream(enc['key'], enc['iv'], [encrypted]))
+    part = enc['parts'][0]
+    decrypted = b"".join(decrypt_stream(enc['file_key'], part['nonce'], part['tag'], [encrypted]))
     assert decrypted == data

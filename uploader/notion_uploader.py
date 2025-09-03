@@ -960,7 +960,7 @@ class NotionFileUploader:
             user_id: Notion user ID
             total_size: Total file size in bytes
             existing_upload_info: Optional pre-created multipart upload info
-            encryption_meta: Optional encryption metadata (including key and IV)
+            encryption_meta: Optional encryption metadata (including file key)
         """
         # Get or create user's database
         database_id = self.get_user_database_id(user_id)
@@ -1022,10 +1022,12 @@ class NotionFileUploader:
             # Step 2: Send file content
             # Optionally encrypt the incoming stream on-the-fly
             if encryption_meta:
-                key = encryption_meta.get("key")
-                iv = encryption_meta.get("iv")
-                if key and iv:
-                    file_stream = encrypt_stream(key, iv, file_stream)
+                file_key = encryption_meta.get("file_key")
+                if file_key:
+                    nonce = os.urandom(12)
+                    enc_stream, tag = encrypt_stream(file_key, nonce, file_stream)
+                    encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
+                    file_stream = enc_stream
 
             # Create an accumulator for the streamed data
             total_bytes_received = 0
@@ -1123,10 +1125,12 @@ class NotionFileUploader:
 
             # Optionally encrypt stream before chunking
             if encryption_meta:
-                key = encryption_meta.get("key")
-                iv = encryption_meta.get("iv")
-                if key and iv:
-                    file_stream = encrypt_stream(key, iv, file_stream)
+                file_key = encryption_meta.get("file_key")
+                if file_key:
+                    nonce = os.urandom(12)
+                    enc_stream, tag = encrypt_stream(file_key, nonce, file_stream)
+                    encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
+                    file_stream = enc_stream
 
             chunk_processor = ChunkProcessor()
 
@@ -2214,9 +2218,9 @@ class NotionFileUploader:
                 {"text": {"content": encryption_meta.get("alg", "none")}}
             ]
         }
-        properties["iv"] = {
+        properties["nonce"] = {
             "rich_text": [
-                {"text": {"content": encryption_meta.get("iv_b64", "none")}}
+                {"text": {"content": encryption_meta.get("nonce_b64", "none")}}
             ]
         }
         properties["key_fingerprint"] = {
@@ -2224,9 +2228,9 @@ class NotionFileUploader:
                 {"text": {"content": encryption_meta.get("key_fingerprint", "none")}}
             ]
         }
-        properties["encryption_key"] = {
+        properties["wrapped_file_key"] = {
             "rich_text": [
-                {"text": {"content": encryption_meta.get("key_b64", "none")}}
+                {"text": {"content": encryption_meta.get("wrapped_fk_b64", "none")}}
             ]
         }
         # Add is_manifest property if this is a manifest entry
@@ -2563,10 +2567,12 @@ class NotionFileUploader:
         pending_uploads = []
 
         if encryption_meta:
-            key = encryption_meta.get("key")
-            iv = encryption_meta.get("iv")
-            if key and iv:
-                stream = encrypt_stream(key, iv, stream)
+            file_key = encryption_meta.get("file_key")
+            if file_key:
+                nonce = os.urandom(12)
+                enc_stream, tag = encrypt_stream(file_key, nonce, stream)
+                encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
+                stream = enc_stream
 
         # Create thread pool for concurrent uploads
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
