@@ -220,6 +220,7 @@ function appendEntries(entries) {
         } else {
             row.dataset.fileId = entry.id;
             row.dataset.fileHash = entry.file_hash || '';
+            row.dataset.filename = entry.name;
             row.dataset.encryptionAlg = entry.encryption_alg || 'none';
             row.dataset.iv = entry.iv || 'none';
             row.dataset.keyFingerprint = entry.key_fingerprint || 'none';
@@ -234,7 +235,7 @@ function appendEntries(entries) {
                 <td><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
                 <td class="action-buttons">
                     ${viewContainer}
-                    <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                    <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm download-btn" data-filename="${entry.name}"><i class="fas fa-download mr-1"></i>Download</a>
                     <div class="btn-group">
                         <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
                             <i class="fas fa-bars"></i>
@@ -307,7 +308,11 @@ class StreamingFileUploader {
             statusCallback('Initializing streaming upload...', 'info');
             console.log('Starting streaming upload for file:', file.name, 'Size:', file.size);
 
-            // Step 1: Create upload session on server
+            // Encrypt file locally before uploading
+            const { ciphertext, iv, keyFingerprint } = await window.CryptoManager.encryptFile(file);
+            const encryptedBlob = new Blob([ciphertext], { type: 'application/octet-stream' });
+
+            // Step 1: Create upload session on server including encryption metadata
             console.log('Creating upload session...');
             const sessionResponse = await fetch('/api/upload/create-session', {
                 method: 'POST',
@@ -316,9 +321,10 @@ class StreamingFileUploader {
                 },
                 body: JSON.stringify({
                     filename: file.name,
-                    fileSize: file.size,
+                    fileSize: encryptedBlob.size,
                     contentType: file.type || 'application/octet-stream',
-                    folderPath: folderPath
+                    folderPath: folderPath,
+                    encryption: { alg: 'AES-GCM', iv: iv, key_fingerprint: keyFingerprint }
                 })
             });
 
@@ -335,10 +341,16 @@ class StreamingFileUploader {
             const actualUploadId = sessionData.upload_id;
 
             // Step 2: Start streaming upload
-            statusCallback(`Streaming ${file.name} (${this.formatFileSize(file.size)})...`, 'info');
+            statusCallback(`Streaming ${file.name} (${this.formatFileSize(encryptedBlob.size)})...`, 'info');
             console.log('Starting file stream for upload ID:', actualUploadId);
 
-            const result = await this.streamFileToServer(actualUploadId, file, progressCallback, statusCallback);
+            const result = await this.streamFileToServer(
+                actualUploadId,
+                encryptedBlob,
+                progressCallback,
+                statusCallback,
+                { alg: 'AES-GCM', iv: iv, keyFingerprint: keyFingerprint }
+            );
 
             console.log('Upload completed:', result);
             statusCallback(`Upload completed successfully!`, 'success');
@@ -364,7 +376,7 @@ class StreamingFileUploader {
      * Stream file data directly to server using simple fetch approach
      * This eliminates complex ReadableStream and uses direct file upload
      */
-    async streamFileToServer(uploadId, file, progressCallback, statusCallback) {
+    async streamFileToServer(uploadId, file, progressCallback, statusCallback, encInfo = null) {
         const controller = new AbortController();
 
         // Store upload info for potential cancellation
@@ -421,8 +433,13 @@ class StreamingFileUploader {
 
                 // Set headers
                 xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+                xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name || 'encrypted'));
                 xhr.setRequestHeader('X-File-Size', file.size.toString());
+                if (encInfo) {
+                    xhr.setRequestHeader('X-Encryption-Alg', encInfo.alg);
+                    xhr.setRequestHeader('X-Encryption-IV', encInfo.iv);
+                    xhr.setRequestHeader('X-Key-Fingerprint', encInfo.keyFingerprint);
+                }
 
                 // Send the file directly
                 xhr.send(file);
@@ -913,7 +930,7 @@ function renderEntries(entries) {
             const viewButtonHTML = fileInfo.isViewable && fileHash ? createViewButton(fileHash, fileInfo.type, entry.name) : '';
 
             tableHTML += `
-            <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
+            <tr data-file-id="${fileId}" data-file-hash="${fileHash}" data-filename="${entry.name}" data-encryption-alg="${entry.encryption_alg || 'none'}" data-iv="${entry.iv || 'none'}" data-key-fingerprint="${entry.key_fingerprint || 'none'}">
                 <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
                 <td>
                     <span style="margin-right: 8px;">${fileInfo.icon}</span>
@@ -936,7 +953,7 @@ function renderEntries(entries) {
                 </td>
                 <td class="action-buttons">
                     ${viewButtonHTML}
-                    <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
+                    <a href="/d/${fileHash}" class="btn btn-primary btn-sm download-btn" data-filename="${entry.name}">
                         <i class="fas fa-download mr-1"></i>Download
                     </a>
                     <div class="btn-group">
@@ -1237,6 +1254,35 @@ function setupFileActionEventHandlers(root = document) {
                 console.error('Toggle Public Access Error:', error);
                 this.checked = !isPublic; // Revert toggle on error
                 showStatus('Error updating public status: ' + error.message, 'error');
+            }
+        });
+    });
+
+    // Intercept download buttons to perform client-side decryption
+    root.querySelectorAll('.download-btn').forEach(btn => {
+        if (btn.dataset.listenerAttached) return;
+        btn.dataset.listenerAttached = 'true';
+        btn.addEventListener('click', async function (e) {
+            const row = this.closest('tr');
+            const alg = row?.dataset.encryptionAlg || 'none';
+            if (alg !== 'none') {
+                e.preventDefault();
+                try {
+                    const resp = await fetch(this.href);
+                    const cipher = new Uint8Array(await resp.arrayBuffer());
+                    const plain = await window.CryptoManager.decrypt(cipher, row.dataset.iv, row.dataset.keyFingerprint);
+                    const blob = new Blob([plain]);
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = this.dataset.filename || row.dataset.filename || 'download';
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                } catch (err) {
+                    alert('Failed to decrypt file: ' + err.message);
+                }
             }
         });
     });

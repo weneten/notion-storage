@@ -160,12 +160,13 @@ class MediaModalLightbox {
     /**
      * Open modal with media content
      */
-    async openModal(mediaUrl, filename, filesize = '', filetype = '', mediaList = [], currentIndex = 0) {
+    async openModal(mediaUrl, filename, filesize = '', filetype = '', mediaList = [], currentIndex = 0, encryption = null) {
         if (!this.modal) return;
-        
+
         // Store media list for navigation
         this.currentMediaList = mediaList;
         this.currentMediaIndex = currentIndex;
+        this.currentEncryption = encryption;
         
         // Prevent body scrolling
         document.body.style.overflow = 'hidden';
@@ -199,7 +200,7 @@ class MediaModalLightbox {
         
         // Load media content asynchronously after modal is shown
         try {
-            await this.loadMediaContent(mediaUrl, filename);
+            await this.loadMediaContent(mediaUrl, filename, encryption);
         } catch (error) {
             console.error('Error loading media content:', error);
             this.showError('Failed to load media content');
@@ -250,9 +251,17 @@ class MediaModalLightbox {
     /**
      * Load media content based on file type
      */
-    async loadMediaContent(mediaUrl, filename) {
+    async loadMediaContent(mediaUrl, filename, encryption = null) {
         console.log('=== DEBUG: loadMediaContent called for:', filename, 'URL:', mediaUrl);
-        
+
+        let finalUrl = mediaUrl;
+        if (encryption && encryption.alg && encryption.alg !== 'none') {
+            const resp = await fetch(mediaUrl);
+            const cipher = new Uint8Array(await resp.arrayBuffer());
+            const plain = await window.CryptoManager.decrypt(cipher, encryption.iv, encryption.keyFingerprint);
+            finalUrl = URL.createObjectURL(new Blob([plain]));
+        }
+
         const fileType = this.getFileType(filename);
         const mediaContainer = this.modalMediaContainer;
         
@@ -280,16 +289,16 @@ class MediaModalLightbox {
         
         switch (fileType) {
             case 'video':
-                mediaElement = await this.createVideoElement(mediaUrl, filename);
+                mediaElement = await this.createVideoElement(finalUrl, filename);
                 break;
             case 'image':
-                mediaElement = await this.createImageElement(mediaUrl, filename);
+                mediaElement = await this.createImageElement(finalUrl, filename);
                 break;
             case 'audio':
-                mediaElement = await this.createAudioElement(mediaUrl, filename);
+                mediaElement = await this.createAudioElement(finalUrl, filename);
                 break;
             case 'pdf':
-                mediaElement = await this.createPdfElement(mediaUrl, filename);
+                mediaElement = await this.createPdfElement(finalUrl, filename);
                 break;
             default:
                 throw new Error(`Unsupported file type: ${fileType}`);
@@ -674,7 +683,8 @@ class MediaModalLightbox {
                     prevMedia.filesize,
                     prevMedia.filetype,
                     this.currentMediaList,
-                    this.currentMediaIndex - 1
+                    this.currentMediaIndex - 1,
+                    prevMedia.encryption
                 );
             }
         }
@@ -692,7 +702,8 @@ class MediaModalLightbox {
                     nextMedia.filesize,
                     nextMedia.filetype,
                     this.currentMediaList,
-                    this.currentMediaIndex + 1
+                    this.currentMediaIndex + 1,
+                    nextMedia.encryption
                 );
             }
         }
@@ -877,12 +888,18 @@ function setupModalViewButtons() {
         const filesize = getFilesizeFromButton(viewButton);
         const filetype = getFiletypeFromButton(viewButton);
         const mediaUrl = viewButton.href;
+        const row = viewButton.closest('tr');
+        const encryption = row ? {
+            alg: row.dataset.encryptionAlg,
+            iv: row.dataset.iv,
+            keyFingerprint: row.dataset.keyFingerprint
+        } : null;
 
         const mediaList = getMediaListFromPage();
         const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
 
         if (mediaModal) {
-            mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
+            mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex, encryption);
         }
     };
 
@@ -960,11 +977,18 @@ function getMediaListFromPage() {
             
             // Only include actual media files (not download links)
             if (['Video', 'Image', 'Audio', 'PDF'].includes(fileType)) {
+                const row = button.closest('tr');
+                const encryption = row ? {
+                    alg: row.dataset.encryptionAlg,
+                    iv: row.dataset.iv,
+                    keyFingerprint: row.dataset.keyFingerprint
+                } : null;
                 mediaList.push({
                     url: button.href,
                     filename: filename,
                     filesize: getFilesizeFromButton(button),
-                    filetype: fileType
+                    filetype: fileType,
+                    encryption: encryption
                 });
             }
         }
@@ -983,11 +1007,11 @@ function getMediaIndexFromUrl(currentUrl, mediaList) {
 /**
  * Public API for opening modal programmatically
  */
-window.openMediaModal = function(mediaUrl, filename, filesize = '', filetype = '') {
+window.openMediaModal = function(mediaUrl, filename, filesize = '', filetype = '', encryption = null) {
     if (mediaModal) {
         const mediaList = getMediaListFromPage();
         const currentIndex = getMediaIndexFromUrl(mediaUrl, mediaList);
-        mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex);
+        mediaModal.openModal(mediaUrl, filename, filesize, filetype, mediaList, currentIndex, encryption);
     } else {
         console.error('Media modal not initialized');
     }
