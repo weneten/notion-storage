@@ -13,6 +13,7 @@ import uuid
 import time
 import random
 import mimetypes
+import base64
 from .s3_downloader import (
     download_file_from_url,
     stream_file_from_url,
@@ -2140,6 +2141,7 @@ class NotionFileUploader:
         self.ensure_database_property(database_id, "iv", "rich_text")
         self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
         self.ensure_database_property(database_id, "nonce", "rich_text")
+        self.ensure_database_property(database_id, "tag", "rich_text")
         self.ensure_database_property(database_id, "wrapped_file_key", "rich_text")
         self.ensure_database_property(database_id, "encryption_key", "rich_text")
 
@@ -2235,6 +2237,19 @@ class NotionFileUploader:
         }
         # Encryption metadata - backfill defaults when not provided
         encryption_meta = encryption_meta or {}
+        nonce_b64 = encryption_meta.get("nonce_b64")
+        tag_b64 = encryption_meta.get("tag_b64")
+        if (not nonce_b64 or not tag_b64) and encryption_meta.get("parts"):
+            first_part = encryption_meta["parts"][0]
+            if not nonce_b64:
+                part_nonce = first_part.get("nonce")
+                if part_nonce:
+                    nonce_b64 = base64.b64encode(part_nonce).decode("utf-8")
+            if not tag_b64:
+                part_tag = first_part.get("tag")
+                if part_tag:
+                    tag_b64 = base64.b64encode(part_tag).decode("utf-8")
+
         properties["encryption_alg"] = {
             "rich_text": [
                 {"text": {"content": encryption_meta.get("alg", "none")}}
@@ -2242,7 +2257,12 @@ class NotionFileUploader:
         }
         properties["nonce"] = {
             "rich_text": [
-                {"text": {"content": encryption_meta.get("nonce_b64", "none")}}
+                {"text": {"content": nonce_b64 or "none"}}
+            ]
+        }
+        properties["tag"] = {
+            "rich_text": [
+                {"text": {"content": tag_b64 or "none"}}
             ]
         }
         properties["key_fingerprint"] = {

@@ -17,7 +17,7 @@ import base64
 import bcrypt
 import mimetypes
 import traceback
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 import threading
 import time
 import uuid
@@ -176,6 +176,20 @@ def safe_get_property_text(prop: Dict[str, Any], key: str = "rich_text", default
         pass
     return default
 
+
+def extract_encryption_params(props: Dict[str, Any]) -> Tuple[bytes | None, bytes | None, bytes | None]:
+    """Extract and decode encryption parameters from Notion properties."""
+    key_str = safe_get_property_text(props.get('encryption_key', {}))
+    nonce_str = (
+        safe_get_property_text(props.get('nonce', {}))
+        or safe_get_property_text(props.get('iv', {}))
+    )
+    tag_str = safe_get_property_text(props.get('tag', {}))
+
+    key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
+    nonce = base64.b64decode(nonce_str) if nonce_str and nonce_str != 'none' else None
+    tag = base64.b64decode(tag_str) if tag_str and tag_str != 'none' else None
+    return key, nonce, tag
 
 @app.route('/api/cache/refresh', methods=['POST'])
 @login_required
@@ -668,13 +682,10 @@ def download_folder():
                 def manifest_generator(manifest_id=item['id']):
                     page = uploader.get_user_by_id(manifest_id)
                     props = page.get('properties', {})
-                    key_str = props.get('encryption_key', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                    iv_str = props.get('iv', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                    key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
-                    iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
+                    key, nonce, tag = extract_encryption_params(props)
                     iterator = uploader.stream_multi_part_file(manifest_id)
-                    if key and iv:
-                        iterator = decrypt_stream(key, iv, iterator)
+                    if key and nonce and tag:
+                        iterator = decrypt_stream(key, nonce, tag, iterator)
                     yield from iterator
                 z.write_iter(archive_name, manifest_generator())
             else:
@@ -685,15 +696,12 @@ def download_folder():
                         return
                     page = uploader.get_user_by_id(file_id)
                     props = page.get('properties', {})
-                    key_str = props.get('encryption_key', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                    iv_str = props.get('iv', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                    key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
-                    iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
+                    key, nonce, tag = extract_encryption_params(props)
                     iterator = uploader.stream_file_from_notion(
                         file_id, filename, download_url=url
                     )
-                    if key and iv:
-                        iterator = decrypt_stream(key, iv, iterator)
+                    if key and nonce and tag:
+                        iterator = decrypt_stream(key, nonce, tag, iterator)
                     yield from iterator
 
                 z.write_iter(archive_name, file_generator())
@@ -736,18 +744,7 @@ def download_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
-        iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
-        iv_str = safe_get_property_text(iv_prop)
-        key_prop = file_props.get('encryption_key', {})
-        key_str = safe_get_property_text(key_prop)
-        try:
-            iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
-        except Exception:
-            iv = None
-        try:
-            key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
-        except Exception:
-            key = None
+        key, iv, tag = extract_encryption_params(file_props)
 
         # Check access control
         if not is_public:
@@ -821,8 +818,8 @@ def download_by_hash(salted_sha512_hash):
 
                     def stream_range():
                         iterator = uploader.stream_multi_part_file(file_page_id, start, end)
-                        if key and iv:
-                            iterator = decrypt_stream(key, iv, iterator)
+                        if key and iv and tag:
+                            iterator = decrypt_stream(key, iv, tag, iterator)
                         for chunk in iterator:
                             yield chunk
 
@@ -831,8 +828,8 @@ def download_by_hash(salted_sha512_hash):
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
                     iterator = uploader.stream_multi_part_file(file_page_id)
-                    if key and iv:
-                        iterator = decrypt_stream(key, iv, iterator)
+                    if key and iv and tag:
+                        iterator = decrypt_stream(key, iv, tag, iterator)
                     response = Response(stream_with_context(iterator), mimetype=mimetype)
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
@@ -860,8 +857,8 @@ def download_by_hash(salted_sha512_hash):
             original_filename,
             download_url=file_metadata['url']
         )
-        if key and iv:
-            iterator = decrypt_stream(key, iv, iterator)
+        if key and iv and tag:
+            iterator = decrypt_stream(key, iv, tag, iterator)
         response = Response(
             stream_with_context(iterator),
             mimetype=mimetype
@@ -918,18 +915,7 @@ def stream_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
-        iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
-        iv_str = safe_get_property_text(iv_prop)
-        key_prop = file_props.get('encryption_key', {})
-        key_str = safe_get_property_text(key_prop)
-        try:
-            iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
-        except Exception:
-            iv = None
-        try:
-            key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
-        except Exception:
-            key = None
+        key, iv, tag = extract_encryption_params(file_props)
 
         # Check access control (same logic as download route)
         if not is_public:
@@ -1000,8 +986,8 @@ def stream_by_hash(salted_sha512_hash):
 
                     def stream_range():
                         iterator = uploader.stream_multi_part_file(file_page_id, start, end)
-                        if key and iv:
-                            iterator = decrypt_stream(key, iv, iterator)
+                        if key and iv and tag:
+                            iterator = decrypt_stream(key, iv, tag, iterator)
                         for chunk in iterator:
                             yield chunk
 
@@ -1010,8 +996,8 @@ def stream_by_hash(salted_sha512_hash):
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
                     iterator = uploader.stream_multi_part_file(file_page_id)
-                    if key and iv:
-                        iterator = decrypt_stream(key, iv, iterator)
+                    if key and iv and tag:
+                        iterator = decrypt_stream(key, iv, tag, iterator)
                     response = Response(stream_with_context(iterator), mimetype=mimetype)
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
@@ -1164,8 +1150,8 @@ def stream_by_hash(salted_sha512_hash):
                         end,
                         download_url=file_metadata['url']
                     )
-                    if key and iv:
-                        iterator = decrypt_stream(key, iv, iterator)
+                    if key and iv and tag:
+                        iterator = decrypt_stream(key, iv, tag, iterator)
                     for chunk in iterator:
                         yield chunk
                 
@@ -1206,8 +1192,8 @@ def stream_by_hash(salted_sha512_hash):
                 original_filename,
                 download_url=file_metadata['url']
             )
-            if key and iv:
-                iterator = decrypt_stream(key, iv, iterator)
+            if key and iv and tag:
+                iterator = decrypt_stream(key, iv, tag, iterator)
             response = Response(
                 stream_with_context(iterator),
                 mimetype=mimetype
@@ -2526,18 +2512,7 @@ def download_multipart_by_page_id(manifest_page_id):
         if not manifest_page:
             return "Manifest page not found", 404
         manifest_props = manifest_page.get('properties', {})
-        iv_prop = manifest_props.get('iv', {}) or manifest_props.get('encryption_iv', {})
-        iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        key_prop = manifest_props.get('encryption_key', {})
-        key_str = key_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        try:
-            iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
-        except Exception:
-            iv = None
-        try:
-            key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
-        except Exception:
-            key = None
+        key, iv, tag = extract_encryption_params(manifest_props)
         file_property = manifest_props.get('file_data', {})
         files_array = file_property.get('files', [])
         manifest_file = files_array[0] if files_array else None
@@ -2583,8 +2558,8 @@ def download_multipart_by_page_id(manifest_page_id):
 
             def stream_range():
                 iterator = uploader.stream_multi_part_file(manifest_page_id, start, end)
-                if key and iv:
-                    iterator = decrypt_stream(key, iv, iterator)
+                if key and iv and tag:
+                    iterator = decrypt_stream(key, iv, tag, iterator)
                 for chunk in iterator:
                     yield chunk
 
@@ -2593,8 +2568,8 @@ def download_multipart_by_page_id(manifest_page_id):
             response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
         else:
             iterator = uploader.stream_multi_part_file(manifest_page_id)
-            if key and iv:
-                iterator = decrypt_stream(key, iv, iterator)
+            if key and iv and tag:
+                iterator = decrypt_stream(key, iv, tag, iterator)
             response = Response(stream_with_context(iterator), mimetype=mimetype)
             if total_size > 0:
                 response.headers['Content-Length'] = str(total_size)
