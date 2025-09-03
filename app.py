@@ -5,6 +5,7 @@ from flask_cors import CORS
 from uploader import NotionFileUploader, ChunkProcessor, download_s3_file_from_url
 from uploader.streaming_uploader import StreamingUploadManager
 from uploader.s3_downloader import cleanup_stale_streams
+from uploader.crypto_utils import decrypt_stream
 from dotenv import load_dotenv
 import os
 import tempfile
@@ -302,6 +303,21 @@ def add_stream_headers(resp, mimetype=''):
         resp.headers.setdefault('Content-Transfer-Encoding', 'binary')
     return resp
 
+
+def _get_request_key() -> bytes | None:
+    """Return the decryption key from header or session if provided."""
+    key_b64 = request.headers.get('X-File-Key')
+    if key_b64:
+        session['file_key'] = key_b64
+    else:
+        key_b64 = session.get('file_key')
+    if not key_b64:
+        return None
+    try:
+        return base64.b64decode(key_b64)
+    except Exception:
+        return None
+
 # Initialize Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -569,6 +585,7 @@ def download_file(filename):
     Download file by filename (authenticated route) - redirects to hash-based download
     """
     try:
+        _get_request_key()
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
             return "User database not found", 404
@@ -675,6 +692,7 @@ def download_by_hash(salted_sha512_hash):
     Download file by hash (public/private route with access control)
     """
     try:
+        key = _get_request_key()
         # Find the file in the global file index using the hash
         index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash, force_refresh=True)
 
@@ -694,6 +712,13 @@ def download_by_hash(salted_sha512_hash):
         file_details = uploader.get_user_by_id(file_page_id)
         if not file_details:
             return "File details not found in user database.", 404
+        file_props = file_details.get('properties', {})
+        iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
+        iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        try:
+            iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
+        except Exception:
+            iv = None
 
         # Check access control
         if not is_public:
@@ -766,14 +791,20 @@ def download_by_hash(salted_sha512_hash):
                         return response
 
                     def stream_range():
-                        for chunk in uploader.stream_multi_part_file(file_page_id, start, end):
+                        iterator = uploader.stream_multi_part_file(file_page_id, start, end)
+                        if key and iv:
+                            iterator = decrypt_stream(key, iv, iterator)
+                        for chunk in iterator:
                             yield chunk
 
                     response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
                     response.headers['Content-Length'] = str(end - start + 1)
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
-                    response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                    iterator = uploader.stream_multi_part_file(file_page_id)
+                    if key and iv:
+                        iterator = decrypt_stream(key, iv, iterator)
+                    response = Response(stream_with_context(iterator), mimetype=mimetype)
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
 
@@ -795,14 +826,15 @@ def download_by_hash(salted_sha512_hash):
             detected_type, _ = mimetypes.guess_type(original_filename)
             if detected_type:
                 mimetype = detected_type
+        iterator = uploader.stream_file_from_notion(
+            file_page_id,
+            original_filename,
+            download_url=file_metadata['url']
+        )
+        if key and iv:
+            iterator = decrypt_stream(key, iv, iterator)
         response = Response(
-            stream_with_context(
-                uploader.stream_file_from_notion(
-                    file_page_id,
-                    original_filename,
-                    download_url=file_metadata['url']
-                )
-            ),
+            stream_with_context(iterator),
             mimetype=mimetype
         )
         response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
@@ -834,6 +866,7 @@ def stream_by_hash(salted_sha512_hash):
     return only the appropriate headers without streaming any data.
     """
     try:
+        key = _get_request_key()
         # Find the file in the global file index using the hash
         index_entry = uploader.get_file_by_salted_sha512_hash(salted_sha512_hash, force_refresh=True)
 
@@ -852,6 +885,13 @@ def stream_by_hash(salted_sha512_hash):
         file_details = uploader.get_user_by_id(file_page_id)
         if not file_details:
             return "File details not found in user database.", 404
+        file_props = file_details.get('properties', {})
+        iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
+        iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        try:
+            iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
+        except Exception:
+            iv = None
 
         # Check access control (same logic as download route)
         if not is_public:
@@ -921,14 +961,20 @@ def stream_by_hash(salted_sha512_hash):
                         return response
 
                     def stream_range():
-                        for chunk in uploader.stream_multi_part_file(file_page_id, start, end):
+                        iterator = uploader.stream_multi_part_file(file_page_id, start, end)
+                        if key and iv:
+                            iterator = decrypt_stream(key, iv, iterator)
+                        for chunk in iterator:
                             yield chunk
 
                     response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
                     response.headers['Content-Length'] = str(end - start + 1)
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
-                    response = Response(stream_with_context(uploader.stream_multi_part_file(file_page_id)), mimetype=mimetype)
+                    iterator = uploader.stream_multi_part_file(file_page_id)
+                    if key and iv:
+                        iterator = decrypt_stream(key, iv, iterator)
+                    response = Response(stream_with_context(iterator), mimetype=mimetype)
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
 
@@ -1073,13 +1119,16 @@ def stream_by_hash(salted_sha512_hash):
                 
                 # Stream the requested range
                 def stream_range():
-                    for chunk in uploader.stream_file_from_notion_range(
+                    iterator = uploader.stream_file_from_notion_range(
                         file_page_id,
                         original_filename,
                         start,
                         end,
                         download_url=file_metadata['url']
-                    ):
+                    )
+                    if key and iv:
+                        iterator = decrypt_stream(key, iv, iterator)
+                    for chunk in iterator:
                         yield chunk
                 
                 # Create partial content response
@@ -1114,14 +1163,15 @@ def stream_by_hash(salted_sha512_hash):
         
         else:
             # Full content request
+            iterator = uploader.stream_file_from_notion(
+                file_page_id,
+                original_filename,
+                download_url=file_metadata['url']
+            )
+            if key and iv:
+                iterator = decrypt_stream(key, iv, iterator)
             response = Response(
-                stream_with_context(
-                    uploader.stream_file_from_notion(
-                        file_page_id,
-                        original_filename,
-                        download_url=file_metadata['url']
-                    )
-                ),
+                stream_with_context(iterator),
                 mimetype=mimetype
             )
             response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
@@ -2434,10 +2484,18 @@ def download_multipart_by_page_id(manifest_page_id):
     """
     try:
         import requests, json
+        key = _get_request_key()
         manifest_page = uploader.get_user_by_id(manifest_page_id)
         if not manifest_page:
             return "Manifest page not found", 404
-        file_property = manifest_page.get('properties', {}).get('file_data', {})
+        manifest_props = manifest_page.get('properties', {})
+        iv_prop = manifest_props.get('iv', {}) or manifest_props.get('encryption_iv', {})
+        iv_str = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        try:
+            iv = base64.b64decode(iv_str) if iv_str and iv_str != 'none' else None
+        except Exception:
+            iv = None
+        file_property = manifest_props.get('file_data', {})
         files_array = file_property.get('files', [])
         manifest_file = files_array[0] if files_array else None
 
@@ -2481,14 +2539,20 @@ def download_multipart_by_page_id(manifest_page_id):
                 return response
 
             def stream_range():
-                for chunk in uploader.stream_multi_part_file(manifest_page_id, start, end):
+                iterator = uploader.stream_multi_part_file(manifest_page_id, start, end)
+                if key and iv:
+                    iterator = decrypt_stream(key, iv, iterator)
+                for chunk in iterator:
                     yield chunk
 
             response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
             response.headers['Content-Length'] = str(end - start + 1)
             response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
         else:
-            response = Response(stream_with_context(uploader.stream_multi_part_file(manifest_page_id)), mimetype=mimetype)
+            iterator = uploader.stream_multi_part_file(manifest_page_id)
+            if key and iv:
+                iterator = decrypt_stream(key, iv, iterator)
+            response = Response(stream_with_context(iterator), mimetype=mimetype)
             if total_size > 0:
                 response.headers['Content-Length'] = str(total_size)
 

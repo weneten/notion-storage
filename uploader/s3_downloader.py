@@ -282,16 +282,53 @@ def _stream_presigned_url(
     return _PresignedStream(url, headers=headers, chunk_size=chunk_size)
 
 
-def stream_file_from_url(url: str, chunk_size: int = 8192):
-    """Stream an object using its full pre-signed URL."""
+from .crypto_utils import decrypt_stream
 
-    return _stream_presigned_url(url, chunk_size=chunk_size)
+
+def stream_file_from_url(
+    url: str,
+    chunk_size: int = 8192,
+    *,
+    key: bytes | None = None,
+    iv: bytes | None = None,
+):
+    """Stream an object using its full pre-signed URL.
+
+    Parameters
+    ----------
+    url:
+        Pre-signed S3 URL to stream from.
+    chunk_size:
+        Size of chunks to yield.
+    key, iv:
+        Optional AES parameters. When provided, the response stream is
+        transparently decrypted using :func:`decrypt_stream` while preserving
+        chunked iteration.
+    """
+
+    stream = _stream_presigned_url(url, chunk_size=chunk_size)
+    if key and iv:
+        return decrypt_stream(key, iv, stream)
+    return stream
 
 
 def stream_file_range_from_url(
-    url: str, start: int, end: int, chunk_size: int = 8192
+    url: str,
+    start: int,
+    end: int,
+    chunk_size: int = 8192,
+    *,
+    key: bytes | None = None,
+    iv: bytes | None = None,
 ):
-    """Stream a specific byte range from a pre-signed S3 URL."""
+    """Stream a specific byte range from a pre-signed S3 URL.
+
+    The returned iterator yields decrypted chunks when ``key`` and ``iv`` are
+    supplied, allowing callers to lazily decrypt large files while streaming.
+    """
 
     headers = {"Range": f"bytes={start}-{end}"}
-    return _stream_presigned_url(url, headers=headers, chunk_size=chunk_size)
+    stream = _stream_presigned_url(url, headers=headers, chunk_size=chunk_size)
+    if key and iv:
+        return decrypt_stream(key, iv, stream)
+    return stream
