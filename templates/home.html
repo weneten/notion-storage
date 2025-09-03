@@ -27,6 +27,12 @@
             <i class="fas fa-folder-open mr-1"></i>Move Selected
         </button>
     </div>
+    <div id="keyManager" class="mb-3">
+        <button id="generateKeyBtn" class="btn btn-secondary btn-sm"><i class="fas fa-key mr-1"></i>Generate Key</button>
+        <button id="exportKeysBtn" class="btn btn-secondary btn-sm ml-2"><i class="fas fa-file-export mr-1"></i>Export Keys</button>
+        <button id="importKeysBtn" class="btn btn-secondary btn-sm ml-2"><i class="fas fa-file-import mr-1"></i>Import Keys</button>
+        <input type="file" id="importKeysInput" accept="application/json" style="display:none;">
+    </div>
     <form id="uploadForm" method="post" enctype="multipart/form-data">
         <div class="form-group">
             <label for="fileInput">Select Files or Folders:</label>
@@ -96,6 +102,10 @@
                         <td>
                             <span class="file-type-icon" data-filename="{{ entry.name }}"></span>
                             <strong>{{ entry.name }}</strong>
+                            {% if entry.encryption_alg and entry.encryption_alg != 'none' %}
+                            <i class="fas fa-lock text-info encrypted-indicator" title="Encrypted"></i>
+                            <span class="missing-key-warning text-danger" style="display:none;" title="Missing decryption key"><i class="fas fa-exclamation-triangle"></i></span>
+                            {% endif %}
                         </td>
                         <td class="filesize-cell">{{ entry.size | format_bytes }}</td>
                         <td>{{ entry.folder }}</td>
@@ -702,6 +712,53 @@
     document.addEventListener('DOMContentLoaded', function() {
         initializeFileTypeIcons();
     });
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const genBtn = document.getElementById('generateKeyBtn');
+    const expBtn = document.getElementById('exportKeysBtn');
+    const impBtn = document.getElementById('importKeysBtn');
+    const impInput = document.getElementById('importKeysInput');
+
+    if (genBtn) {
+        genBtn.addEventListener('click', async () => {
+            const { fingerprint } = await window.CryptoManager.generateKey();
+            showStatus(`Generated key ${fingerprint.slice(0,8)}...`, 'success');
+        });
+    }
+
+    if (expBtn) {
+        expBtn.addEventListener('click', () => {
+            const data = window.CryptoManager.exportKeys();
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'keys.json';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        });
+    }
+
+    if (impBtn && impInput) {
+        impBtn.addEventListener('click', () => impInput.click());
+        impInput.addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            try {
+                const text = await file.text();
+                window.CryptoManager.importKeys(text);
+                showStatus('Keys imported', 'success');
+                if (typeof markEncryptedRows === 'function') { markEncryptedRows.warned = false; markEncryptedRows(); }
+            } catch (err) {
+                showStatus('Failed to import keys: ' + err.message, 'error');
+            }
+        });
+    }
+});
 </script>
 
 <style>

@@ -25,11 +25,69 @@ class CryptoManager {
         return crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
     }
 
-    async encryptFile(file) {
+    hasKey(fingerprint) {
+        return !!localStorage.getItem(this.storagePrefix + fingerprint);
+    }
+
+    listKeys() {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith(this.storagePrefix)) {
+                const fingerprint = k.substring(this.storagePrefix.length);
+                keys.push({ fingerprint, key: localStorage.getItem(k) });
+            }
+        }
+        return keys;
+    }
+
+    exportKeys() {
+        return JSON.stringify(this.listKeys());
+    }
+
+    importKeys(json) {
+        let data;
+        if (typeof json === 'string') {
+            data = JSON.parse(json);
+        } else {
+            data = json;
+        }
+        if (!Array.isArray(data)) throw new Error('Invalid key file');
+        data.forEach(k => {
+            if (k.fingerprint && k.key) {
+                localStorage.setItem(this.storagePrefix + k.fingerprint, k.key);
+            }
+        });
+    }
+
+    async encryptFile(file, progressCallback = null) {
         const { key, fingerprint } = await this.generateKey();
         const iv = crypto.getRandomValues(new Uint8Array(12));
-        const data = await file.arrayBuffer();
+
+        // Read file in chunks to provide progress updates
+        const reader = file.stream().getReader();
+        const chunks = [];
+        let received = 0;
+        if (progressCallback) progressCallback(0, 0);
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            if (progressCallback) {
+                const pct = (received / file.size) * 100;
+                progressCallback(pct, received);
+            }
+        }
+        const data = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+            data.set(chunk, offset);
+            offset += chunk.length;
+        }
+
         const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
+        if (progressCallback) progressCallback(100, file.size);
         return {
             ciphertext: new Uint8Array(ciphertext),
             iv: this._bufToBase64(iv),
@@ -37,11 +95,13 @@ class CryptoManager {
         };
     }
 
-    async decrypt(ciphertext, ivBase64, fingerprint) {
+    async decrypt(ciphertext, ivBase64, fingerprint, progressCallback = null) {
         const key = await this.getKey(fingerprint);
         if (!key) throw new Error('Missing decryption key');
         const iv = new Uint8Array(this._base64ToBuf(ivBase64));
+        if (progressCallback) progressCallback(0);
         const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
+        if (progressCallback) progressCallback(100);
         return new Uint8Array(plaintext);
     }
 
