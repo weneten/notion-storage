@@ -304,6 +304,11 @@ class StreamingFileUploader {
             statusCallback('Initializing streaming upload...', 'info');
             console.log('Starting streaming upload for file:', file.name, 'Size:', file.size);
 
+            // Determine encrypted payload size (each 64KB chunk gains 16 bytes for GCM tag)
+            const chunkSize = 64 * 1024;
+            const chunkCount = Math.ceil(file.size / chunkSize);
+            const encryptedSize = file.size + chunkCount * 16;
+
             // Step 1: Create upload session on server
             console.log('Creating upload session...');
             const sessionResponse = await fetch('/api/upload/create-session', {
@@ -313,7 +318,7 @@ class StreamingFileUploader {
                 },
                 body: JSON.stringify({
                     filename: file.name,
-                    fileSize: file.size,
+                    fileSize: encryptedSize,
                     contentType: file.type || 'application/octet-stream',
                     folderPath: folderPath
                 })
@@ -335,7 +340,7 @@ class StreamingFileUploader {
             statusCallback(`Streaming ${file.name} (${this.formatFileSize(file.size)})...`, 'info');
             console.log('Starting file stream for upload ID:', actualUploadId);
 
-            const result = await this.streamFileToServer(actualUploadId, file, progressCallback, statusCallback);
+            const result = await this.streamFileToServer(actualUploadId, file, progressCallback, statusCallback, encryptedSize);
 
             console.log('Upload completed:', result);
             statusCallback(`Upload completed successfully!`, 'success');
@@ -360,7 +365,7 @@ class StreamingFileUploader {
     }/**
      * Stream file data to server with client-side encryption
      */
-    async streamFileToServer(uploadId, file, progressCallback, statusCallback) {
+    async streamFileToServer(uploadId, file, progressCallback, statusCallback, encryptedSize) {
         const controller = new AbortController();
         this.activeUploads.set(uploadId, {
             file,
@@ -381,10 +386,11 @@ class StreamingFileUploader {
                 headers: {
                     'Content-Type': 'application/octet-stream',
                     'X-File-Name': encodeURIComponent(file.name),
-                    'X-File-Size': file.size.toString()
+                    'X-File-Size': encryptedSize.toString()
                 },
                 body: enc.stream,
-                signal: controller.signal
+                signal: controller.signal,
+                duplex: 'half'
             });
 
             if (!response.ok) {
