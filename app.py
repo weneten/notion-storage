@@ -682,10 +682,8 @@ def download_folder():
                 def manifest_generator(manifest_id=item['id']):
                     page = uploader.get_user_by_id(manifest_id)
                     props = page.get('properties', {})
-                    key, nonce, tag = extract_encryption_params(props)
-                    iterator = uploader.stream_multi_part_file(manifest_id)
-                    if key and nonce and tag:
-                        iterator = decrypt_stream(key, nonce, tag, iterator)
+                    key, _, _ = extract_encryption_params(props)
+                    iterator = uploader.stream_multi_part_file(manifest_id, file_key=key)
                     yield from iterator
                 z.write_iter(archive_name, manifest_generator())
             else:
@@ -817,9 +815,9 @@ def download_by_hash(salted_sha512_hash):
                         return response
 
                     def stream_range():
-                        iterator = uploader.stream_multi_part_file(file_page_id, start, end)
-                        if key and iv and tag:
-                            iterator = decrypt_stream(key, iv, tag, iterator)
+                        iterator = uploader.stream_multi_part_file(
+                            file_page_id, start, end, file_key=key
+                        )
                         for chunk in iterator:
                             yield chunk
 
@@ -827,10 +825,12 @@ def download_by_hash(salted_sha512_hash):
                     response.headers['Content-Length'] = str(end - start + 1)
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
-                    iterator = uploader.stream_multi_part_file(file_page_id)
-                    if key and iv and tag:
-                        iterator = decrypt_stream(key, iv, tag, iterator)
-                    response = Response(stream_with_context(iterator), mimetype=mimetype)
+                    iterator = uploader.stream_multi_part_file(
+                        file_page_id, file_key=key
+                    )
+                    response = Response(
+                        stream_with_context(iterator), mimetype=mimetype
+                    )
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
 
@@ -985,9 +985,9 @@ def stream_by_hash(salted_sha512_hash):
                         return response
 
                     def stream_range():
-                        iterator = uploader.stream_multi_part_file(file_page_id, start, end)
-                        if key and iv and tag:
-                            iterator = decrypt_stream(key, iv, tag, iterator)
+                        iterator = uploader.stream_multi_part_file(
+                            file_page_id, start, end, file_key=key
+                        )
                         for chunk in iterator:
                             yield chunk
 
@@ -995,10 +995,12 @@ def stream_by_hash(salted_sha512_hash):
                     response.headers['Content-Length'] = str(end - start + 1)
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
-                    iterator = uploader.stream_multi_part_file(file_page_id)
-                    if key and iv and tag:
-                        iterator = decrypt_stream(key, iv, tag, iterator)
-                    response = Response(stream_with_context(iterator), mimetype=mimetype)
+                    iterator = uploader.stream_multi_part_file(
+                        file_page_id, file_key=key
+                    )
+                    response = Response(
+                        stream_with_context(iterator), mimetype=mimetype
+                    )
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
 
@@ -2512,7 +2514,7 @@ def download_multipart_by_page_id(manifest_page_id):
         if not manifest_page:
             return "Manifest page not found", 404
         manifest_props = manifest_page.get('properties', {})
-        key, iv, tag = extract_encryption_params(manifest_props)
+        key, _, _ = extract_encryption_params(manifest_props)
         file_property = manifest_props.get('file_data', {})
         files_array = file_property.get('files', [])
         manifest_file = files_array[0] if files_array else None
@@ -2557,9 +2559,9 @@ def download_multipart_by_page_id(manifest_page_id):
                 return response
 
             def stream_range():
-                iterator = uploader.stream_multi_part_file(manifest_page_id, start, end)
-                if key and iv and tag:
-                    iterator = decrypt_stream(key, iv, tag, iterator)
+                iterator = uploader.stream_multi_part_file(
+                    manifest_page_id, start, end, file_key=key
+                )
                 for chunk in iterator:
                     yield chunk
 
@@ -2567,9 +2569,9 @@ def download_multipart_by_page_id(manifest_page_id):
             response.headers['Content-Length'] = str(end - start + 1)
             response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
         else:
-            iterator = uploader.stream_multi_part_file(manifest_page_id)
-            if key and iv and tag:
-                iterator = decrypt_stream(key, iv, tag, iterator)
+            iterator = uploader.stream_multi_part_file(
+                manifest_page_id, file_key=key
+            )
             response = Response(stream_with_context(iterator), mimetype=mimetype)
             if total_size > 0:
                 response.headers['Content-Length'] = str(total_size)
