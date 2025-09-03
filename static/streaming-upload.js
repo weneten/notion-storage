@@ -358,78 +358,60 @@ class StreamingFileUploader {
             throw error;
         }
     }/**
-     * Stream file data directly to server using simple fetch approach
-     * This eliminates complex ReadableStream and uses direct file upload
+     * Stream file data to server with client-side encryption
      */
     async streamFileToServer(uploadId, file, progressCallback, statusCallback) {
         const controller = new AbortController();
-
-        // Store upload info for potential cancellation
         this.activeUploads.set(uploadId, {
-            file: file,
-            controller: controller,
+            file,
+            controller,
             startTime: Date.now(),
             bytesUploaded: 0
         });
 
         try {
-            // Use XMLHttpRequest for better progress tracking and streaming
-            return new Promise((resolve, reject) => {
-                const xhr = new XMLHttpRequest();
-
-                // Set up progress tracking
-                xhr.upload.onprogress = (event) => {
-                    if (event.lengthComputable) {
-                        const progress = (event.loaded / event.total) * 100;
-                        const info = this.activeUploads.get(uploadId);
-                        if (info) {
-                            info.bytesUploaded = event.loaded;
-                        }
-                        progressCallback(progress, event.loaded);
-                    }
-                };
-
-                // Handle completion
-                xhr.onload = () => {
-                    if (xhr.status >= 200 && xhr.status < 300) {
-                        try {
-                            const result = JSON.parse(xhr.responseText);
-                            resolve(result);
-                        } catch (e) {
-                            reject(new Error('Invalid response format'));
-                        }
-                    } else {
-                        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
-                    }
-                };
-
-                // Handle errors
-                xhr.onerror = () => {
-                    reject(new Error('Upload failed: Network error'));
-                };
-
-                // Handle abort
-                xhr.onabort = () => {
-                    reject(new Error('Upload was cancelled'));
-                };
-
-                // Open connection
-                xhr.open('POST', `/api/upload/stream/${uploadId}`, true);
-
-                // Set headers
-                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
-                xhr.setRequestHeader('X-File-Size', file.size.toString());
-
-                // Send the file directly
-                xhr.send(file);
+            const enc = await E2EE.encryptStream(file, (p, b) => {
+                const info = this.activeUploads.get(uploadId);
+                if (info) info.bytesUploaded = b;
+                progressCallback(p, b);
             });
 
+            const response = await fetch(`/api/upload/stream/${uploadId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/octet-stream',
+                    'X-File-Name': encodeURIComponent(file.name),
+                    'X-File-Size': file.size.toString()
+                },
+                body: enc.stream,
+                signal: controller.signal
+            });
+
+            if (!response.ok) {
+                throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
+            }
+            const result = await response.json();
+
+            const masterKey = await E2EE.getMasterKey();
+            const rawFileKey = await crypto.subtle.exportKey('raw', enc.fileKey);
+            const wrapped = await E2EE.encryptFileKey(masterKey, rawFileKey);
+            enc.manifest.encrypted_file_key = E2EE.bufToB64(wrapped.encryptedKey);
+            enc.manifest.file_key_iv = E2EE.bufToB64(wrapped.iv);
+            enc.manifest.original_filename = file.name;
+
+            await fetch(`/api/upload/metadata/${uploadId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(enc.manifest)
+            });
+
+            return result;
         } finally {
-            // Cleanup
             this.activeUploads.delete(uploadId);
         }
-    }/**
+    }
+
+    /**
      * Create a ReadableStream from a File object
      * This streams the file in small chunks without loading everything into memory
      */

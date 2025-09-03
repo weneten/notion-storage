@@ -191,19 +191,24 @@ async function loadFiles() {
         `;
 
         // Generate rows for each file
+
         data.files.forEach(file => {
             const fileId = file.id || '';
             const fileHash = file.file_hash || '';
             const saltedHash = file.salted_hash || fileHash;
             const isPublic = file.is_public || false;
+            const encrypted = file.encryption_metadata ? true : false;
+            const lockIcon = encrypted ? '<i class="fas fa-lock mr-1"></i>' : '';
+            const shareFragment = encrypted && file.encryption_metadata.encrypted_file_key ? `#key=${file.encryption_metadata.encrypted_file_key}` : '';
+            const downloadAttr = encrypted ? `class="btn btn-primary btn-sm download-btn" data-metadata='${JSON.stringify(file.encryption_metadata)}' data-url="/d/${saltedHash}"` : `href="/d/${saltedHash}" class="btn btn-primary btn-sm"`;
 
             tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
-                    <td><strong>${file.name}</strong></td>
+                    <td><strong>${lockIcon}${file.name}</strong></td>
                     <td class="filesize-cell">${formatFileSize(file.size)}</td>
                     <td>
                         ${saltedHash ?
-                    `<a href="/d/${saltedHash}" target="_blank" class="public-link">
+                    `<a href="/d/${saltedHash}${shareFragment}" target="_blank" class="public-link">
                                 <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${saltedHash.substring(0, 10)}...
                             </a>` :
                     '<span class="text-muted">N/A</span>'
@@ -216,7 +221,7 @@ async function loadFiles() {
                         </label>
                     </td>
                     <td class="action-buttons">
-                        <a href="/d/${saltedHash}" class="btn btn-primary btn-sm">
+                        <a ${downloadAttr}>
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
                         <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}">
@@ -344,6 +349,16 @@ function setupFileActionEventHandlers() {
                 this.checked = !isPublic; // Revert toggle on error
                 showStatus('Error updating public status: ' + error.message, 'error');
             }
+        });
+    });
+
+    // Handle encrypted downloads
+    document.querySelectorAll('.download-btn').forEach(btn => {
+        btn.addEventListener('click', async function (e) {
+            e.preventDefault();
+            const metadata = JSON.parse(this.dataset.metadata);
+            const url = this.dataset.url;
+            await E2EE.downloadEncrypted(url, metadata);
         });
     });
 }
