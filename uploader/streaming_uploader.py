@@ -21,7 +21,7 @@ from flask_socketio import SocketIO
 from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
 from .s3_downloader import download_file_from_url
-from .crypto_utils import generate_key, encrypt_stream
+from .crypto_utils import generate_file_key, encrypt_stream
 import gc
 
 
@@ -403,16 +403,14 @@ class NotionStreamingUploader:
         }
 
         # Generate encryption material for this upload session
-        key = generate_key()
-        iv = os.urandom(16)
-        fingerprint = hashlib.sha256(key).hexdigest()
+        file_key = generate_file_key()
+        fingerprint = hashlib.sha256(file_key).hexdigest()
         session_data['encryption_meta'] = {
-            'alg': 'AES-CTR',
-            'key': key,
-            'iv': iv,
-            'iv_b64': base64.b64encode(iv).decode('utf-8'),
-            'key_b64': base64.b64encode(key).decode('utf-8'),
+            'alg': 'AES-GCM',
+            'file_key': file_key,
+            'file_key_b64': base64.b64encode(file_key).decode('utf-8'),
             'key_fingerprint': fingerprint,
+            'parts': []
         }
         
         if is_multipart:
@@ -1074,9 +1072,8 @@ class NotionStreamingUploader:
             original_hasher = upload_session.get('hasher')
             encryption_active = False
             if encryption_meta:
-                key = encryption_meta.get('key')
-                iv = encryption_meta.get('iv')
-                if key and iv:
+                file_key = encryption_meta.get('file_key')
+                if file_key:
                     encryption_active = True
 
                     class _HashPassthrough:
@@ -1094,7 +1091,10 @@ class NotionStreamingUploader:
                             original_hasher.update(chunk)
                             yield chunk
 
-                    stream_generator = encrypt_stream(key, iv, _hashing_stream(stream_generator))
+                    nonce = os.urandom(12)
+                    enc_stream, tag = encrypt_stream(file_key, nonce, _hashing_stream(stream_generator))
+                    encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
+                    stream_generator = enc_stream
 
             # Use parallel chunk processor
             parallel_processor = ParallelChunkProcessor(
