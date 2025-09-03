@@ -220,6 +220,9 @@ function appendEntries(entries) {
         } else {
             row.dataset.fileId = entry.id;
             row.dataset.fileHash = entry.file_hash || '';
+            row.dataset.encryptionAlg = entry.encryption_alg || 'none';
+            row.dataset.iv = entry.iv || 'none';
+            row.dataset.keyFingerprint = entry.key_fingerprint || 'none';
             const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
             const viewContainer = entry.file_hash ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${entry.file_hash}" data-filesize="${formatBytes(entry.size)}"></span>` : '';
             row.innerHTML = `

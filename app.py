@@ -245,6 +245,10 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
             folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             is_folder = properties.get('is_folder', {}).get('checkbox', False)
             is_visible = properties.get('is_visible', {}).get('checkbox', True)
+            encryption_alg = properties.get('encryption_alg', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+            iv_prop = properties.get('iv', {}) or properties.get('encryption_iv', {})
+            iv = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+            key_fingerprint = properties.get('key_fingerprint', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
             if name and is_visible and folder_path == current_folder:
                 if is_folder:
                     full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
@@ -265,7 +269,10 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
                         'file_hash': file_hash,
                         'salted_hash': '',
                         'file_data': file_data_files,
-                        'folder': folder_path
+                        'folder': folder_path,
+                        'encryption_alg': encryption_alg or 'none',
+                        'iv': iv or 'none',
+                        'key_fingerprint': key_fingerprint or 'none'
                     })
         except Exception:
             continue
@@ -1184,6 +1191,10 @@ def get_files_api():
             is_folder = file_props.get('is_folder', {}).get('checkbox', False)
             folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            encryption_alg = file_props.get('encryption_alg', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+            iv_prop = file_props.get('iv', {}) or file_props.get('encryption_iv', {})
+            iv = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+            key_fingerprint = file_props.get('key_fingerprint', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
 
             # Compute salted hash for download link if salt is present
             salted_hash = file_hash
@@ -1207,7 +1218,10 @@ def get_files_api():
                     'size': size,
                     'file_hash': file_hash,
                     'salted_hash': salted_hash,
-                    'is_public': is_public
+                    'is_public': is_public,
+                    'encryption_alg': encryption_alg or 'none',
+                    'iv': iv or 'none',
+                    'key_fingerprint': key_fingerprint or 'none'
                 }
                 formatted_files.append(formatted_file)
         
@@ -1273,6 +1287,14 @@ def get_entries_api():
                 folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
+                encryption_alg = properties.get('encryption_alg', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+                iv_prop = properties.get('iv', {}) or properties.get('encryption_iv', {})
+                iv = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+                key_fingerprint = properties.get('key_fingerprint', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+                encryption_alg = properties.get('encryption_alg', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+                iv_prop = properties.get('iv', {}) or properties.get('encryption_iv', {})
+                iv = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+                key_fingerprint = properties.get('key_fingerprint', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
 
                 if name and is_visible and folder_path == current_folder:
                     if is_folder:
@@ -1292,7 +1314,10 @@ def get_entries_api():
                             'id': file_id,
                             'is_public': is_public,
                             'file_hash': file_hash,
-                            'folder': folder_path
+                            'folder': folder_path,
+                            'encryption_alg': encryption_alg or 'none',
+                            'iv': iv or 'none',
+                            'key_fingerprint': key_fingerprint or 'none'
                         })
             except Exception as e:
                 print(f"Error processing file data in get_entries_api: {e}")
@@ -1358,6 +1383,10 @@ def search_files_api():
                 folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
+                encryption_alg = properties.get('encryption_alg', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+                iv_prop = properties.get('iv', {}) or properties.get('encryption_iv', {})
+                iv = iv_prop.get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
+                key_fingerprint = properties.get('key_fingerprint', {}).get('rich_text', [{}])[0].get('text', {}).get('content', 'none')
 
                 if not is_visible:
                     continue
@@ -1380,7 +1409,10 @@ def search_files_api():
                             'id': file_id,
                             'is_public': is_public,
                             'file_hash': file_hash,
-                            'folder': folder_path
+                            'folder': folder_path,
+                            'encryption_alg': encryption_alg or 'none',
+                            'iv': iv or 'none',
+                            'key_fingerprint': key_fingerprint or 'none'
                         })
             except Exception as e:
                 print(f"Error processing file data in search_files_api: {e}")
