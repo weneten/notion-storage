@@ -21,7 +21,7 @@ from flask_socketio import SocketIO
 from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
 from .s3_downloader import download_file_from_url
-from .crypto_utils import generate_key
+from .crypto_utils import generate_key, encrypt_stream
 import gc
 
 
@@ -771,6 +771,8 @@ class NotionStreamingUploader:
                     for idx, part_size in enumerate(part_sizes, start=1):
                         part_filename = f"{filename}.part{idx}"
                         part_session = self.create_upload_session(part_filename, part_size, user_database_id)
+                        # Use same encryption metadata for all parts
+                        part_session['encryption_meta'] = upload_session.get('encryption_meta')
                         part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
 
                         chunk_queue: queue.Queue = queue.Queue(maxsize=4)
@@ -827,7 +829,8 @@ class NotionStreamingUploader:
                     user_database_id,
                     metadata_filename,
                     io.BytesIO(metadata_bytes),
-                    len(metadata_bytes)
+                    len(metadata_bytes),
+                    upload_session.get('encryption_meta')
                 )
 
                 metadata_file_url = None
@@ -1000,7 +1003,8 @@ class NotionStreamingUploader:
                 upload_session['user_database_id'],
                 upload_session['filename'],
                 buffer,
-                bytes_received
+                bytes_received,
+                upload_session.get('encryption_meta')
             )
             if db_integration:
                 # Start database integration in background and return immediately
@@ -1065,7 +1069,33 @@ class NotionStreamingUploader:
         
         try:
             print(f"DEBUG: Starting multipart upload with parallel processing")
-            
+            # Encrypt stream if required while preserving original hash
+            encryption_meta = upload_session.get('encryption_meta')
+            original_hasher = upload_session.get('hasher')
+            encryption_active = False
+            if encryption_meta:
+                key = encryption_meta.get('key')
+                iv = encryption_meta.get('iv')
+                if key and iv:
+                    encryption_active = True
+
+                    class _HashPassthrough:
+                        def __init__(self, real):
+                            self._real = real
+                        def update(self, data):
+                            pass
+                        def hexdigest(self):
+                            return self._real.hexdigest()
+
+                    upload_session['hasher'] = _HashPassthrough(original_hasher)
+
+                    def _hashing_stream(gen):
+                        for chunk in gen:
+                            original_hasher.update(chunk)
+                            yield chunk
+
+                    stream_generator = encrypt_stream(key, iv, _hashing_stream(stream_generator))
+
             # Use parallel chunk processor
             parallel_processor = ParallelChunkProcessor(
                 max_workers=10,
@@ -1076,6 +1106,9 @@ class NotionStreamingUploader:
 
             # Process stream with parallel uploads
             notion_result = parallel_processor.process_stream(stream_generator, resume_from=resume_from)
+
+            if encryption_active:
+                upload_session['hasher'] = original_hasher
 
             print(f"DEBUG: Parallel upload completed, starting database integration")
 
@@ -1133,8 +1166,9 @@ class NotionStreamingUploader:
             })
             raise
 
-    def _upload_to_notion_single_part(self, user_database_id: str, filename: str, 
-                                    file_buffer: io.BytesIO, file_size: int) -> Dict[str, Any]:
+    def _upload_to_notion_single_part(self, user_database_id: str, filename: str,
+                                    file_buffer: io.BytesIO, file_size: int,
+                                    encryption_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Upload file to Notion using single-part upload
         """
@@ -1164,7 +1198,8 @@ class NotionStreamingUploader:
                     database_id=user_database_id,
                     content_type='text/plain',  # Required by Notion API for all files
                     file_size=file_size,
-                    original_filename=filename  # Keep original filename for database
+                    original_filename=filename,  # Keep original filename for database
+                    encryption_meta=encryption_meta,
                 )
                 
                 # CRITICAL FIX 1: ID Validation for single-part uploads

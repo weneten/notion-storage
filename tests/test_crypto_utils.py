@@ -1,10 +1,17 @@
 import os
 import sys
 from pathlib import Path
+import importlib.util
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+# Load crypto_utils directly to avoid importing package with heavy dependencies
+utils_path = Path(__file__).resolve().parents[1] / 'uploader' / 'crypto_utils.py'
+spec = importlib.util.spec_from_file_location('crypto_utils', utils_path)
+crypto_utils = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(crypto_utils)
 
-from uploader.crypto_utils import generate_key, encrypt_stream, decrypt_stream
+generate_key = crypto_utils.generate_key
+encrypt_stream = crypto_utils.encrypt_stream
+decrypt_stream = crypto_utils.decrypt_stream
 
 
 def test_round_trip_stream_encryption():
