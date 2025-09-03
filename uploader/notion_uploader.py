@@ -1931,6 +1931,24 @@ class NotionFileUploader:
                 },
                 "file_data": {
                     "files": {}
+                },
+                "encryption_alg": {
+                    "rich_text": {}
+                },
+                "nonce": {
+                    "rich_text": {}
+                },
+                "key_fingerprint": {
+                    "rich_text": {}
+                },
+                "wrapped_file_key": {
+                    "rich_text": {}
+                },
+                "iv": {
+                    "rich_text": {}
+                },
+                "encryption_key": {
+                    "rich_text": {}
                 }
             },
             "is_inline": True
@@ -1967,6 +1985,8 @@ class NotionFileUploader:
         self.ensure_database_property(database_id, "encryption_alg", "rich_text")
         self.ensure_database_property(database_id, "iv", "rich_text")
         self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
+        self.ensure_database_property(database_id, "nonce", "rich_text")
+        self.ensure_database_property(database_id, "wrapped_file_key", "rich_text")
 
         try:
             while True:
@@ -1990,7 +2010,7 @@ class NotionFileUploader:
                 if 'iv' not in props and 'encryption_iv' in props:
                     props['iv'] = props.get('encryption_iv', {})
                 updates: Dict[str, Any] = {}
-                for prop_name in ("encryption_alg", "iv", "key_fingerprint"):
+                for prop_name in ("encryption_alg", "iv", "key_fingerprint", "nonce", "wrapped_file_key"):
                     rich = props.get(prop_name, {}).get('rich_text', [])
                     value = rich[0].get('text', {}).get('content', '') if rich else ''
                     if not value:
@@ -2119,6 +2139,8 @@ class NotionFileUploader:
         self.ensure_database_property(database_id, "encryption_alg", "rich_text")
         self.ensure_database_property(database_id, "iv", "rich_text")
         self.ensure_database_property(database_id, "key_fingerprint", "rich_text")
+        self.ensure_database_property(database_id, "nonce", "rich_text")
+        self.ensure_database_property(database_id, "wrapped_file_key", "rich_text")
         self.ensure_database_property(database_id, "encryption_key", "rich_text")
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
