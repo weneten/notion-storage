@@ -21,6 +21,7 @@ from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
 from .s3_downloader import download_file_from_url
 import gc
+import json
 
 
 def _fetch_text(url: str) -> str:
@@ -488,6 +489,16 @@ class NotionStreamingUploader:
                     print(f"DEBUG: Added to global file index with database page ID: {database_page_id}")
                 else:
                     print(f"WARNING: Global file index DB ID not configured, skipping global index")
+
+                enc_meta = upload_session.get('encryption_metadata')
+                if enc_meta:
+                    try:
+                        self.notion_uploader.ensure_database_property(upload_session['user_database_id'], "e2ee_data", "rich_text")
+                        self.notion_uploader.update_user_properties(database_page_id, {
+                            "e2ee_data": {"rich_text": [{"text": {"content": json.dumps(enc_meta)}}]}
+                        })
+                    except Exception as e:
+                        print(f"ERROR storing encryption metadata: {e}")
                 return {
                     'file_id': database_page_id,  # FIXED: Return database page ID for database operations
                     'notion_file_upload_id': file_upload_id,  # FIXED: Keep file upload ID separate
@@ -796,11 +807,15 @@ class NotionStreamingUploader:
                         )
 
                 import json
-                metadata_json = json.dumps({
+                enc_meta = upload_session.get('encryption_metadata')
+                manifest_dict = {
                     "original_filename": filename,
                     "total_size": file_size,
                     "parts": parts_metadata
-                }, indent=2)
+                }
+                if enc_meta:
+                    manifest_dict["encryption"] = enc_meta
+                metadata_json = json.dumps(manifest_dict, indent=2)
                 metadata_bytes = metadata_json.encode("utf-8")
                 metadata_filename = f"{filename}.file.json"
 
@@ -840,10 +855,15 @@ class NotionStreamingUploader:
                             folder_path=upload_session.get('folder_path', '/')
                         )
 
-                        self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
+                        enc_meta = upload_session.get('encryption_metadata')
+                        self.notion_uploader.ensure_database_property(user_database_id, "e2ee_data", "rich_text")
+                        props = {
                             "is_visible": {"checkbox": True},
                             "file_data": metadata_db_entry.get('properties', {}).get('file_data', {})
-                        })
+                        }
+                        if enc_meta:
+                            props["e2ee_data"] = {"rich_text": [{"text": {"content": json.dumps(enc_meta)}}]}
+                        self.notion_uploader.update_user_properties(metadata_db_entry['id'], props)
 
                         if self.notion_uploader.global_file_index_db_id:
                             self.notion_uploader.add_file_to_index(

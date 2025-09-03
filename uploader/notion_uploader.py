@@ -664,15 +664,15 @@ class NotionFileUploader:
         """
         Fetch a fresh download URL from Notion API (legacy method for backward compatibility).
         """
-        url, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
+        url, _, _, _ = self._fetch_fresh_download_url_with_metadata(page_id, original_filename)
         return url
 
     def _fetch_fresh_download_url_with_metadata(self, page_id: str, original_filename: str) -> tuple:
         """
-        Fetch a fresh download URL from Notion API with file size and content type detection.
-        
+        Fetch a fresh download URL from Notion API with file size, content type, and encryption metadata.
+
         Returns:
-            tuple: (download_url, file_size, content_type)
+            tuple: (download_url, file_size, content_type, e2ee_data)
         """
         try:
             print(f"Getting fresh download URL with metadata for file page ID: {page_id}, original filename: {original_filename}")
@@ -684,7 +684,8 @@ class NotionFileUploader:
                 return "", 0, "application/octet-stream"
 
             # Extract file information from the 'file_data' property (new name)
-            file_property = page_info.get('properties', {}).get('file_data', {})
+            props = page_info.get('properties', {})
+            file_property = props.get('file_data', {})
             files_array = file_property.get('files', [])
 
             if not files_array:
@@ -719,12 +720,20 @@ class NotionFileUploader:
             # Determine content type
             content_type = self.get_content_type_from_filename(original_filename)
             
+            e2ee_raw = props.get('e2ee_data', {}).get('rich_text', [])
+            e2ee_data = None
+            if e2ee_raw:
+                try:
+                    e2ee_data = json.loads(e2ee_raw[0].get('text', {}).get('content', ''))
+                except Exception:
+                    e2ee_data = None
+
             print(f"📊 File metadata: size={file_size} bytes, content_type={content_type}")
-            return file_url, file_size, content_type
+            return file_url, file_size, content_type, e2ee_data
             
         except Exception as e:
             print(f"Error constructing download URL from page property: {e}")
-            return "", 0, "application/octet-stream"
+            return "", 0, "application/octet-stream", None
 
     def get_file_size_from_notion(self, page_info: Dict[str, Any], original_filename: str) -> int:
         """
@@ -837,14 +846,15 @@ class NotionFileUploader:
                                     force_refresh: bool = False) -> Dict[str, Any]:
         """Fetch a fresh signed URL and related metadata for the given file."""
         try:
-            fresh_url, file_size, content_type = self._fetch_fresh_download_url_with_metadata(
+            fresh_url, file_size, content_type, e2ee_data = self._fetch_fresh_download_url_with_metadata(
                 page_id, original_filename)
 
             return {
                 'url': fresh_url or '',
                 'file_size': file_size,
                 'content_type': content_type or 'application/octet-stream',
-                'cached': False
+                'cached': False,
+                'e2ee_data': e2ee_data
             }
 
         except Exception as e:
@@ -853,7 +863,8 @@ class NotionFileUploader:
                 'url': '',
                 'file_size': 0,
                 'content_type': 'application/octet-stream',
-                'cached': False
+                'cached': False,
+                'e2ee_data': None
             }
 
     def get_notion_file_url_from_page_property(self, page_id: str, original_filename: str) -> str:
