@@ -772,6 +772,9 @@ def download_by_hash(salted_sha512_hash):
 
                 response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
                 response.headers['Accept-Ranges'] = 'bytes'
+                enc_meta = manifest.get('encryption') if isinstance(manifest, dict) else None
+                if enc_meta:
+                    response.headers['X-Encryption-Metadata'] = json.dumps(enc_meta)
                 return response
             except Exception as e:
                 import traceback
@@ -805,6 +808,8 @@ def download_by_hash(salted_sha512_hash):
             print(f"Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
         else:
             print(f"No file size available for Content-Length header for {original_filename}")
+        if file_metadata.get('e2ee_data'):
+            response.headers['X-Encryption-Metadata'] = json.dumps(file_metadata['e2ee_data'])
         return response
 
     except Exception as e:
@@ -934,7 +939,9 @@ def stream_by_hash(salted_sha512_hash):
                 if mimetype.startswith('video/'):
                     response.headers['Connection'] = 'keep-alive'
                     response.headers['Content-Transfer-Encoding'] = 'binary'
-
+                enc_meta = manifest.get('encryption') if isinstance(manifest, dict) else None
+                if enc_meta:
+                    response.headers['X-Encryption-Metadata'] = json.dumps(enc_meta)
                 return add_stream_headers(response, mimetype)
             except Exception as e:
                 import traceback
@@ -1099,7 +1106,8 @@ def stream_by_hash(salted_sha512_hash):
                 if mimetype.startswith('video/'):
                     response.headers['Connection'] = 'keep-alive'
                     response.headers['Content-Transfer-Encoding'] = 'binary'
-
+                if file_metadata.get('e2ee_data'):
+                    response.headers['X-Encryption-Metadata'] = json.dumps(file_metadata['e2ee_data'])
                 return add_stream_headers(response, mimetype)
                 
             except (ValueError, TypeError) as e:
@@ -1132,12 +1140,13 @@ def stream_by_hash(salted_sha512_hash):
             response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
             response.headers['X-Content-Type-Options'] = 'nosniff'
             response.headers['Vary'] = 'Range, Accept-Encoding'
-            
+
             # Additional iOS streaming optimizations
             if mimetype.startswith('video/'):
                 response.headers['Connection'] = 'keep-alive'
                 response.headers['Content-Transfer-Encoding'] = 'binary'
-
+            if file_metadata.get('e2ee_data'):
+                response.headers['X-Encryption-Metadata'] = json.dumps(file_metadata['e2ee_data'])
             return add_stream_headers(response, mimetype)
 
     except Exception as e:
@@ -1184,6 +1193,13 @@ def get_files_api():
             is_folder = file_props.get('is_folder', {}).get('checkbox', False)
             folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            e2ee_raw = file_props.get('e2ee_data', {}).get('rich_text', [])
+            encryption_metadata = None
+            if e2ee_raw:
+                try:
+                    encryption_metadata = json.loads(e2ee_raw[0].get('text', {}).get('content', ''))
+                except Exception:
+                    encryption_metadata = None
 
             # Compute salted hash for download link if salt is present
             salted_hash = file_hash
@@ -1207,7 +1223,8 @@ def get_files_api():
                     'size': size,
                     'file_hash': file_hash,
                     'salted_hash': salted_hash,
-                    'is_public': is_public
+                    'is_public': is_public,
+                    'encryption_metadata': encryption_metadata
                 }
                 formatted_files.append(formatted_file)
         
@@ -2188,6 +2205,22 @@ def get_upload_status(upload_id):
         
     except Exception as e:
         print(f"Error getting upload status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/upload/metadata/<upload_id>', methods=['POST'])
+@login_required
+def upload_metadata(upload_id):
+    """Attach encryption metadata to an upload session"""
+    try:
+        data = request.get_json()
+        with app.upload_session_lock:
+            session = streaming_upload_manager.get_upload_status(upload_id)
+            if not session:
+                return jsonify({'error': 'Upload session not found'}), 404
+            session['encryption_metadata'] = data
+        return jsonify({'status': 'ok'})
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
