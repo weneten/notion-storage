@@ -2018,11 +2018,12 @@ def stream_file_upload(upload_id):
         
         print(f"📁 Processing upload: {upload_session['filename']} ({upload_session['file_size'] / 1024 / 1024:.1f}MB)")
         
-        # Verify file size matches headers
+        # Verify file size matches headers when not using chunked transfer
         content_length = request.headers.get('Content-Length')
+        transfer_encoding = request.headers.get('Transfer-Encoding', '').lower()
         expected_size = upload_session['file_size']
-        
-        if content_length and int(content_length) != expected_size:
+
+        if content_length and transfer_encoding != 'chunked' and int(content_length) != expected_size:
             print(f"❌ Content-Length mismatch: {content_length} vs {expected_size}")
             return jsonify({'error': 'Content-Length mismatch'}), 400
         
