@@ -21,7 +21,7 @@ from flask_socketio import SocketIO
 from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
 from .s3_downloader import download_file_from_url
-from .crypto_utils import generate_file_key, encrypt_stream
+from .crypto_utils import generate_file_key, encrypt_stream, wrap_file_key
 import gc
 
 
@@ -404,11 +404,14 @@ class NotionStreamingUploader:
 
         # Generate encryption material for this upload session
         file_key = generate_file_key()
+        link_key = os.urandom(32)
+        wrapped_fk = wrap_file_key(file_key, link_key)
         fingerprint = hashlib.sha256(file_key).hexdigest()
         session_data['encryption_meta'] = {
             'alg': 'AES-GCM',
             'file_key': file_key,
-            'file_key_b64': base64.b64encode(file_key).decode('utf-8'),
+            'wrapped_fk_b64': base64.b64encode(wrapped_fk).decode('utf-8'),
+            'link_key_b64': base64.b64encode(link_key).decode('utf-8'),
             'key_fingerprint': fingerprint,
             'parts': []
         }
@@ -416,8 +419,14 @@ class NotionStreamingUploader:
         if is_multipart:
             # Initialize multipart upload with Notion
             session_data.update(self._init_multipart_upload(filename, file_size, user_database_id))
-        
+
         return session_data
+
+    def _sanitize_encryption_meta(self, meta: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not meta:
+            return None
+        allowed = {"alg", "nonce_b64", "tag_b64", "key_fingerprint", "wrapped_fk_b64", "parts"}
+        return {k: v for k, v in meta.items() if k in allowed}
     
     def _init_multipart_upload(self, filename: str, file_size: int, user_database_id: str) -> Dict[str, Any]:
         """
@@ -485,7 +494,7 @@ class NotionStreamingUploader:
                     original_filename=upload_session['filename'],
                     salt=salt,
                     folder_path=upload_session.get('folder_path', '/'),
-                    encryption_meta=upload_session.get('encryption_meta'),
+                    encryption_meta=self._sanitize_encryption_meta(upload_session.get('encryption_meta')),
                 )
                 database_page_id = user_db_result['id']  # This is the DATABASE PAGE ID - different from file upload ID
                 print(f"DEBUG: Added to user database with database page ID: {database_page_id}")
@@ -618,7 +627,7 @@ class NotionStreamingUploader:
                 file_url=file_url,
                 # Store part entries at root to avoid orphaned parts when moving folders
                 folder_path='/',
-                encryption_meta=encryption_meta,
+                encryption_meta=self._sanitize_encryption_meta(encryption_meta),
             )
 
             if self._validate_file_attachment(db_entry, notion_file_upload_id):
@@ -858,7 +867,7 @@ class NotionStreamingUploader:
                             file_url=metadata_file_url,
                             is_manifest=True,
                             folder_path=upload_session.get('folder_path', '/'),
-                            encryption_meta=upload_session.get('encryption_meta'),
+                            encryption_meta=self._sanitize_encryption_meta(upload_session.get('encryption_meta')),
                         )
 
                         self.notion_uploader.update_user_properties(metadata_db_entry['id'], {
@@ -1309,6 +1318,7 @@ class StreamingUploadManager:
             
             try:
                 result = self.uploader.process_stream(upload_session, stream_generator, resume_from=resume_from)
+                result['link_key'] = upload_session.get('encryption_meta', {}).get('link_key_b64')
                 print(f"🔒 THREAD SAFETY: Processing completed successfully for {upload_id}")
                 return result
             except Exception as e:

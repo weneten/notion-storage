@@ -106,7 +106,7 @@
                         <td>
                             {% if entry.file_hash %}
                             <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}"
-                                target="_blank" class="public-link">
+                                target="_blank" class="public-link hash-link" data-hash="{{ entry.file_hash }}">
                                 <i class="fas fa-external-link-alt mr-1"></i>{{ request.url_root }}d/{{
                                 entry.file_hash[:10] }}...
                             </a>
@@ -124,7 +124,7 @@
                             {% if entry.file_hash %}
                             <span class="view-button-container" data-filename="{{ entry.name }}" data-hash="{{ entry.file_hash }}" data-filesize="{{ entry.size | format_bytes }}"></span>
                             {% endif %}
-                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}" class="btn btn-primary btn-sm">
+                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}" class="btn btn-primary btn-sm download-link" data-hash="{{ entry.file_hash }}">
                                 <i class="fas fa-download mr-1"></i>Download
                             </a>
                             <div class="btn-group">

@@ -168,6 +168,18 @@ function refreshServerCache() {
     fetch('/api/cache/refresh', { method: 'POST' }).catch(() => {});
 }
 
+function getLinkKey(hash) {
+    return localStorage.getItem('lk_' + hash);
+}
+
+function applyLink(url, hash) {
+    const lk = getLinkKey(hash);
+    if (!lk) return url;
+    const u = new URL(url, window.location.origin);
+    u.searchParams.set('lk', lk);
+    return u.pathname + u.search;
+}
+
 async function fetchRemainingEntries() {
     const spinner = document.getElementById('loadingSpinner');
     while (window.nextCursor !== null && window.nextCursor !== undefined) {
@@ -224,7 +236,8 @@ function appendEntries(entries) {
             row.dataset.encryptionAlg = entry.encryption_alg || 'none';
             row.dataset.iv = entry.iv || 'none';
             row.dataset.keyFingerprint = entry.key_fingerprint || 'none';
-            const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
+            const linkUrl = applyLink(`/d/${entry.file_hash}`, entry.file_hash);
+            const link = entry.file_hash ? `<a href="${linkUrl}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
             const viewContainer = entry.file_hash ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${entry.file_hash}" data-filesize="${formatBytes(entry.size)}"></span>` : '';
             const encIcon = (entry.encryption_alg && entry.encryption_alg !== 'none') ? ` <i class="fas fa-lock text-info encrypted-indicator" title="Encrypted"></i><span class="missing-key-warning text-danger" style="display:none;" title="Missing decryption key"><i class="fas fa-exclamation-triangle"></i></span>` : '';
             row.innerHTML = `
@@ -236,7 +249,7 @@ function appendEntries(entries) {
                 <td><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
                 <td class="action-buttons">
                     ${viewContainer}
-                    <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm download-btn" data-filename="${entry.name}"><i class="fas fa-download mr-1"></i>Download</a>
+                    <a href="${applyLink(`/d/${entry.file_hash}`, entry.file_hash)}" class="btn btn-primary btn-sm download-btn" data-filename="${entry.name}"><i class="fas fa-download mr-1"></i>Download</a>
                     <div class="btn-group">
                         <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
                             <i class="fas fa-bars"></i>
@@ -694,7 +707,14 @@ const uploadFile = async () => {
                 if (result && result.upload_id && window.pendingUploads) {
                     window.pendingUploads.add(result.upload_id);
                 }
-                showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+                if (result && result.file_hash && result.link_key) {
+                    const shareUrl = `${window.location.origin}/d/${result.file_hash}?lk=${result.link_key}`;
+                    try { navigator.clipboard.writeText(shareUrl); } catch (e) {}
+                    localStorage.setItem('lk_' + result.file_hash, result.link_key);
+                    showStatus(`File "${file.name}" uploaded successfully! Share link copied: <a href="${shareUrl}" target="_blank">${shareUrl}</a>`, 'success');
+                } else {
+                    showStatus(`File "${file.name}" uploaded successfully!`, 'success');
+                }
             } catch (error) {
                 console.error('Upload error:', error);
                 showStatus(`Upload failed: ${error.message}`, 'error');
@@ -793,6 +813,13 @@ document.addEventListener('DOMContentLoaded', function () {
     if (uploadButton) {
         uploadButton.onclick = uploadFile;
     }
+
+    document.querySelectorAll('.download-link, .hash-link').forEach(el => {
+        const hash = el.dataset.hash;
+        if (hash) {
+            el.href = applyLink(el.getAttribute('href'), hash);
+        }
+    });
 
     const folderButton = document.getElementById('selectFolderButton');
     if (folderButton) {
@@ -948,7 +975,7 @@ function renderEntries(entries) {
                 <td>${entry.folder}</td>
                 <td>
                     ${fileHash ?
-                `<a href="/d/${fileHash}" target="_blank" class="public-link">
+                `<a href="${applyLink(`/d/${fileHash}`, fileHash)}" target="_blank" class="public-link">
                         <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0,10)}...
                     </a>` :
                 '<span class="text-muted">N/A</span>'}
@@ -961,7 +988,7 @@ function renderEntries(entries) {
                 </td>
                 <td class="action-buttons">
                     ${viewButtonHTML}
-                    <a href="/d/${fileHash}" class="btn btn-primary btn-sm download-btn" data-filename="${entry.name}">
+                    <a href="${applyLink(`/d/${fileHash}`, fileHash)}" class="btn btn-primary btn-sm download-btn" data-filename="${entry.name}">
                         <i class="fas fa-download mr-1"></i>Download
                     </a>
                     <div class="btn-group">
@@ -1065,7 +1092,7 @@ function getFileTypeIcon(type) {
 }
 
 function createViewButton(fileHash, fileType, filename) {
-    const viewUrl = `/v/${fileHash}`;
+    const viewUrl = applyLink(`/v/${fileHash}`, fileHash);
     let buttonClass = 'btn-success';
     let icon = 'fas fa-eye';
     
