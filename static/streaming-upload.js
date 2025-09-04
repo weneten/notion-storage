@@ -180,6 +180,37 @@ function applyLink(url, hash) {
     return u.pathname + u.search;
 }
 
+async function fetchEntriesForFolder(folderPath) {
+    const all = [];
+    let cursor = 0;
+    while (cursor !== null) {
+        const params = new URLSearchParams({ folder: folderPath, cursor, page_size: 1000 });
+        const resp = await fetch(`/api/files/sync?${params.toString()}`);
+        if (!resp.ok) break;
+        const data = await resp.json();
+        if (Array.isArray(data.results)) all.push(...data.results);
+        cursor = data.next_cursor;
+    }
+    return all;
+}
+
+async function collectLinkKeysForFolder(folderPath) {
+    const lkMap = {};
+    async function traverse(path) {
+        const entries = await fetchEntriesForFolder(path);
+        for (const entry of entries) {
+            if (entry.type === 'file' && entry.file_hash) {
+                const lk = getLinkKey(entry.file_hash);
+                if (lk) lkMap[entry.id] = lk;
+            } else if (entry.type === 'folder') {
+                await traverse(entry.full_path);
+            }
+        }
+    }
+    await traverse(folderPath);
+    return lkMap;
+}
+
 async function fetchRemainingEntries() {
     const spinner = document.getElementById('loadingSpinner');
     while (window.nextCursor !== null && window.nextCursor !== undefined) {
@@ -225,7 +256,7 @@ function appendEntries(entries) {
                 <td></td>
                 <td>
                     <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
-                    <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                    <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm download-folder-link"><i class="fas fa-download mr-1"></i>Download</a>
                     <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}"><i class="fas fa-edit mr-1"></i>Rename</button>
                     <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
                 </td>`;
@@ -1333,6 +1364,20 @@ function setupFileActionEventHandlers(root = document) {
 
 // Set up event handlers for folder actions (rename, delete)
 function setupFolderActionEventHandlers(root = document) {
+    root.querySelectorAll('.download-folder-link').forEach(link => {
+        if (link.dataset.listenerAttached) return;
+        link.dataset.listenerAttached = 'true';
+        link.addEventListener('click', async function (e) {
+            e.preventDefault();
+            const url = new URL(this.href, window.location.origin);
+            const folder = url.searchParams.get('folder') || '/';
+            const lkMap = await collectLinkKeysForFolder(folder);
+            if (Object.keys(lkMap).length > 0) {
+                url.searchParams.set('lk_map', encodeURIComponent(JSON.stringify(lkMap)));
+            }
+            window.location.href = url.pathname + url.search;
+        });
+    });
     root.querySelectorAll('.rename-folder-btn').forEach(btn => {
         if (btn.dataset.listenerAttached) return;
         btn.dataset.listenerAttached = 'true';
