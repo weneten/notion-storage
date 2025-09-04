@@ -11,7 +11,7 @@
             {% set parent_folder = '/' + '/'.join(current_folder.strip('/').split('/')[:-1]) %}
             <a href="{{ url_for('home', folder=parent_folder if parent_folder != '//' else '/') }}" class="ml-2">Back</a>
         {% endif %}
-        <a href="{{ url_for('download_folder', folder=current_folder) }}" class="btn btn-primary btn-sm ml-2">
+        <a href="{{ url_for('download_folder', folder=current_folder) }}" class="btn btn-primary btn-sm ml-2 download-folder-link">
             <i class="fas fa-download mr-1"></i>Download Folder
         </a>
         <button id="createFolderButton" class="btn btn-secondary btn-sm ml-2">
@@ -79,7 +79,7 @@
                             <a href="{{ url_for('home', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
                                 <i class="fas fa-folder-open mr-1"></i>Open
                             </a>
-                            <a href="{{ url_for('download_folder', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
+                            <a href="{{ url_for('download_folder', folder=entry.full_path) }}" class="btn btn-primary btn-sm download-folder-link">
                                 <i class="fas fa-download mr-1"></i>Download
                             </a>
                             <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="{{ entry.id }}" data-folder-name="{{ entry.name }}">
