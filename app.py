@@ -381,22 +381,46 @@ def fetch_download_metadata(page_id: str, filename: str) -> Dict[str, Any]:
     return uploader.get_file_download_metadata(page_id, filename)
 
 
-def fetch_json_from_url(url: str) -> Dict[str, Any]:
-    """Retrieve JSON content from a URL, using the S3 downloader for S3 links."""
+def fetch_json_from_url(
+    url: str,
+    key: bytes | None = None,
+    nonce: bytes | None = None,
+    tag: bytes | None = None,
+) -> Dict[str, Any]:
+    """Retrieve (and optionally decrypt) JSON content from ``url``.
+
+    When the URL points to S3 the file is first downloaded to a temporary
+    location using the shared S3 downloader.  If ``key``, ``nonce`` and ``tag``
+    are provided the downloaded bytes are decrypted with AES-GCM before being
+    parsed as JSON.
+    """
     if 'amazonaws.com' in url:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
         try:
             download_s3_file_from_url(url, tmp_path)
             with open(tmp_path, 'rb') as f:
-                return json.loads(f.read())
+                data = f.read()
         finally:
             os.remove(tmp_path)
     else:
         import requests
         resp = requests.get(url)
         resp.raise_for_status()
-        return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        data = resp.content
+
+    if key and nonce and tag:
+        from uploader.crypto_utils import decrypt_stream
+
+        try:
+            data = b"".join(decrypt_stream(key, nonce, tag, [data]))
+        except Exception:
+            # If decryption fails, fall back to raw data which will likely
+            # raise during JSON parsing.  This mirrors previous behaviour but
+            # avoids leaking cryptography exceptions.
+            pass
+
+    return json.loads(data)
 
 # User class for Flask-Login
 class User(UserMixin):
@@ -800,7 +824,7 @@ def download_by_hash(salted_sha512_hash):
                 if not manifest_url:
                     return "Manifest file not found", 404
 
-                manifest = fetch_json_from_url(manifest_url)
+                manifest = fetch_json_from_url(manifest_url, key, iv, tag)
                 orig_name = manifest.get('original_filename', 'download')
                 total_size = manifest.get('total_size', 0)
                 # Use video mimetype if possible, fallback to octet-stream
@@ -975,7 +999,7 @@ def stream_by_hash(salted_sha512_hash):
                 if not manifest_url:
                     return "Manifest file not found", 404
 
-                manifest = fetch_json_from_url(manifest_url)
+                manifest = fetch_json_from_url(manifest_url, key, iv, tag)
 
                 orig_name = manifest.get('original_filename', 'file')
                 total_size = manifest.get('total_size', 0)
@@ -2548,7 +2572,7 @@ def download_multipart_by_page_id(manifest_page_id):
             return "Manifest page not found", 404
         manifest_props = manifest_page.get('properties', {})
         try:
-            key, _, _ = extract_encryption_params(manifest_props)
+            key, nonce, tag = extract_encryption_params(manifest_props)
         except PermissionError:
             return "Missing or invalid link key", 403
         file_property = manifest_props.get('file_data', {})
@@ -2562,7 +2586,7 @@ def download_multipart_by_page_id(manifest_page_id):
         if not manifest_url:
             return "Manifest file not found", 404
 
-        manifest = fetch_json_from_url(manifest_url)
+        manifest = fetch_json_from_url(manifest_url, key, nonce, tag)
         orig_name = manifest.get('original_filename', 'download')
         total_size = manifest.get('total_size', 0)
         import mimetypes

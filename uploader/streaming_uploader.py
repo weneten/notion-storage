@@ -21,8 +21,18 @@ from flask_socketio import SocketIO
 from .notion_uploader import NotionFileUploader
 from .parallel_processor import ParallelChunkProcessor, generate_salt, calculate_salted_hash
 from .s3_downloader import download_file_from_url
-from .crypto_utils import generate_file_key, encrypt_stream, wrap_file_key
+import importlib.util
+from pathlib import Path
 import gc
+
+_crypto_spec = importlib.util.spec_from_file_location(
+    "uploader.crypto_utils", Path(__file__).with_name("crypto_utils.py")
+)
+_crypto = importlib.util.module_from_spec(_crypto_spec)
+_crypto_spec.loader.exec_module(_crypto)
+generate_file_key = _crypto.generate_file_key
+encrypt_stream = _crypto.encrypt_stream
+wrap_file_key = _crypto.wrap_file_key
 
 
 def _fetch_text(url: str) -> str:
