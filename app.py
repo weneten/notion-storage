@@ -736,8 +736,10 @@ def download_folder():
                 return "Missing or invalid link key", 403
 
             if item['is_manifest']:
-                def manifest_generator(manifest_id=item['id'], file_key=key):
-                    iterator = uploader.stream_multi_part_file(manifest_id, file_key=file_key)
+                def manifest_generator(manifest_id=item['id'], file_key=key, lk=link_key):
+                    iterator = uploader.stream_multi_part_file(
+                        manifest_id, file_key=file_key, link_key=lk
+                    )
                     yield from iterator
                 z.write_iter(archive_name, manifest_generator())
             else:
@@ -796,6 +798,9 @@ def download_by_hash(salted_sha512_hash):
             key, iv, tag = extract_encryption_params(file_props)
         except PermissionError:
             return "Missing or invalid link key", 403
+
+        lk_b64 = request.args.get('lk')
+        link_key = base64.b64decode(lk_b64) if lk_b64 else None
 
         # Check access control
         if not is_public:
@@ -869,7 +874,7 @@ def download_by_hash(salted_sha512_hash):
 
                     def stream_range():
                         iterator = uploader.stream_multi_part_file(
-                            file_page_id, start, end, file_key=key
+                            file_page_id, start, end, file_key=key, link_key=link_key
                         )
                         for chunk in iterator:
                             yield chunk
@@ -879,7 +884,7 @@ def download_by_hash(salted_sha512_hash):
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
                     iterator = uploader.stream_multi_part_file(
-                        file_page_id, file_key=key
+                        file_page_id, file_key=key, link_key=link_key
                     )
                     response = Response(
                         stream_with_context(iterator), mimetype=mimetype
@@ -973,6 +978,9 @@ def stream_by_hash(salted_sha512_hash):
         except PermissionError:
             return "Missing or invalid link key", 403
 
+        lk_b64 = request.args.get('lk')
+        link_key = base64.b64decode(lk_b64) if lk_b64 else None
+
         # Check access control (same logic as download route)
         if not is_public:
             if not current_user.is_authenticated:
@@ -1042,7 +1050,7 @@ def stream_by_hash(salted_sha512_hash):
 
                     def stream_range():
                         iterator = uploader.stream_multi_part_file(
-                            file_page_id, start, end, file_key=key
+                            file_page_id, start, end, file_key=key, link_key=link_key
                         )
                         for chunk in iterator:
                             yield chunk
@@ -1052,7 +1060,7 @@ def stream_by_hash(salted_sha512_hash):
                     response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
                 else:
                     iterator = uploader.stream_multi_part_file(
-                        file_page_id, file_key=key
+                        file_page_id, file_key=key, link_key=link_key
                     )
                     response = Response(
                         stream_with_context(iterator), mimetype=mimetype

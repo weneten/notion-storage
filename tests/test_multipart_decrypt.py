@@ -33,6 +33,7 @@ cu_spec.loader.exec_module(cu)
 sys.modules['uploader.crypto_utils'] = cu
 sys.modules['uploader'].crypto_utils = cu
 encrypt_stream = cu.encrypt_stream
+wrap_file_key = cu.wrap_file_key
 
 
 def test_stream_multi_part_file_decrypts_without_link_key(monkeypatch):
@@ -149,3 +150,57 @@ def test_stream_multi_part_file_partial_range(monkeypatch):
         uploader.stream_multi_part_file('manifest', start=start, end=end, file_key=file_key)
     )
     assert output == data[start:end + 1]
+
+
+def test_stream_multi_part_file_with_link_key(monkeypatch):
+    link_key = os.urandom(16)
+    part_key = os.urandom(32)
+    data = b'hello world' * 50
+    nonce = os.urandom(12)
+    enc_iter, tag = encrypt_stream(part_key, nonce, [data])
+    ciphertext = b"".join(enc_iter)
+    wrapped_fk = wrap_file_key(part_key, link_key)
+
+    manifest = {
+        "parts": [
+            {
+                "part_number": 1,
+                "filename": "part1",
+                "file_hash": "hash1",
+                "size": len(ciphertext),
+                "wrapped_fk_b64": base64.b64encode(wrapped_fk).decode(),
+                "nonce_b64": base64.b64encode(nonce).decode(),
+                "tag_b64": base64.b64encode(tag).decode(),
+            }
+        ]
+    }
+
+    monkeypatch.setattr(nu, '_fetch_json', lambda url, key=None, nonce=None, tag=None: manifest)
+
+    uploader = NotionFileUploader(api_token='token')
+
+    def fake_get_user_by_id(self, page_id):
+        return {
+            'properties': {
+                'file_data': {'files': [{'file': {'url': 'unused'}}]},
+                'nonce': {'rich_text': [{'text': {'content': 'none'}}]},
+                'tag': {'rich_text': [{'text': {'content': 'none'}}]},
+            }
+        }
+
+    def fake_get_file_by_hash(self, file_hash):
+        return {
+            'properties': {
+                'File Page ID': {'rich_text': [{'text': {'content': 'part1'}}]}
+            }
+        }
+
+    def fake_stream_file_from_notion(self, page_id, filename, download_url=None, chunk_size=None):
+        return [ciphertext]
+
+    uploader.get_user_by_id = types.MethodType(fake_get_user_by_id, uploader)
+    uploader.get_file_by_salted_sha512_hash = types.MethodType(fake_get_file_by_hash, uploader)
+    uploader.stream_file_from_notion = types.MethodType(fake_stream_file_from_notion, uploader)
+
+    output = b"".join(uploader.stream_multi_part_file('manifest', link_key=link_key))
+    assert output == data
