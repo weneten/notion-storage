@@ -34,6 +34,6 @@ def test_round_trip_stream_encryption():
 def test_file_key_wrap_unwrap():
     fk = generate_file_key()
     lk = generate_file_key()
-    wrapped, nonce, tag = wrap_file_key(fk, lk)
-    recovered = unwrap_file_key(wrapped, lk, nonce, tag)
+    wrapped = wrap_file_key(fk, lk)
+    recovered = unwrap_file_key(wrapped, lk)
     assert recovered == fk

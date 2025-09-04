@@ -5,12 +5,13 @@ from flask_cors import CORS
 from uploader import NotionFileUploader, ChunkProcessor, download_s3_file_from_url
 from uploader.streaming_uploader import StreamingUploadManager
 from uploader.s3_downloader import cleanup_stale_streams
-from uploader.crypto_utils import decrypt_stream
+from uploader.crypto_utils import decrypt_stream, unwrap_file_key
 from dotenv import load_dotenv
 import os
 import tempfile
 import secrets
 import hashlib
+import hmac
 import concurrent.futures
 import math
 import base64
@@ -178,15 +179,35 @@ def safe_get_property_text(prop: Dict[str, Any], key: str = "rich_text", default
 
 
 def extract_encryption_params(props: Dict[str, Any]) -> Tuple[bytes | None, bytes | None, bytes | None]:
-    """Extract and decode encryption parameters from Notion properties."""
+    """Extract and decode encryption parameters, unwrapping file keys when needed."""
     key_str = safe_get_property_text(props.get('encryption_key', {}))
+    wrapped_fk_str = safe_get_property_text(props.get('wrapped_file_key', {}))
+    fingerprint = safe_get_property_text(props.get('key_fingerprint', {}))
     nonce_str = (
         safe_get_property_text(props.get('nonce', {}))
         or safe_get_property_text(props.get('iv', {}))
     )
     tag_str = safe_get_property_text(props.get('tag', {}))
 
-    key = base64.b64decode(key_str) if key_str and key_str != 'none' else None
+    key: bytes | None = None
+    if key_str and key_str != 'none':
+        key = base64.b64decode(key_str)
+    elif wrapped_fk_str and wrapped_fk_str != 'none':
+        lk_b64 = request.args.get('lk')
+        if not lk_b64:
+            raise PermissionError('missing link key')
+        try:
+            link_key = base64.b64decode(lk_b64)
+            wrapped_fk = base64.b64decode(wrapped_fk_str)
+            file_key = unwrap_file_key(wrapped_fk, link_key)
+            if fingerprint and fingerprint != 'none':
+                calc = hashlib.sha256(file_key).hexdigest()
+                if not hmac.compare_digest(calc, fingerprint):
+                    raise PermissionError('invalid link key')
+            key = file_key
+        except Exception:
+            raise PermissionError('invalid link key')
+
     nonce = base64.b64decode(nonce_str) if nonce_str and nonce_str != 'none' else None
     tag = base64.b64decode(tag_str) if tag_str and tag_str != 'none' else None
     return key, nonce, tag
@@ -615,10 +636,11 @@ def download_file(filename):
                 manifest_page_id = file_data.get('id')
                 break
 
+        lk = request.args.get('lk')
         if filename.lower().endswith('.json') and manifest_page_id:
-            return redirect(url_for('download_multipart_by_page_id', manifest_page_id=manifest_page_id))
+            return redirect(url_for('download_multipart_by_page_id', manifest_page_id=manifest_page_id, lk=lk) if lk else url_for('download_multipart_by_page_id', manifest_page_id=manifest_page_id))
         if file_hash:
-            return redirect(url_for('download_by_hash', salted_sha512_hash=file_hash))
+            return redirect(url_for('download_by_hash', salted_sha512_hash=file_hash, lk=lk) if lk else url_for('download_by_hash', salted_sha512_hash=file_hash))
         else:
             return "File not found in database", 404
     except Exception as e:
@@ -631,6 +653,8 @@ def download_folder():
     """Download all files within a folder as a ZIP archive."""
     folder_path = request.args.get('folder', '/')
     try:
+        if not request.args.get('lk'):
+            return "Missing link key", 403
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
             return "User database not found", 404
@@ -678,30 +702,30 @@ def download_folder():
                 if item['rel_path']
                 else item['orig_name']
             )
+            page = uploader.get_user_by_id(item['id'])
+            props = page.get('properties', {})
+            try:
+                key, nonce, tag = extract_encryption_params(props)
+            except PermissionError:
+                return "Missing or invalid link key", 403
+
             if item['is_manifest']:
-                def manifest_generator(manifest_id=item['id']):
-                    page = uploader.get_user_by_id(manifest_id)
-                    props = page.get('properties', {})
-                    key, _, _ = extract_encryption_params(props)
-                    iterator = uploader.stream_multi_part_file(manifest_id, file_key=key)
+                def manifest_generator(manifest_id=item['id'], file_key=key):
+                    iterator = uploader.stream_multi_part_file(manifest_id, file_key=file_key)
                     yield from iterator
                 z.write_iter(archive_name, manifest_generator())
             else:
-                def file_generator(file_id=item['id'], filename=item['orig_name']):
+                def file_generator(file_id=item['id'], filename=item['orig_name'], fk=key, n=nonce, t=tag):
                     metadata = fetch_download_metadata(file_id, filename)
                     url = metadata.get('url')
                     if not url:
                         return
-                    page = uploader.get_user_by_id(file_id)
-                    props = page.get('properties', {})
-                    key, nonce, tag = extract_encryption_params(props)
                     iterator = uploader.stream_file_from_notion(
                         file_id, filename, download_url=url
                     )
-                    if key and nonce and tag:
-                        iterator = decrypt_stream(key, nonce, tag, iterator)
+                    if fk and n and t:
+                        iterator = decrypt_stream(fk, n, t, iterator)
                     yield from iterator
-
                 z.write_iter(archive_name, file_generator())
 
         response = Response(stream_with_context(z), mimetype='application/zip')
@@ -742,7 +766,10 @@ def download_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
-        key, iv, tag = extract_encryption_params(file_props)
+        try:
+            key, iv, tag = extract_encryption_params(file_props)
+        except PermissionError:
+            return "Missing or invalid link key", 403
 
         # Check access control
         if not is_public:
@@ -915,7 +942,10 @@ def stream_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
-        key, iv, tag = extract_encryption_params(file_props)
+        try:
+            key, iv, tag = extract_encryption_params(file_props)
+        except PermissionError:
+            return "Missing or invalid link key", 403
 
         # Check access control (same logic as download route)
         if not is_public:
@@ -2182,6 +2212,7 @@ def stream_file_upload(upload_id):
                 'filename': result['filename'],
                 'file_size': result['bytes_uploaded'],
                 'file_hash': result.get('file_hash'),
+                'link_key': result.get('link_key'),
                 'file_id': result.get('file_id'),  # May be None until DB integration completes
                 'is_public': False,
                 'name': result.get('original_filename', result['filename']),
@@ -2509,12 +2540,17 @@ def download_multipart_by_page_id(manifest_page_id):
     Download a multi-part file using the manifest's Notion page ID (bypasses global file index).
     """
     try:
+        if not request.args.get('lk'):
+            return "Missing link key", 403
         import requests, json
         manifest_page = uploader.get_user_by_id(manifest_page_id)
         if not manifest_page:
             return "Manifest page not found", 404
         manifest_props = manifest_page.get('properties', {})
-        key, _, _ = extract_encryption_params(manifest_props)
+        try:
+            key, _, _ = extract_encryption_params(manifest_props)
+        except PermissionError:
+            return "Missing or invalid link key", 403
         file_property = manifest_props.get('file_data', {})
         files_array = file_property.get('files', [])
         manifest_file = files_array[0] if files_array else None

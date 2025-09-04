@@ -196,6 +196,8 @@ async function loadFiles() {
             const fileHash = file.file_hash || '';
             const saltedHash = file.salted_hash || fileHash;
             const isPublic = file.is_public || false;
+            const lk = localStorage.getItem('lk_' + saltedHash);
+            const linkUrl = lk ? `/d/${saltedHash}?lk=${lk}` : `/d/${saltedHash}`;
 
             tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
@@ -203,7 +205,7 @@ async function loadFiles() {
                     <td class="filesize-cell">${formatFileSize(file.size)}</td>
                     <td>
                         ${saltedHash ?
-                    `<a href="/d/${saltedHash}" target="_blank" class="public-link">
+                    `<a href="${linkUrl}" target="_blank" class="public-link">
                                 <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${saltedHash.substring(0, 10)}...
                             </a>` :
                     '<span class="text-muted">N/A</span>'
@@ -216,7 +218,7 @@ async function loadFiles() {
                         </label>
                     </td>
                     <td class="action-buttons">
-                        <a href="/d/${saltedHash}" class="btn btn-primary btn-sm">
+                        <a href="${linkUrl}" class="btn btn-primary btn-sm">
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
                         <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}">

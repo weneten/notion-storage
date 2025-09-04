@@ -14,6 +14,10 @@ from typing import Iterable, Iterator, Tuple
 
 import os
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.keywrap import (
+    aes_key_wrap,
+    aes_key_unwrap,
+)
 
 
 def generate_file_key() -> bytes:
@@ -79,19 +83,11 @@ def decrypt_stream(key: bytes, nonce: bytes, tag: bytes, stream: Iterable[bytes]
         yield tail
 
 
-def wrap_file_key(file_key: bytes, link_key: bytes) -> Tuple[bytes, bytes, bytes]:
-    """Wrap (encrypt) a file key using a link key via AES-GCM.
-
-    Returns a tuple of (wrapped_key, nonce, tag)."""
-    nonce = os.urandom(12)
-    cipher = Cipher(algorithms.AES(link_key), modes.GCM(nonce))
-    encryptor = cipher.encryptor()
-    wrapped = encryptor.update(file_key) + encryptor.finalize()
-    return wrapped, nonce, encryptor.tag
+def wrap_file_key(file_key: bytes, link_key: bytes) -> bytes:
+    """Wrap ``file_key`` using ``link_key`` with RFC 3394 AES Key Wrap."""
+    return aes_key_wrap(link_key, file_key)
 
 
-def unwrap_file_key(wrapped: bytes, link_key: bytes, nonce: bytes, tag: bytes) -> bytes:
-    """Decrypt a wrapped file key using the link key and AES-GCM."""
-    cipher = Cipher(algorithms.AES(link_key), modes.GCM(nonce, tag))
-    decryptor = cipher.decryptor()
-    return decryptor.update(wrapped) + decryptor.finalize()
+def unwrap_file_key(wrapped: bytes, link_key: bytes) -> bytes:
+    """Unwrap ``file_key`` using ``link_key`` and RFC 3394 AES Key Wrap."""
+    return aes_key_unwrap(link_key, wrapped)
