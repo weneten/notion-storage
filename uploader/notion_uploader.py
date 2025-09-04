@@ -326,7 +326,13 @@ class NotionFileUploader:
 
             def worker() -> None:
                 try:
-                    if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
+                    is_encrypted = part_info.get('nonce_b64') and part_info.get('tag_b64')
+
+                    if is_encrypted:
+                        iterator = self.stream_file_from_notion(
+                            part_info['page_id'], part_info['filename']
+                        )
+                    elif part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
                         iterator = self.stream_file_from_notion_range(
                             part_info['page_id'],
                             part_info['filename'],
@@ -338,7 +344,7 @@ class NotionFileUploader:
                             part_info['page_id'], part_info['filename']
                         )
 
-                    if part_info.get('nonce_b64') and part_info.get('tag_b64'):
+                    if is_encrypted:
                         part_key = None
                         if link_key and part_info.get('wrapped_fk_b64'):
                             part_key = unwrap_file_key(
@@ -350,6 +356,23 @@ class NotionFileUploader:
                             nonce = base64.b64decode(part_info['nonce_b64'])
                             tag = base64.b64decode(part_info['tag_b64'])
                             iterator = decrypt_stream(part_key, nonce, tag, iterator)
+
+                    if part_info['start'] > 0 or part_info['end'] < part_info['size'] - 1:
+                        def slice_stream(it, start, end):
+                            pos = 0
+                            for chunk in it:
+                                next_pos = pos + len(chunk)
+                                if next_pos <= start:
+                                    pos = next_pos
+                                    continue
+                                if pos > end:
+                                    pos = next_pos
+                                    continue
+                                s = max(0, start - pos)
+                                e = min(len(chunk), end - pos + 1)
+                                yield chunk[s:e]
+                                pos = next_pos
+                        iterator = slice_stream(iterator, part_info['start'], part_info['end'])
 
                     for chunk in iterator:
                         q.put(chunk)
