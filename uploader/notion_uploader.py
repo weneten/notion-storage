@@ -19,7 +19,7 @@ from .s3_downloader import (
     stream_file_from_url,
     stream_file_range_from_url,
 )
-from .crypto_utils import encrypt_stream, decrypt_stream
+from .crypto_utils import encrypt_stream, decrypt_stream, unwrap_file_key
 
 
 def _fetch_json(
@@ -204,6 +204,7 @@ class NotionFileUploader:
         start: int = 0,
         end: Optional[int] = None,
         file_key: Optional[bytes] = None,
+        link_key: Optional[bytes] = None,
     ) -> Iterable[bytes]:
         """
         Streams a multi-part file described by a manifest JSON stored in Notion.
@@ -214,6 +215,7 @@ class NotionFileUploader:
             manifest_page_id: The Notion page ID containing the manifest JSON.
             start: Starting byte position (inclusive).
             end: Ending byte position (inclusive). If None, stream until the end.
+            link_key: Key used to unwrap per-part file keys.
 
         Yields:
             File bytes in the requested range.
@@ -309,8 +311,9 @@ class NotionFileUploader:
                     'size': part_size,
                     'start': part_start,
                     'end': part_end,
-                    'nonce': part.get('nonce'),
-                    'tag': part.get('tag'),
+                    'wrapped_fk_b64': part.get('wrapped_fk_b64'),
+                    'nonce_b64': part.get('nonce_b64'),
+                    'tag_b64': part.get('tag_b64'),
                 }
             return None
 
@@ -334,6 +337,12 @@ class NotionFileUploader:
                         iterator = self.stream_file_from_notion(
                             part_info['page_id'], part_info['filename']
                         )
+
+                    if link_key and part_info.get('wrapped_fk_b64') and part_info.get('nonce_b64') and part_info.get('tag_b64'):
+                        part_key = unwrap_file_key(base64.b64decode(part_info['wrapped_fk_b64']), link_key)
+                        nonce = base64.b64decode(part_info['nonce_b64'])
+                        tag = base64.b64decode(part_info['tag_b64'])
+                        iterator = decrypt_stream(part_key, nonce, tag, iterator)
 
                     for chunk in iterator:
                         q.put(chunk)
@@ -370,8 +379,6 @@ class NotionFileUploader:
                     start_prefetch(next_part)
 
         iterator = encrypted_iter()
-        if file_key and manifest_nonce and manifest_tag:
-            iterator = decrypt_stream(file_key, manifest_nonce, manifest_tag, iterator)
         for chunk in iterator:
             yield chunk
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
@@ -1071,7 +1078,8 @@ class NotionFileUploader:
                 if file_key:
                     nonce = os.urandom(12)
                     enc_stream, tag = encrypt_stream(file_key, nonce, file_stream)
-                    encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
+                    encryption_meta['nonce_b64'] = base64.b64encode(nonce).decode('utf-8')
+                    encryption_meta['tag_b64'] = base64.b64encode(tag).decode('utf-8')
                     file_stream = enc_stream
 
             # Create an accumulator for the streamed data

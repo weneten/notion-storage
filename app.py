@@ -677,8 +677,10 @@ def download_folder():
     """Download all files within a folder as a ZIP archive."""
     folder_path = request.args.get('folder', '/')
     try:
-        if not request.args.get('lk'):
+        lk_b64 = request.args.get('lk')
+        if not lk_b64:
             return "Missing link key", 403
+        link_key = base64.b64decode(lk_b64)
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
             return "User database not found", 404
@@ -2564,8 +2566,10 @@ def download_multipart_by_page_id(manifest_page_id):
     Download a multi-part file using the manifest's Notion page ID (bypasses global file index).
     """
     try:
-        if not request.args.get('lk'):
+        lk_b64 = request.args.get('lk')
+        if not lk_b64:
             return "Missing link key", 403
+        link_key = base64.b64decode(lk_b64)
         import requests, json
         manifest_page = uploader.get_user_by_id(manifest_page_id)
         if not manifest_page:
@@ -2620,7 +2624,7 @@ def download_multipart_by_page_id(manifest_page_id):
 
             def stream_range():
                 iterator = uploader.stream_multi_part_file(
-                    manifest_page_id, start, end, file_key=key
+                    manifest_page_id, start, end, file_key=key, link_key=link_key
                 )
                 for chunk in iterator:
                     yield chunk
@@ -2630,7 +2634,7 @@ def download_multipart_by_page_id(manifest_page_id):
             response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
         else:
             iterator = uploader.stream_multi_part_file(
-                manifest_page_id, file_key=key
+                manifest_page_id, file_key=key, link_key=link_key
             )
             response = Response(stream_with_context(iterator), mimetype=mimetype)
             if total_size > 0:
