@@ -22,22 +22,36 @@ from .s3_downloader import (
 from .crypto_utils import encrypt_stream, decrypt_stream
 
 
-def _fetch_json(url: str):
-    """Retrieve JSON from a URL, using the S3 downloader when applicable."""
+def _fetch_json(
+    url: str,
+    key: bytes | None = None,
+    nonce: bytes | None = None,
+    tag: bytes | None = None,
+):
+    """Retrieve JSON from a URL, optionally decrypting with AES-GCM."""
     import json
+
     if 'amazonaws.com' in url:
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp_path = tmp.name
         try:
             download_file_from_url(url, tmp_path)
             with open(tmp_path, 'rb') as f:
-                return json.load(f)
+                data = f.read()
         finally:
             os.remove(tmp_path)
     else:
         resp = requests.get(url)
         resp.raise_for_status()
-        return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
+        data = resp.content
+
+    if key and nonce and tag:
+        try:
+            data = b"".join(decrypt_stream(key, nonce, tag, [data]))
+        except Exception:
+            pass
+
+    return json.loads(data)
 
 
 # Default chunk size for downloading files from Notion (1 MiB). Can be overridden
@@ -218,8 +232,23 @@ class NotionFileUploader:
         manifest_url = manifest_file.get('file', {}).get('url', '')
         if not manifest_url:
             raise Exception(f"No valid URL for manifest file on page {manifest_page_id}")
-        # Download the manifest JSON
-        manifest = _fetch_json(manifest_url)
+
+        props = manifest_page.get('properties', {})
+        nonce_b64 = props.get('nonce', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        tag_b64 = props.get('tag', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        manifest_nonce = (
+            base64.b64decode(nonce_b64)
+            if nonce_b64 and nonce_b64 != 'none'
+            else None
+        )
+        manifest_tag = (
+            base64.b64decode(tag_b64)
+            if tag_b64 and tag_b64 != 'none'
+            else None
+        )
+
+        # Download (and decrypt) the manifest JSON
+        manifest = _fetch_json(manifest_url, file_key, manifest_nonce, manifest_tag)
         parts = manifest.get('parts', [])
         if not parts:
             raise Exception(f"Manifest JSON does not contain 'parts' array")
@@ -306,15 +335,6 @@ class NotionFileUploader:
                             part_info['page_id'], part_info['filename']
                         )
 
-                    if (
-                        file_key
-                        and part_info.get('nonce')
-                        and part_info.get('tag')
-                    ):
-                        nonce = base64.b64decode(part_info['nonce'])
-                        tag = base64.b64decode(part_info['tag'])
-                        iterator = decrypt_stream(file_key, nonce, tag, iterator)
-
                     for chunk in iterator:
                         q.put(chunk)
                     q.put(None)  # Signal completion
@@ -332,22 +352,28 @@ class NotionFileUploader:
                 break
             start_prefetch(part_info)
 
-        while streams:
-            q, t = streams[0]
-            while True:
-                chunk = q.get()
-                if chunk is None:
-                    break
-                if isinstance(chunk, Exception):
-                    raise chunk
-                yield chunk
+        def encrypted_iter():
+            while streams:
+                q, t = streams[0]
+                while True:
+                    chunk = q.get()
+                    if chunk is None:
+                        break
+                    if isinstance(chunk, Exception):
+                        raise chunk
+                    yield chunk
+                streams.pop(0)
+                t.join()
 
-            streams.pop(0)
-            t.join()
+                next_part = resolve_next_part()
+                if next_part:
+                    start_prefetch(next_part)
 
-            next_part = resolve_next_part()
-            if next_part:
-                start_prefetch(next_part)
+        iterator = encrypted_iter()
+        if file_key and manifest_nonce and manifest_tag:
+            iterator = decrypt_stream(file_key, manifest_nonce, manifest_tag, iterator)
+        for chunk in iterator:
+            yield chunk
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
                  global_file_index_db_id: str = None, notion_space_id: str = None):
         self.api_token = api_token
