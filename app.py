@@ -25,6 +25,7 @@ import uuid
 import random
 import string
 import json
+import urllib.parse
 from flask_socketio import emit
 from collections import defaultdict
 import gc
@@ -178,7 +179,9 @@ def safe_get_property_text(prop: Dict[str, Any], key: str = "rich_text", default
     return default
 
 
-def extract_encryption_params(props: Dict[str, Any]) -> Tuple[bytes | None, bytes | None, bytes | None]:
+def extract_encryption_params(
+    props: Dict[str, Any], link_key: bytes | None = None
+) -> Tuple[bytes | None, bytes | None, bytes | None]:
     """Extract and decode encryption parameters, unwrapping file keys when needed."""
     key_str = safe_get_property_text(props.get('encryption_key', {}))
     wrapped_fk_str = safe_get_property_text(props.get('wrapped_file_key', {}))
@@ -193,11 +196,15 @@ def extract_encryption_params(props: Dict[str, Any]) -> Tuple[bytes | None, byte
     if key_str and key_str != 'none':
         key = base64.b64decode(key_str)
     elif wrapped_fk_str and wrapped_fk_str != 'none':
-        lk_b64 = request.args.get('lk')
-        if not lk_b64:
-            raise PermissionError('missing link key')
+        if link_key is None:
+            lk_b64 = request.args.get('lk')
+            if not lk_b64:
+                raise PermissionError('missing link key')
+            try:
+                link_key = base64.b64decode(lk_b64)
+            except Exception:
+                raise PermissionError('invalid link key')
         try:
-            link_key = base64.b64decode(lk_b64)
             wrapped_fk = base64.b64decode(wrapped_fk_str)
             file_key = unwrap_file_key(wrapped_fk, link_key)
             if fingerprint and fingerprint != 'none':
@@ -677,10 +684,29 @@ def download_folder():
     """Download all files within a folder as a ZIP archive."""
     folder_path = request.args.get('folder', '/')
     try:
-        lk_b64 = request.args.get('lk')
-        if not lk_b64:
-            return "Missing link key", 403
-        link_key = base64.b64decode(lk_b64)
+        lk_map_param = request.args.get('lk_map')
+        lk_map: Dict[str, bytes] = {}
+        default_link_key: bytes | None = None
+        if lk_map_param:
+            try:
+                decoded = json.loads(urllib.parse.unquote(lk_map_param))
+                for fid, b64 in decoded.items():
+                    try:
+                        lk_map[fid] = base64.b64decode(b64)
+                    except Exception:
+                        return "Invalid link key", 403
+            except Exception:
+                return "Invalid link key map", 400
+        else:
+            lk_b64 = request.args.get('lk')
+            if lk_b64:
+                try:
+                    default_link_key = base64.b64decode(lk_b64)
+                except Exception:
+                    return "Invalid link key", 403
+            else:
+                return "Missing link key", 403
+
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
             return "User database not found", 404
@@ -730,13 +756,14 @@ def download_folder():
             )
             page = uploader.get_user_by_id(item['id'])
             props = page.get('properties', {})
+            item_lk = lk_map.get(item['id'], default_link_key)
             try:
-                key, nonce, tag = extract_encryption_params(props)
+                key, nonce, tag = extract_encryption_params(props, item_lk)
             except PermissionError:
                 return "Missing or invalid link key", 403
 
             if item['is_manifest']:
-                def manifest_generator(manifest_id=item['id'], file_key=key, lk=link_key):
+                def manifest_generator(manifest_id=item['id'], file_key=key, lk=item_lk):
                     iterator = uploader.stream_multi_part_file(
                         manifest_id, file_key=file_key, link_key=lk
                     )
@@ -794,13 +821,12 @@ def download_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
-        try:
-            key, iv, tag = extract_encryption_params(file_props)
-        except PermissionError:
-            return "Missing or invalid link key", 403
-
         lk_b64 = request.args.get('lk')
         link_key = base64.b64decode(lk_b64) if lk_b64 else None
+        try:
+            key, iv, tag = extract_encryption_params(file_props, link_key)
+        except PermissionError:
+            return "Missing or invalid link key", 403
 
         # Check access control
         if not is_public:
@@ -973,13 +999,12 @@ def stream_by_hash(salted_sha512_hash):
         if not file_details:
             return "File details not found in user database.", 404
         file_props = file_details.get('properties', {})
-        try:
-            key, iv, tag = extract_encryption_params(file_props)
-        except PermissionError:
-            return "Missing or invalid link key", 403
-
         lk_b64 = request.args.get('lk')
         link_key = base64.b64decode(lk_b64) if lk_b64 else None
+        try:
+            key, iv, tag = extract_encryption_params(file_props, link_key)
+        except PermissionError:
+            return "Missing or invalid link key", 403
 
         # Check access control (same logic as download route)
         if not is_public:
@@ -2584,7 +2609,7 @@ def download_multipart_by_page_id(manifest_page_id):
             return "Manifest page not found", 404
         manifest_props = manifest_page.get('properties', {})
         try:
-            key, nonce, tag = extract_encryption_params(manifest_props)
+            key, nonce, tag = extract_encryption_params(manifest_props, link_key)
         except PermissionError:
             return "Missing or invalid link key", 403
         file_property = manifest_props.get('file_data', {})
