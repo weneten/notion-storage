@@ -338,11 +338,18 @@ class NotionFileUploader:
                             part_info['page_id'], part_info['filename']
                         )
 
-                    if link_key and part_info.get('wrapped_fk_b64') and part_info.get('nonce_b64') and part_info.get('tag_b64'):
-                        part_key = unwrap_file_key(base64.b64decode(part_info['wrapped_fk_b64']), link_key)
-                        nonce = base64.b64decode(part_info['nonce_b64'])
-                        tag = base64.b64decode(part_info['tag_b64'])
-                        iterator = decrypt_stream(part_key, nonce, tag, iterator)
+                    if part_info.get('nonce_b64') and part_info.get('tag_b64'):
+                        part_key = None
+                        if link_key and part_info.get('wrapped_fk_b64'):
+                            part_key = unwrap_file_key(
+                                base64.b64decode(part_info['wrapped_fk_b64']), link_key
+                            )
+                        elif file_key:
+                            part_key = file_key
+                        if part_key:
+                            nonce = base64.b64decode(part_info['nonce_b64'])
+                            tag = base64.b64decode(part_info['tag_b64'])
+                            iterator = decrypt_stream(part_key, nonce, tag, iterator)
 
                     for chunk in iterator:
                         q.put(chunk)

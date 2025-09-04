@@ -6,6 +6,7 @@ from pathlib import Path
 import types
 import pytest
 import sys
+import urllib.parse
 
 repo_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(repo_root))
@@ -127,7 +128,8 @@ def test_extract_requires_link_key():
         with pytest.raises(PermissionError):
             extract_encryption_params(props)
     lk_b64 = base64.b64encode(lk).decode()
-    with app.test_request_context(f'/download?lk={lk_b64}'):
+    lk_q = urllib.parse.quote(lk_b64)
+    with app.test_request_context(f'/download?lk={lk_q}'):
         key, n, t = extract_encryption_params(props)
         decrypted = b''.join(decrypt_stream(key, n, t, [ciphertext]))
         assert decrypted == plaintext
