@@ -1,5 +1,6 @@
 import os
 import sys
+import base64
 from pathlib import Path
 import importlib.util
 import types
@@ -51,7 +52,8 @@ class DummyNotionUploader:
             nonce = os.urandom(12)
             chunks_iter, tag = encrypt_stream(fk, nonce, iter(chunks))
             chunks = list(chunks_iter)
-            encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
+            encryption_meta['nonce_b64'] = base64.b64encode(nonce).decode('utf-8')
+            encryption_meta['tag_b64'] = base64.b64encode(tag).decode('utf-8')
         self.uploaded_bytes = b"".join(chunks)
         self.encryption_meta = encryption_meta
         return {'file_upload_id': '1', 'result': {}}
@@ -67,8 +69,9 @@ def test_single_part_stream_encrypted():
     encrypted = dummy.uploaded_bytes
     assert encrypted != data
     enc = session['encryption_meta']
-    part = enc['parts'][0]
-    decrypted = b"".join(decrypt_stream(enc['file_key'], part['nonce'], part['tag'], [encrypted]))
+    nonce = base64.b64decode(enc['nonce_b64'])
+    tag = base64.b64decode(enc['tag_b64'])
+    decrypted = b"".join(decrypt_stream(enc['file_key'], nonce, tag, [encrypted]))
     assert decrypted == data
 
 
@@ -94,6 +97,7 @@ def test_multipart_stream_encrypted(monkeypatch):
     encrypted = capture['data']
     assert encrypted != data
     enc = session['encryption_meta']
-    part = enc['parts'][0]
-    decrypted = b"".join(decrypt_stream(enc['file_key'], part['nonce'], part['tag'], [encrypted]))
+    nonce = base64.b64decode(enc['nonce_b64'])
+    tag = base64.b64decode(enc['tag_b64'])
+    decrypted = b"".join(decrypt_stream(enc['file_key'], nonce, tag, [encrypted]))
     assert decrypted == data

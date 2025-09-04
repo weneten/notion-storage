@@ -435,7 +435,7 @@ class NotionStreamingUploader:
     def _sanitize_encryption_meta(self, meta: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         if not meta:
             return None
-        allowed = {"alg", "nonce_b64", "tag_b64", "key_fingerprint", "wrapped_fk_b64", "parts"}
+        allowed = {"alg", "nonce_b64", "tag_b64", "key_fingerprint", "wrapped_fk_b64"}
         return {k: v for k, v in meta.items() if k in allowed}
     
     def _init_multipart_upload(self, filename: str, file_size: int, user_database_id: str) -> Dict[str, Any]:
@@ -757,7 +757,9 @@ class NotionStreamingUploader:
                     part_futures: List[concurrent.futures.Future] = []
                     parts_lock = threading.Lock()
 
-                    def make_callback(idx, part_filename, part_size, part_salted_hash, part_salt):
+                    link_key = base64.b64decode(upload_session['encryption_meta']['link_key_b64'])
+
+                    def make_callback(idx, part_filename, part_size, part_salted_hash, part_salt, part_session):
                         def _callback(fut: concurrent.futures.Future) -> None:
                             try:
                                 upload_result = fut.result()
@@ -770,7 +772,7 @@ class NotionStreamingUploader:
                                     part_salt,
                                     upload_result['file_upload_id'],
                                     upload_result['file_url'],
-                                    upload_session.get('encryption_meta'),
+                                    part_session.get('encryption_meta'),
                                 )
                                 with parts_lock:
                                     upload_session['uploaded_parts'].append(db_entry['id'])
@@ -780,6 +782,9 @@ class NotionStreamingUploader:
                                         "file_id": db_entry['id'],
                                         "file_hash": part_salted_hash,
                                         "size": part_size,
+                                        "wrapped_fk_b64": part_session['encryption_meta'].get('wrapped_fk_b64'),
+                                        "nonce_b64": part_session['encryption_meta'].get('nonce_b64'),
+                                        "tag_b64": part_session['encryption_meta'].get('tag_b64'),
                                     })
                             except Exception as e:
                                 print(f"ERROR: Failed to store part {idx} metadata: {e}")
@@ -788,8 +793,15 @@ class NotionStreamingUploader:
                     for idx, part_size in enumerate(part_sizes, start=1):
                         part_filename = f"{filename}.part{idx}"
                         part_session = self.create_upload_session(part_filename, part_size, user_database_id)
-                        # Use same encryption metadata for all parts
-                        part_session['encryption_meta'] = upload_session.get('encryption_meta')
+                        part_file_key = generate_file_key()
+                        wrapped_fk = wrap_file_key(part_file_key, link_key)
+                        fingerprint = hashlib.sha256(part_file_key).hexdigest()
+                        part_session['encryption_meta'] = {
+                            'alg': 'AES-GCM',
+                            'file_key': part_file_key,
+                            'wrapped_fk_b64': base64.b64encode(wrapped_fk).decode('utf-8'),
+                            'key_fingerprint': fingerprint,
+                        }
                         part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
 
                         chunk_queue: queue.Queue = queue.Queue(maxsize=4)
@@ -820,7 +832,7 @@ class NotionStreamingUploader:
                         part_salted_hash = calculate_salted_hash(part_hash, part_salt)
 
                         future.add_done_callback(
-                            make_callback(idx, part_filename, part_size, part_salted_hash, part_salt)
+                            make_callback(idx, part_filename, part_size, part_salted_hash, part_salt, part_session)
                         )
                         part_futures.append(future)
                         upload_session['last_activity'] = time.time()
@@ -1112,7 +1124,8 @@ class NotionStreamingUploader:
 
                     nonce = os.urandom(12)
                     enc_stream, tag = encrypt_stream(file_key, nonce, _hashing_stream(stream_generator))
-                    encryption_meta.setdefault('parts', []).append({'nonce': nonce, 'tag': tag})
+                    encryption_meta['nonce_b64'] = base64.b64encode(nonce).decode('utf-8')
+                    encryption_meta['tag_b64'] = base64.b64encode(tag).decode('utf-8')
                     stream_generator = enc_stream
 
             # Use parallel chunk processor
