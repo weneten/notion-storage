@@ -360,6 +360,10 @@ button:hover,
 }
 
 /* Ensure consistent spacing for file table columns */
+#files-container {
+    overflow-x: auto;
+}
+
 #fileTable {
     width: 100%;
     table-layout: fixed;
@@ -371,15 +375,16 @@ button:hover,
 }
 
 #fileTable .select-column {
-    width: 40px;
+    width: 3%;
+    min-width: 30px;
 }
 
 #fileTable .filename-column {
-    width: 35%;
+    width: 40%;
 }
 
 #fileTable .size-column {
-    width: 10%;
+    width: 8%;
 }
 
 #fileTable .folder-column {
@@ -391,7 +396,29 @@ button:hover,
 }
 
 #fileTable .public-access-column {
-    width: 5%;
+    width: 4%;
+}
+
+/* Prevent long text from stretching table */
+#fileTable .filename-column,
+#fileTable .folder-column,
+#fileTable .public-link-column {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#fileTable .public-link-column .public-link {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+#fileTable th:last-child,
+#fileTable .action-buttons {
+    width: 10%;
 }
 
 .filesize-cell {
