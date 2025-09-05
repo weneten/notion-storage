@@ -285,7 +285,6 @@ async function loadFiles() {
         // Restore scroll position
         filesContainer.scrollTop = tableScroll;
         window.scrollTo(0, tableScroll);
-
         console.log('File list refreshed successfully');
     } catch (error) {
         console.error('Error loading files:', error);
