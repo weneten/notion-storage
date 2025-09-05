@@ -154,9 +154,10 @@ async function loadFiles() {
             dropdownScroll = openMenu.scrollTop;
         }
 
-        // Preserve current scroll position of the file table
+        // Preserve current scroll positions before refreshing
         const filesContainer = document.getElementById('files-container');
-        const tableScroll = filesContainer ? filesContainer.scrollTop : window.scrollY;
+        const containerScroll = filesContainer ? filesContainer.scrollTop : 0;
+        const windowScroll = window.scrollY;
 
         console.log('Refreshing file list with AJAX...');
         // Fetch the file list data from the API
@@ -282,9 +283,11 @@ async function loadFiles() {
             }
         }
 
-        // Restore scroll position
-        filesContainer.scrollTop = tableScroll;
-        window.scrollTo(0, tableScroll);
+        // Restore scroll positions
+        if (filesContainer && filesContainer.scrollHeight > filesContainer.clientHeight) {
+            filesContainer.scrollTop = containerScroll;
+        }
+        window.scrollTo(0, windowScroll);
         console.log('File list refreshed successfully');
     } catch (error) {
         console.error('Error loading files:', error);
