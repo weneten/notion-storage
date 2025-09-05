@@ -1008,14 +1008,15 @@ function renderEntries(entries) {
             const fileId = entry.id || '';
             const fileHash = entry.file_hash || '';
             const isPublic = entry.is_public || false;
-            const fileInfo = getFileTypeInfo(entry.name);
-            const viewButtonHTML = fileInfo.isViewable && fileHash ? createViewButton(fileHash, fileInfo.type, entry.name) : '';
+            const viewContainer = fileHash
+                ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${fileHash}" data-filesize="${formatFileSize(entry.size)}"></span>`
+                : '';
 
             tableHTML += `
             <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
                 <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
                 <td>
-                    <span style="margin-right: 8px;">${fileInfo.icon}</span>
+                    <span class="file-type-icon" data-filename="${entry.name}"></span>
                     <strong>${entry.name}</strong>
                 </td>
                 <td class="filesize-cell">${formatFileSize(entry.size)}</td>
@@ -1034,7 +1035,7 @@ function renderEntries(entries) {
                     </label>
                 </td>
                 <td class="action-buttons">
-                    ${viewButtonHTML}
+                    ${viewContainer}
                     <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
                         <i class="fas fa-download mr-1"></i>Download
                     </a>
