@@ -256,7 +256,13 @@ button:hover,
 
 /* Ensure responsive table containers don't hide dropdown menus */
 .table-responsive {
-    overflow-x: auto;
+    overflow: visible;
+}
+
+/* Ensure dropdown menus from file actions appear above other content */
+.table .dropdown-menu {
+    position: absolute;
+    z-index: 2000;
 }
 
 .table th,
