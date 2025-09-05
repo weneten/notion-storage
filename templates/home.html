@@ -49,8 +49,7 @@
     </div>
     <div id="files-container">
         <!-- Files will be loaded here via JavaScript or directly from Flask context -->
-        <div class="table-responsive">
-            <table class="table">
+        <table class="table">
                 <thead>
                     <tr>
                         <th></th>
@@ -139,7 +138,6 @@
                     {% endfor %}
                 </tbody>
             </table>
-        </div>
         {% if not entries and next_cursor is none %}
         <div class="alert alert-info text-center">
             <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
