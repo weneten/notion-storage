@@ -704,8 +704,6 @@ def download_folder():
                     default_link_key = base64.b64decode(lk_b64)
                 except Exception:
                     return "Invalid link key", 403
-            else:
-                return "Missing link key", 403
 
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
