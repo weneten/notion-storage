@@ -232,7 +232,10 @@
 
         // Add event handlers for delete buttons
         document.querySelectorAll('.delete-btn').forEach(button => {
+            if (button.dataset.listenerAttached) return;
+            button.dataset.listenerAttached = 'true';
             button.addEventListener('click', async function () {
+                closeAllDropdowns();
                 const fileId = this.dataset.fileId;
                 const fileHash = this.closest('tr').dataset.fileHash;
 
@@ -278,6 +281,8 @@
 
         // Add event handlers for public toggles
         document.querySelectorAll('.public-toggle').forEach(toggle => {
+            if (toggle.dataset.listenerAttached) return;
+            toggle.dataset.listenerAttached = 'true';
             toggle.addEventListener('change', async function () {
                 const row = this.closest('tr');
                 const fileId = row.dataset.fileId;
@@ -320,7 +325,10 @@
         });
 
         document.querySelectorAll('.rename-btn').forEach(btn => {
+            if (btn.dataset.listenerAttached) return;
+            btn.dataset.listenerAttached = 'true';
             btn.addEventListener('click', async function () {
+                closeAllDropdowns();
                 const fileId = this.dataset.fileId;
                 const newName = prompt('New filename:');
                 if (!newName) return;
@@ -341,7 +349,10 @@
         });
 
         document.querySelectorAll('.move-btn').forEach(btn => {
+            if (btn.dataset.listenerAttached) return;
+            btn.dataset.listenerAttached = 'true';
             btn.addEventListener('click', function () {
+                closeAllDropdowns();
                 const fileId = this.dataset.fileId;
                 openMoveDialog([fileId], []);
             });
