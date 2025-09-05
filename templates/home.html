@@ -52,12 +52,12 @@
         <table class="table" id="fileTable">
                 <thead>
                     <tr>
-                        <th></th>
-                        <th><i class="fas fa-file mr-1"></i> Filename</th>
-                        <th><i class="fas fa-weight mr-1"></i> Size</th>
-                        <th>Folder</th>
-                        <th><i class="fas fa-link mr-1"></i> Public Link</th>
-                        <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
+                        <th class="select-column"></th>
+                        <th class="filename-column"><i class="fas fa-file mr-1"></i> Filename</th>
+                        <th class="size-column"><i class="fas fa-weight mr-1"></i> Size</th>
+                        <th class="folder-column">Folder</th>
+                        <th class="public-link-column"><i class="fas fa-link mr-1"></i> Public Link</th>
+                        <th class="public-access-column"><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                         <th><i class="fas fa-cogs mr-1"></i> Actions</th>
                     </tr>
                 </thead>
@@ -65,15 +65,15 @@
                     {% for entry in entries %}
                     {% if entry.type == 'folder' %}
                     <tr class="folder-row" data-folder-path="{{ entry.full_path }}">
-                        <td><input type="checkbox" class="select-item" data-type="folder" data-id="{{ entry.id }}"></td>
-                        <td>
+                        <td class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="{{ entry.id }}"></td>
+                        <td class="filename-column">
                             <i class="fas fa-folder mr-1"></i>
                             <strong>{{ entry.name }}</strong>
                         </td>
-                        <td class="filesize-cell">{{ entry.size | format_bytes }}</td>
-                        <td>{{ entry.full_path }}</td>
-                        <td></td>
-                        <td></td>
+                        <td class="size-column filesize-cell">{{ entry.size | format_bytes }}</td>
+                        <td class="folder-column">{{ entry.full_path }}</td>
+                        <td class="public-link-column"></td>
+                        <td class="public-access-column"></td>
                         <td>
                             <a href="{{ url_for('home', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
                                 <i class="fas fa-folder-open mr-1"></i>Open
@@ -91,14 +91,14 @@
                     </tr>
                     {% else %}
                     <tr data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}">
-                        <td><input type="checkbox" class="select-item" data-type="file" data-id="{{ entry.id }}"></td>
-                        <td>
+                        <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="{{ entry.id }}"></td>
+                        <td class="filename-column">
                             <span class="file-type-icon" data-filename="{{ entry.name }}"></span>
                             <strong>{{ entry.name }}</strong>
                         </td>
-                        <td class="filesize-cell">{{ entry.size | format_bytes }}</td>
-                        <td>{{ entry.folder }}</td>
-                        <td>
+                        <td class="size-column filesize-cell">{{ entry.size | format_bytes }}</td>
+                        <td class="folder-column">{{ entry.folder }}</td>
+                        <td class="public-link-column">
                             {% if entry.file_hash %}
                             <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}"
                                 target="_blank" class="public-link">
@@ -109,7 +109,7 @@
                             <span class="text-muted">N/A</span>
                             {% endif %}
                         </td>
-                        <td>
+                        <td class="public-access-column">
                             <label class="switch">
                                 <input type="checkbox" class="public-toggle" data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}" {% if entry.is_public %}checked{% endif %}>
                                 <span class="slider round"></span>
