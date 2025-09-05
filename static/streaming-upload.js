@@ -154,6 +154,27 @@ function updateBulkActionButtons() {
         const allChecked = checkboxes.length > 0 && checkedBoxes.length === checkboxes.length;
         selectAllBtn.textContent = allChecked ? 'Deselect All' : 'Select All';
     }
+    window.preservedSelections = new Set(Array.from(checkedBoxes).map(cb => `${cb.dataset.type}:${cb.dataset.id}`));
+}
+
+// Preserve checkbox selections across table refreshes
+window.preservedSelections = window.preservedSelections || new Set();
+
+function captureSelectedItems() {
+    window.preservedSelections = new Set(
+        Array.from(document.querySelectorAll('.select-item:checked'))
+            .map(cb => `${cb.dataset.type}:${cb.dataset.id}`)
+    );
+}
+
+function restoreSelectedItems() {
+    if (!window.preservedSelections) return;
+    window.preservedSelections.forEach(key => {
+        const [type, id] = key.split(':');
+        const cb = document.querySelector(`.select-item[data-type="${type}"][data-id="${id}"]`);
+        if (cb) cb.checked = true;
+    });
+    updateBulkActionButtons();
 }
 
 function formatBytes(bytes) {
@@ -258,6 +279,7 @@ function appendEntries(entries) {
     if (typeof initializeFileTypeIcons === 'function') {
         initializeFileTypeIcons();
     }
+    restoreSelectedItems();
     updateBulkActionButtons();
 }
 
@@ -815,6 +837,7 @@ document.addEventListener('DOMContentLoaded', function () {
 // Function to refresh file list - WITH DIAGNOSTIC LOGGING
 async function loadFiles() {
     try {
+        captureSelectedItems();
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
         console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
 
@@ -957,6 +980,8 @@ function renderEntries(entries) {
     setupFileActionEventHandlers();
     setupFolderActionEventHandlers();
     document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
+    restoreSelectedItems();
+
     updateBulkActionButtons();
 
     if (typeof initializeFileTypeIcons === 'function') {
