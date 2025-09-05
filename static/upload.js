@@ -144,6 +144,20 @@ function resetUploadState() {
 // Function to load files (refresh file list)
 async function loadFiles() {
     try {
+        // Preserve state of any open dropdown menu before refresh
+        let openDropdownId = null;
+        let dropdownScroll = 0;
+        const openMenu = document.querySelector('.action-buttons .dropdown-menu.show');
+        if (openMenu) {
+            const row = openMenu.closest('tr');
+            if (row) openDropdownId = row.dataset.fileId;
+            dropdownScroll = openMenu.scrollTop;
+        }
+
+        // Preserve current scroll position of the file table
+        const filesContainer = document.getElementById('files-container');
+        const tableScroll = filesContainer ? filesContainer.scrollTop : window.scrollY;
+
         console.log('Refreshing file list with AJAX...');
         // Fetch the file list data from the API
         const folderParam = encodeURIComponent(window.currentFolder || '/');
@@ -158,7 +172,6 @@ async function loadFiles() {
         }
 
         // Get the files container to update
-        const filesContainer = document.getElementById('files-container');
         if (!filesContainer) {
             console.error('Files container not found');
             return;
@@ -252,6 +265,26 @@ async function loadFiles() {
         if (typeof initializeFileTypeIcons === 'function') {
             initializeFileTypeIcons();
         }
+
+        // Restore previously open dropdown menu and its scroll position
+        if (openDropdownId) {
+            const row = document.querySelector(`tr[data-file-id="${openDropdownId}"]`);
+            if (row) {
+                const btnGroup = row.querySelector('.btn-group');
+                const menu = row.querySelector('.dropdown-menu');
+                const toggle = row.querySelector('.dropdown-toggle');
+                if (btnGroup && menu && toggle) {
+                    btnGroup.classList.add('show');
+                    menu.classList.add('show');
+                    toggle.setAttribute('aria-expanded', 'true');
+                    menu.scrollTop = dropdownScroll;
+                }
+            }
+        }
+
+        // Restore scroll position
+        filesContainer.scrollTop = tableScroll;
+        window.scrollTo(0, tableScroll);
 
         console.log('File list refreshed successfully');
     } catch (error) {

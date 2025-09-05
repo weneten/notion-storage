@@ -191,6 +191,53 @@ function restoreSelectedItems() {
     updateBulkActionButtons();
 }
 
+// Preserve open dropdown menu and its scroll position across refreshes
+window.openDropdownState = window.openDropdownState || null;
+
+function captureDropdownState() {
+    const openMenu = document.querySelector('.action-buttons .dropdown-menu.show');
+    if (openMenu) {
+        const row = openMenu.closest('tr');
+        window.openDropdownState = {
+            fileId: row ? row.dataset.fileId : null,
+            scrollTop: openMenu.scrollTop
+        };
+    } else {
+        window.openDropdownState = null;
+    }
+}
+
+function restoreDropdownState() {
+    if (!window.openDropdownState || !window.openDropdownState.fileId) return;
+    const row = document.querySelector(`tr[data-file-id="${window.openDropdownState.fileId}"]`);
+    if (!row) return;
+    const btnGroup = row.querySelector('.btn-group');
+    const menu = row.querySelector('.dropdown-menu');
+    const toggle = row.querySelector('.dropdown-toggle');
+    if (btnGroup && menu && toggle) {
+        btnGroup.classList.add('show');
+        menu.classList.add('show');
+        toggle.setAttribute('aria-expanded', 'true');
+        menu.scrollTop = window.openDropdownState.scrollTop || 0;
+    }
+}
+
+// Preserve file table scroll position across refreshes
+window.fileTableScrollTop = window.fileTableScrollTop || 0;
+
+function captureFileTableScroll() {
+    const container = document.getElementById('files-container');
+    window.fileTableScrollTop = container ? container.scrollTop : window.scrollY || 0;
+}
+
+function restoreFileTableScroll() {
+    const container = document.getElementById('files-container');
+    if (container) {
+        container.scrollTop = window.fileTableScrollTop || 0;
+    }
+    window.scrollTo(0, window.fileTableScrollTop || 0);
+}
+
 function formatBytes(bytes) {
     if (bytes === 0) return '0 Bytes';
     const k = 1000;
@@ -853,7 +900,9 @@ document.addEventListener('DOMContentLoaded', function () {
 // Function to refresh file list - WITH DIAGNOSTIC LOGGING
 async function loadFiles() {
     try {
+        captureDropdownState();
         captureSelectedItems();
+        captureFileTableScroll();
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
         console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
 
@@ -1000,6 +1049,7 @@ function renderEntries(entries) {
     setupFolderActionEventHandlers();
     document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
     restoreSelectedItems();
+    restoreDropdownState();
 
     updateBulkActionButtons();
 
@@ -1007,11 +1057,14 @@ function renderEntries(entries) {
         initializeFileTypeIcons();
     }
 
+    restoreFileTableScroll();
     document.dispatchEvent(new CustomEvent('contentUpdated'));
 }
 
 async function searchFiles(query) {
     try {
+        captureDropdownState();
+        captureFileTableScroll();
         const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`);
         if (!response.ok) {
             throw new Error('Failed to search files');
