@@ -27,6 +27,18 @@ from flask_socketio import emit
 from collections import defaultdict
 import gc
 import zipstream
+from urllib.parse import quote
+from werkzeug.utils import secure_filename
+
+def set_content_disposition(response, disposition, filename):
+    fallback_name = secure_filename(filename) or "download"
+    encoded_name = quote(filename)
+    response.headers.set(
+        "Content-Disposition",
+        disposition,
+        filename=fallback_name,
+        **{"filename*": f"UTF-8''{encoded_name}"}
+    )
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -656,7 +668,7 @@ def download_folder():
 
         response = Response(stream_with_context(z), mimetype='application/zip')
         zip_name = folder_path.strip('/').split('/')[-1] or 'root'
-        response.headers['Content-Disposition'] = f'attachment; filename="{zip_name}.zip"'
+        set_content_disposition(response, 'attachment', f'{zip_name}.zip')
         return response
     except Exception as e:
         return str(e), 500
@@ -729,7 +741,7 @@ def download_by_hash(salted_sha512_hash):
                     response = Response(status=200, mimetype=mimetype)
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
-                    response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                    set_content_disposition(response, 'inline', orig_name)
                     return add_stream_headers(response, mimetype)
 
                 range_header = request.headers.get('Range')
@@ -770,7 +782,7 @@ def download_by_hash(salted_sha512_hash):
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
 
-                response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
+                set_content_disposition(response, 'attachment', orig_name)
                 response.headers['Accept-Ranges'] = 'bytes'
                 return response
             except Exception as e:
@@ -798,7 +810,7 @@ def download_by_hash(salted_sha512_hash):
             ),
             mimetype=mimetype
         )
-        response.headers['Content-Disposition'] = f'attachment; filename="{original_filename}"'
+        set_content_disposition(response, 'attachment', original_filename)
         if file_metadata['file_size'] > 0:
             response.headers['Content-Length'] = str(file_metadata['file_size'])
             # Avoid printing Unicode emoji to stdout to prevent UnicodeEncodeError in some environments
@@ -884,7 +896,7 @@ def stream_by_hash(salted_sha512_hash):
                     response = Response(status=200, mimetype=mimetype)
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
-                    response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                    set_content_disposition(response, 'inline', orig_name)
                     return add_stream_headers(response, mimetype)
 
                 range_header = request.headers.get('Range')
@@ -925,7 +937,7 @@ def stream_by_hash(salted_sha512_hash):
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
 
-                response.headers['Content-Disposition'] = f'inline; filename="{orig_name}"'
+                set_content_disposition(response, 'inline', orig_name)
                 response.headers['Accept-Ranges'] = 'bytes'
                 response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
                 response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -1015,7 +1027,7 @@ def stream_by_hash(salted_sha512_hash):
         if request.method == 'HEAD':
             # Respond with headers only, no body
             response = Response(status=200, mimetype=mimetype)
-            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+            set_content_disposition(response, 'inline', original_filename)
             if file_size > 0:
                 response.headers['Content-Length'] = str(file_size)
             return add_stream_headers(response, mimetype)
@@ -1074,10 +1086,10 @@ def stream_by_hash(salted_sha512_hash):
                         download_url=file_metadata['url']
                     ):
                         yield chunk
-                
+
                 # Create partial content response
                 response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
-                response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
+                set_content_disposition(response, 'inline', original_filename)
                 response.headers['Content-Length'] = str(end - start + 1)
                 
                 # Include total file size in Content-Range if known
@@ -1117,8 +1129,8 @@ def stream_by_hash(salted_sha512_hash):
                 ),
                 mimetype=mimetype
             )
-            response.headers['Content-Disposition'] = f'inline; filename="{original_filename}"'
-            
+            set_content_disposition(response, 'inline', original_filename)
+
             # Add Content-Length header if file size is available
             if file_size > 0:
                 response.headers['Content-Length'] = str(file_size)
@@ -2460,7 +2472,7 @@ def download_multipart_by_page_id(manifest_page_id):
             if total_size > 0:
                 response.headers['Content-Length'] = str(total_size)
 
-        response.headers['Content-Disposition'] = f'attachment; filename="{orig_name}"'
+        set_content_disposition(response, 'attachment', orig_name)
         response.headers['Accept-Ranges'] = 'bytes'
         return response
     except Exception as e:
