@@ -375,16 +375,16 @@ button:hover,
 }
 
 #fileTable .select-column {
-    width: 3%;
+    width: 2%;
     min-width: 30px;
 }
 
 #fileTable .filename-column {
-    width: 40%;
+    width: 45%;
 }
 
 #fileTable .size-column {
-    width: 8%;
+    width: 5%;
 }
 
 #fileTable .folder-column {
@@ -396,7 +396,7 @@ button:hover,
 }
 
 #fileTable .public-access-column {
-    width: 4%;
+    width: 3%;
 }
 
 /* Allow long text to wrap inside table cells */
