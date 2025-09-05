@@ -257,7 +257,6 @@ button:hover,
 /* Ensure responsive table containers don't hide dropdown menus */
 .table-responsive {
     overflow-x: auto;
-    overflow-y: visible;
 }
 
 .table th,
@@ -272,8 +271,6 @@ button:hover,
     background-color: #2a2a2a;
     font-weight: 600;
     color: #bb86fc;
-    position: sticky;
-    top: 0;
 }
 
 .table tbody tr:nth-child(even) {
