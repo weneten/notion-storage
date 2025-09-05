@@ -399,21 +399,17 @@ button:hover,
     width: 4%;
 }
 
-/* Prevent long text from stretching table */
+/* Allow long text to wrap inside table cells */
 #fileTable .filename-column,
 #fileTable .folder-column,
 #fileTable .public-link-column {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 #fileTable .public-link-column .public-link {
-    display: inline-block;
-    max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    display: inline;
+    overflow-wrap: anywhere;
 }
 
 #fileTable th:last-child,
