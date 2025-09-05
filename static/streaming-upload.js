@@ -232,9 +232,8 @@ function captureFileTableScroll() {
     // Capture the page's current scroll position
     window.fileTableScrollTop = window.scrollY || 0;
 
-    // Capture the scroll position of the table's responsive wrapper
-    const tableWrapper = document.querySelector('#files-container .table-responsive') ||
-                         document.getElementById('files-container');
+    // Capture the scroll position of the files container
+    const tableWrapper = document.getElementById('files-container');
     if (tableWrapper) {
         window.fileTableInnerScrollTop = tableWrapper.scrollTop || 0;
     }
@@ -244,9 +243,8 @@ function restoreFileTableScroll() {
     // Restore the page scroll position first
     window.scrollTo(0, window.fileTableScrollTop || 0);
 
-    // Then restore the inner table wrapper scroll position
-    const tableWrapper = document.querySelector('#files-container .table-responsive') ||
-                         document.getElementById('files-container');
+    // Then restore the files container scroll position
+    const tableWrapper = document.getElementById('files-container');
     if (tableWrapper) {
         tableWrapper.scrollTop = window.fileTableInnerScrollTop || 0;
     }
@@ -966,20 +964,19 @@ function renderEntries(entries) {
     }
 
     let tableHTML = `
-        <div class="table-responsive">
-            <table class="table" id="fileTable">
-                <thead>
-                    <tr>
-                        <th></th>
-                        <th><i class="fas fa-file mr-1"></i> Filename</th>
-                        <th><i class="fas fa-weight mr-1"></i> Size</th>
-                        <th>Folder</th>
-                        <th><i class="fas fa-link mr-1"></i> Public Link</th>
-                        <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
-                        <th><i class="fas fa-cogs mr-1"></i> Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
+        <table class="table" id="fileTable">
+            <thead>
+                <tr>
+                    <th></th>
+                    <th><i class="fas fa-file mr-1"></i> Filename</th>
+                    <th><i class="fas fa-weight mr-1"></i> Size</th>
+                    <th>Folder</th>
+                    <th><i class="fas fa-link mr-1"></i> Public Link</th>
+                    <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
+                    <th><i class="fas fa-cogs mr-1"></i> Actions</th>
+                </tr>
+            </thead>
+            <tbody>
     `;
 
     entries.forEach(entry => {
@@ -1056,7 +1053,7 @@ function renderEntries(entries) {
         }
     });
 
-    tableHTML += `</tbody></table></div>`;
+    tableHTML += `</tbody></table>`;
     filesContainer.innerHTML = tableHTML;
 
     setupFileActionEventHandlers();
