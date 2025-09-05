@@ -222,6 +222,22 @@ function restoreDropdownState() {
     }
 }
 
+// Preserve file table scroll position across refreshes
+window.fileTableScrollTop = window.fileTableScrollTop || 0;
+
+function captureFileTableScroll() {
+    const container = document.getElementById('files-container');
+    window.fileTableScrollTop = container ? container.scrollTop : window.scrollY || 0;
+}
+
+function restoreFileTableScroll() {
+    const container = document.getElementById('files-container');
+    if (container) {
+        container.scrollTop = window.fileTableScrollTop || 0;
+    }
+    window.scrollTo(0, window.fileTableScrollTop || 0);
+}
+
 function formatBytes(bytes) {
     if (bytes === 0) return '0 Bytes';
     const k = 1000;
@@ -886,6 +902,7 @@ async function loadFiles() {
     try {
         captureDropdownState();
         captureSelectedItems();
+        captureFileTableScroll();
         console.log('🔍 DIAGNOSTIC: loadFiles() called from streaming upload');
         console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
 
@@ -1040,12 +1057,14 @@ function renderEntries(entries) {
         initializeFileTypeIcons();
     }
 
+    restoreFileTableScroll();
     document.dispatchEvent(new CustomEvent('contentUpdated'));
 }
 
 async function searchFiles(query) {
     try {
         captureDropdownState();
+        captureFileTableScroll();
         const response = await fetch(`/api/files/search?q=${encodeURIComponent(query)}`);
         if (!response.ok) {
             throw new Error('Failed to search files');
