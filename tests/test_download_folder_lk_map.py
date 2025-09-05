@@ -126,3 +126,76 @@ def test_download_folder_multiple_link_keys(monkeypatch):
     zf = zipfile.ZipFile(io.BytesIO(data))
     assert zf.read('file1') == b'file1'
     assert zf.read('file2') == b'file2'
+
+
+def test_download_folder_no_link_keys_needed(monkeypatch):
+    app_mod = load_app(monkeypatch)
+    uploader = app_mod.uploader
+
+    fk = os.urandom(32)
+    nonce = os.urandom(12)
+    enc, tag = encrypt_stream(fk, nonce, [b'plain'])
+    ciphertext = b''.join(list(enc))
+
+    props = {
+        'filename': {'title': [{'text': {'content': 'plain'}}]},
+        'is_folder': {'checkbox': False},
+        'is_visible': {'checkbox': True},
+        'is_manifest': {'checkbox': False},
+        'folder_path': {'rich_text': [{'text': {'content': '/'}}]},
+        'Original Filename': {'title': [{'text': {'content': 'plain'}}]},
+        'encryption_key': {'rich_text': [{'text': {'content': base64.b64encode(fk).decode()}}]},
+        'nonce': {'rich_text': [{'text': {'content': base64.b64encode(nonce).decode()}}]},
+        'tag': {'rich_text': [{'text': {'content': base64.b64encode(tag).decode()}}]},
+    }
+
+    uploader.pages = {'plain': {'properties': props}}
+    uploader.files = {'plain': ciphertext}
+
+    files_data = {'results': [{'id': 'plain', 'properties': props}]}
+    monkeypatch.setattr(app_mod, 'get_cached_files', lambda db_id: (files_data, 0))
+    monkeypatch.setattr(app_mod, 'fetch_download_metadata', lambda fid, name: {'url': 'x', 'content_type': '', 'file_size': 0})
+    monkeypatch.setattr(app_mod, 'current_user', types.SimpleNamespace(id='user'))
+
+    with app_mod.app.test_request_context('/download_folder?folder=/'):
+        resp = app_mod.download_folder.__wrapped__()
+        data = b''.join(resp.response)
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    assert zf.read('plain') == b'plain'
+
+
+def test_download_folder_missing_link_key(monkeypatch):
+    app_mod = load_app(monkeypatch)
+    uploader = app_mod.uploader
+
+    fk = os.urandom(32)
+    lk = os.urandom(32)
+    wrapped = wrap_file_key(fk, lk)
+    nonce = os.urandom(12)
+    enc, tag = encrypt_stream(fk, nonce, [b'secret'])
+    ciphertext = b''.join(list(enc))
+
+    props = {
+        'filename': {'title': [{'text': {'content': 'secret'}}]},
+        'is_folder': {'checkbox': False},
+        'is_visible': {'checkbox': True},
+        'is_manifest': {'checkbox': False},
+        'folder_path': {'rich_text': [{'text': {'content': '/'}}]},
+        'Original Filename': {'title': [{'text': {'content': 'secret'}}]},
+        'wrapped_file_key': {'rich_text': [{'text': {'content': base64.b64encode(wrapped).decode()}}]},
+        'key_fingerprint': {'rich_text': [{'text': {'content': hashlib.sha256(fk).hexdigest()}}]},
+        'nonce': {'rich_text': [{'text': {'content': base64.b64encode(nonce).decode()}}]},
+        'tag': {'rich_text': [{'text': {'content': base64.b64encode(tag).decode()}}]},
+    }
+
+    uploader.pages = {'secret': {'properties': props}}
+    uploader.files = {'secret': ciphertext}
+
+    files_data = {'results': [{'id': 'secret', 'properties': props}]}
+    monkeypatch.setattr(app_mod, 'get_cached_files', lambda db_id: (files_data, 0))
+    monkeypatch.setattr(app_mod, 'fetch_download_metadata', lambda fid, name: {'url': 'x', 'content_type': '', 'file_size': 0})
+    monkeypatch.setattr(app_mod, 'current_user', types.SimpleNamespace(id='user'))
+
+    with app_mod.app.test_request_context('/download_folder?folder=/'):
+        resp = app_mod.download_folder.__wrapped__()
+    assert resp[1] == 403
