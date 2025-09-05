@@ -174,14 +174,16 @@ async function loadFiles() {
             return;
         }
 
-        // Generate the table HTML
+        // Generate the table HTML to match the initial server-rendered table
         let tableHTML = `
             <div class="table-responsive">
                 <table class="table" id="fileTable">
                     <thead>
                         <tr>
+                            <th></th>
                             <th><i class="fas fa-file mr-1"></i> Filename</th>
                             <th><i class="fas fa-weight mr-1"></i> Size</th>
+                            <th>Folder</th>
                             <th><i class="fas fa-link mr-1"></i> Public Link</th>
                             <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                             <th><i class="fas fa-cogs mr-1"></i> Actions</th>
@@ -199,8 +201,13 @@ async function loadFiles() {
 
             tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
-                    <td><strong>${file.name}</strong></td>
+                    <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
+                    <td>
+                        <span class="file-type-icon" data-filename="${file.name}"></span>
+                        <strong>${file.name}</strong>
+                    </td>
                     <td class="filesize-cell">${formatFileSize(file.size)}</td>
+                    <td>${file.folder || window.currentFolder || ''}</td>
                     <td>
                         ${saltedHash ?
                     `<a href="/d/${saltedHash}" target="_blank" class="public-link">
@@ -216,6 +223,7 @@ async function loadFiles() {
                         </label>
                     </td>
                     <td class="action-buttons">
+                        <span class="view-button-container" data-filename="${file.name}" data-hash="${saltedHash}" data-filesize="${formatFileSize(file.size)}"></span>
                         <a href="/d/${saltedHash}" class="btn btn-primary btn-sm">
                             <i class="fas fa-download mr-1"></i>Download
                         </a>
