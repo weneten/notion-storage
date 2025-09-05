@@ -4,7 +4,6 @@ import hashlib
 import importlib.util
 from pathlib import Path
 import types
-import urllib.parse
 import io
 import zipfile
 import json
@@ -118,9 +117,9 @@ def test_download_folder_multiple_link_keys(monkeypatch):
     monkeypatch.setattr(app_mod, 'current_user', types.SimpleNamespace(id='user'))
 
     lk_map = {'file1': base64.b64encode(lk1).decode(), 'file2': base64.b64encode(lk2).decode()}
-    lk_map_enc = urllib.parse.quote(json.dumps(lk_map))
+    lk_map_json = json.dumps(lk_map)
 
-    with app_mod.app.test_request_context(f'/download_folder?folder=/&lk_map={lk_map_enc}'):
+    with app_mod.app.test_request_context('/download_folder', query_string={'folder': '/', 'lk_map': lk_map_json}):
         resp = app_mod.download_folder.__wrapped__()
         data = b''.join(resp.response)
     zf = zipfile.ZipFile(io.BytesIO(data))
