@@ -232,10 +232,11 @@ function captureFileTableScroll() {
     // Capture the page's current scroll position
     window.fileTableScrollTop = window.scrollY || 0;
 
-    // Capture the scroll position of the files table container itself
-    const container = document.getElementById('files-container');
-    if (container) {
-        window.fileTableInnerScrollTop = container.scrollTop || 0;
+    // Capture the scroll position of the table's responsive wrapper
+    const tableWrapper = document.querySelector('#files-container .table-responsive') ||
+                         document.getElementById('files-container');
+    if (tableWrapper) {
+        window.fileTableInnerScrollTop = tableWrapper.scrollTop || 0;
     }
 }
 
@@ -243,10 +244,11 @@ function restoreFileTableScroll() {
     // Restore the page scroll position first
     window.scrollTo(0, window.fileTableScrollTop || 0);
 
-    // Then restore the inner table container scroll position
-    const container = document.getElementById('files-container');
-    if (container) {
-        container.scrollTop = window.fileTableInnerScrollTop || 0;
+    // Then restore the inner table wrapper scroll position
+    const tableWrapper = document.querySelector('#files-container .table-responsive') ||
+                         document.getElementById('files-container');
+    if (tableWrapper) {
+        tableWrapper.scrollTop = window.fileTableInnerScrollTop || 0;
     }
 }
 
