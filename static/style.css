@@ -359,6 +359,17 @@ button:hover,
     }
 }
 
+/* Ensure consistent spacing for file table columns */
+#fileTable {
+    width: 100%;
+    table-layout: fixed;
+}
+
+#fileTable th,
+#fileTable td {
+    padding: 12px;
+}
+
 .filesize-cell {
     white-space: nowrap;
     text-align: right;
