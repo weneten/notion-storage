@@ -25,7 +25,6 @@ import uuid
 import random
 import string
 import json
-import urllib.parse
 from flask_socketio import emit
 from collections import defaultdict
 import gc
@@ -689,7 +688,7 @@ def download_folder():
         default_link_key: bytes | None = None
         if lk_map_param:
             try:
-                decoded = json.loads(urllib.parse.unquote(lk_map_param))
+                decoded = json.loads(lk_map_param)
                 for fid, b64 in decoded.items():
                     try:
                         lk_map[fid] = base64.b64decode(b64)

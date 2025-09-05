@@ -1373,7 +1373,7 @@ function setupFolderActionEventHandlers(root = document) {
             const folder = url.searchParams.get('folder') || '/';
             const lkMap = await collectLinkKeysForFolder(folder);
             if (Object.keys(lkMap).length > 0) {
-                url.searchParams.set('lk_map', encodeURIComponent(JSON.stringify(lkMap)));
+                url.searchParams.set('lk_map', JSON.stringify(lkMap));
             }
             window.location.href = url.pathname + url.search;
         });
