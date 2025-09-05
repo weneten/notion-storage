@@ -190,7 +190,6 @@ async function loadFiles() {
 
         // Generate the table HTML to match the initial server-rendered table
         let tableHTML = `
-            <div class="table-responsive">
                 <table class="table" id="fileTable">
                     <thead>
                         <tr>
@@ -253,7 +252,6 @@ async function loadFiles() {
         tableHTML += `
                     </tbody>
                 </table>
-            </div>
         `;
 
         // Update the container
