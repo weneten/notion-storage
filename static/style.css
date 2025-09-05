@@ -247,8 +247,16 @@ button:hover,
     margin: 20px 0;
     background-color: #1e1e1e;
     border-radius: 5px;
-    overflow: hidden;
+    /* Allow elements like dropdown menus to extend outside the table.
+       The previous overflow:hidden clipped the action menu making it
+       appear behind other elements. */
+    overflow: visible;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+/* Ensure responsive table containers don't hide dropdown menus */
+.table-responsive {
+    overflow-x: auto;
 }
 
 .table th,
@@ -263,8 +271,6 @@ button:hover,
     background-color: #2a2a2a;
     font-weight: 600;
     color: #bb86fc;
-    position: sticky;
-    top: 0;
 }
 
 .table tbody tr:nth-child(even) {
