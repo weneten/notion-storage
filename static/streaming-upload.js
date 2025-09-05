@@ -933,6 +933,9 @@ function renderEntries(entries) {
                     <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
                         <i class="fas fa-folder-open mr-1"></i>Open
                     </a>
+                    <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
+                        <i class="fas fa-download mr-1"></i>Download
+                    </a>
                     <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}">
                         <i class="fas fa-edit mr-1"></i>Rename
                     </button>
