@@ -223,19 +223,31 @@ function restoreDropdownState() {
 }
 
 // Preserve file table scroll position across refreshes
+// Preserve both the overall page scroll position and the scroll position
+// within the files table container so that refreshes don't reset either.
 window.fileTableScrollTop = window.fileTableScrollTop || 0;
+window.fileTableInnerScrollTop = window.fileTableInnerScrollTop || 0;
 
 function captureFileTableScroll() {
-    // Always capture the current page scroll position. Using a container's
-    // scrollTop caused the window scroll position to be lost when the file
-    // list was re-rendered, forcing the page back to the top after a refresh.
+    // Capture the page's current scroll position
     window.fileTableScrollTop = window.scrollY || 0;
+
+    // Capture the scroll position of the files table container itself
+    const container = document.getElementById('files-container');
+    if (container) {
+        window.fileTableInnerScrollTop = container.scrollTop || 0;
+    }
 }
 
 function restoreFileTableScroll() {
-    // Restore the previously captured page scroll position so the user's place
-    // in the file list is preserved after the table is refreshed.
+    // Restore the page scroll position first
     window.scrollTo(0, window.fileTableScrollTop || 0);
+
+    // Then restore the inner table container scroll position
+    const container = document.getElementById('files-container');
+    if (container) {
+        container.scrollTop = window.fileTableInnerScrollTop || 0;
+    }
 }
 
 function formatBytes(bytes) {
