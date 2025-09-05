@@ -360,6 +360,10 @@ button:hover,
 }
 
 /* Ensure consistent spacing for file table columns */
+#files-container {
+    overflow-x: auto;
+}
+
 #fileTable {
     width: 100%;
     table-layout: fixed;
@@ -368,6 +372,49 @@ button:hover,
 #fileTable th,
 #fileTable td {
     padding: 12px;
+}
+
+#fileTable .select-column {
+    width: 3%;
+    min-width: 30px;
+}
+
+#fileTable .filename-column {
+    width: 40%;
+}
+
+#fileTable .size-column {
+    width: 8%;
+}
+
+#fileTable .folder-column {
+    width: 15%;
+}
+
+#fileTable .public-link-column {
+    width: 20%;
+}
+
+#fileTable .public-access-column {
+    width: 4%;
+}
+
+/* Allow long text to wrap inside table cells */
+#fileTable .filename-column,
+#fileTable .folder-column,
+#fileTable .public-link-column {
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+#fileTable .public-link-column .public-link {
+    display: inline;
+    overflow-wrap: anywhere;
+}
+
+#fileTable th:last-child,
+#fileTable .action-buttons {
+    width: 10%;
 }
 
 .filesize-cell {
