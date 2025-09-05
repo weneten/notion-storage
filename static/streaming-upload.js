@@ -139,6 +139,20 @@ function updateProgressBar(percentage, statusText) {
     }
 }
 
+// Close any open file action dropdown menus
+function closeAllDropdowns() {
+    document.querySelectorAll('.action-buttons .dropdown-menu.show').forEach(menu => {
+        menu.classList.remove('show');
+        const parent = menu.parentElement;
+        if (parent) {
+            parent.classList.remove('show');
+        }
+    });
+}
+
+// Global handler to close dropdowns when clicking outside
+document.addEventListener('click', closeAllDropdowns);
+
 // Bulk selection helpers
 const deleteSelectedBtn = document.getElementById('deleteSelectedButton');
 const moveSelectedBtn = document.getElementById('moveSelectedButton');
@@ -828,6 +842,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
     document.querySelectorAll('.select-item').forEach(cb => cb.addEventListener('change', updateBulkActionButtons));
     updateBulkActionButtons();
+    // Initialize dropdown menus for any pre-rendered entries
+    setupFileActionEventHandlers();
     if (window.nextCursor !== null && window.nextCursor !== undefined) {
         fetchRemainingEntries();
     }
@@ -1164,11 +1180,38 @@ function toggleMute(videoId) {
 
 // Set up event handlers for file actions (delete, public toggle)
 function setupFileActionEventHandlers(root = document) {
+    // Ensure file action dropdown menus stay open until explicitly closed
+    root.querySelectorAll('.action-buttons .dropdown-toggle').forEach(button => {
+        if (button.dataset.dropdownListenerAttached) return;
+        button.dataset.dropdownListenerAttached = 'true';
+        button.addEventListener('click', function (e) {
+            e.stopPropagation();
+            const parent = this.parentElement;
+            const menu = this.nextElementSibling;
+            const isOpen = parent.classList.contains('show');
+            closeAllDropdowns();
+            if (!isOpen) {
+                parent.classList.add('show');
+                if (menu) menu.classList.add('show');
+            }
+        });
+    });
+
+    // Prevent clicks inside dropdown menus from closing them
+    root.querySelectorAll('.action-buttons .dropdown-menu').forEach(menu => {
+        if (menu.dataset.dropdownListenerAttached) return;
+        menu.dataset.dropdownListenerAttached = 'true';
+        menu.addEventListener('click', function (e) {
+            e.stopPropagation();
+        });
+    });
+
     // Add event handlers for delete buttons
     root.querySelectorAll('.delete-btn').forEach(button => {
         if (button.dataset.listenerAttached) return;
         button.dataset.listenerAttached = 'true';
         button.addEventListener('click', async function () {
+            closeAllDropdowns();
             const fileId = this.dataset.fileId;
             const fileHash = this.dataset.fileHash || this.closest('tr').dataset.fileHash;
 
@@ -1268,6 +1311,7 @@ function setupFileActionEventHandlers(root = document) {
         if (btn.dataset.listenerAttached) return;
         btn.dataset.listenerAttached = 'true';
         btn.addEventListener('click', async function () {
+            closeAllDropdowns();
             const fileId = this.dataset.fileId;
             const newName = prompt('New filename:');
             if (!newName) return;
@@ -1290,6 +1334,7 @@ function setupFileActionEventHandlers(root = document) {
         if (btn.dataset.listenerAttached) return;
         btn.dataset.listenerAttached = 'true';
         btn.addEventListener('click', function () {
+            closeAllDropdowns();
             const fileId = this.dataset.fileId;
             openMoveDialog([fileId], []);
         });
