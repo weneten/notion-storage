@@ -141,6 +141,28 @@ function resetUploadState() {
     }
 }
 
+// Preserve checkbox selections across table refreshes
+window.preservedSelections = window.preservedSelections || new Set();
+
+function captureSelectedItems() {
+    window.preservedSelections = new Set(
+        Array.from(document.querySelectorAll('.select-item:checked'))
+            .map(cb => `${cb.dataset.type}:${cb.dataset.id}`)
+    );
+}
+
+function restoreSelectedItems() {
+    if (!window.preservedSelections) return;
+    window.preservedSelections.forEach(key => {
+        const [type, id] = key.split(':');
+        const cb = document.querySelector(`.select-item[data-type="${type}"][data-id="${id}"]`);
+        if (cb) cb.checked = true;
+    });
+    if (typeof updateBulkActionButtons === 'function') {
+        updateBulkActionButtons();
+    }
+}
+
 // Function to load files (refresh file list)
 async function loadFiles() {
     try {
@@ -153,6 +175,9 @@ async function loadFiles() {
             if (row) openDropdownId = row.dataset.fileId;
             dropdownScroll = openMenu.scrollTop;
         }
+
+        // Capture currently selected checkboxes
+        captureSelectedItems();
 
         // Preserve current scroll positions before refreshing
         const filesContainer = document.getElementById('files-container');
@@ -264,6 +289,9 @@ async function loadFiles() {
         if (typeof initializeFileTypeIcons === 'function') {
             initializeFileTypeIcons();
         }
+
+        // Restore previously selected checkboxes
+        restoreSelectedItems();
 
         // Restore previously open dropdown menu and its scroll position
         if (openDropdownId) {
