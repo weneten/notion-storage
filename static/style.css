@@ -34,10 +34,8 @@ h2 {
     padding: 30px;
     border-radius: 8px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
-    width: 100%;
-    max-width: 1200px;
     box-sizing: border-box;
-    margin: 20px auto;
+    margin: 20px;
 }
 
 .form-group {
@@ -360,7 +358,7 @@ button:hover,
 
 /* Ensure consistent spacing for file table columns */
 #files-container {
-    overflow-x: auto;
+    overflow-x: hidden;
 }
 
 #fileTable {
@@ -372,15 +370,16 @@ button:hover,
 #fileTable th,
 #fileTable td {
     padding: 12px;
+    box-sizing: border-box;
 }
 
 #fileTable .select-column {
-    width: 5%;
+    width: 3%;
     min-width: 30px;
 }
 
 #fileTable .filename-column {
-    width: 35%;
+    width: 40%;
 }
 
 #fileTable .size-column {
@@ -404,7 +403,7 @@ button:hover,
 #fileTable .folder-column,
 #fileTable .public-link-column {
     white-space: normal;
-    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 #fileTable .public-link-column .public-link {
@@ -414,7 +413,7 @@ button:hover,
 
 #fileTable th:last-child,
 #fileTable td:last-child {
-    width: 10%;
+    width: 7%;
 }
 
 .filesize-cell {
