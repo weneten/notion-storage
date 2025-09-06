@@ -193,12 +193,12 @@ async function loadFiles() {
                 <table class="table" id="fileTable">
                     <thead>
                         <tr>
-                            <th></th>
-                            <th><i class="fas fa-file mr-1"></i> Filename</th>
-                            <th><i class="fas fa-weight mr-1"></i> Size</th>
-                            <th>Folder</th>
-                            <th><i class="fas fa-link mr-1"></i> Public Link</th>
-                            <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
+                            <th class="select-column"></th>
+                            <th class="filename-column"><i class="fas fa-file mr-1"></i> Filename</th>
+                            <th class="size-column"><i class="fas fa-weight mr-1"></i> Size</th>
+                            <th class="folder-column">Folder</th>
+                            <th class="public-link-column"><i class="fas fa-link mr-1"></i> Public Link</th>
+                            <th class="public-access-column"><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                             <th><i class="fas fa-cogs mr-1"></i> Actions</th>
                         </tr>
                     </thead>
@@ -214,14 +214,14 @@ async function loadFiles() {
 
             tableHTML += `
                 <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
-                    <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
-                    <td>
+                    <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
+                    <td class="filename-column">
                         <span class="file-type-icon" data-filename="${file.name}"></span>
                         <strong>${file.name}</strong>
                     </td>
-                    <td class="filesize-cell">${formatFileSize(file.size)}</td>
-                    <td>${file.folder || window.currentFolder || ''}</td>
-                    <td>
+                    <td class="size-column filesize-cell">${formatFileSize(file.size)}</td>
+                    <td class="folder-column">${file.folder || window.currentFolder || ''}</td>
+                    <td class="public-link-column">
                         ${saltedHash ?
                     `<a href="/d/${saltedHash}" target="_blank" class="public-link">
                                 <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${saltedHash.substring(0, 10)}...
@@ -229,7 +229,7 @@ async function loadFiles() {
                     '<span class="text-muted">N/A</span>'
                 }
                     </td>
-                    <td>
+                    <td class="public-access-column">
                         <label class="switch">
                             <input type="checkbox" class="public-toggle" ${isPublic ? 'checked' : ''}>
                             <span class="slider round"></span>

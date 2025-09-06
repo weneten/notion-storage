@@ -299,12 +299,12 @@ function appendEntries(entries) {
             row.className = 'folder-row';
             row.dataset.folderPath = entry.full_path;
             row.innerHTML = `
-                <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
-                <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
-                <td class="filesize-cell">${formatBytes(entry.size)}</td>
-                <td>${entry.full_path}</td>
-                <td></td>
-                <td></td>
+                <td class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
+                <td class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                <td class="size-column filesize-cell">${formatBytes(entry.size)}</td>
+                <td class="folder-column">${entry.full_path}</td>
+                <td class="public-link-column"></td>
+                <td class="public-access-column"></td>
                 <td>
                     <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
                     <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
@@ -317,12 +317,12 @@ function appendEntries(entries) {
             const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
             const viewContainer = entry.file_hash ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${entry.file_hash}" data-filesize="${formatBytes(entry.size)}"></span>` : '';
             row.innerHTML = `
-                <td><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
-                <td><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
-                <td class="filesize-cell">${formatBytes(entry.size)}</td>
-                <td>${entry.folder}</td>
-                <td>${link}</td>
-                <td><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
+                <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
+                <td class="filename-column"><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
+                <td class="size-column filesize-cell">${formatBytes(entry.size)}</td>
+                <td class="folder-column">${entry.folder}</td>
+                <td class="public-link-column">${link}</td>
+                <td class="public-access-column"><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
                 <td class="action-buttons">
                     ${viewContainer}
                     <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
@@ -967,12 +967,12 @@ function renderEntries(entries) {
         <table class="table" id="fileTable">
             <thead>
                 <tr>
-                    <th></th>
-                    <th><i class="fas fa-file mr-1"></i> Filename</th>
-                    <th><i class="fas fa-weight mr-1"></i> Size</th>
-                    <th>Folder</th>
-                    <th><i class="fas fa-link mr-1"></i> Public Link</th>
-                    <th><i class="fas fa-lock-open mr-1"></i> Public Access</th>
+                    <th class="select-column"></th>
+                    <th class="filename-column"><i class="fas fa-file mr-1"></i> Filename</th>
+                    <th class="size-column"><i class="fas fa-weight mr-1"></i> Size</th>
+                    <th class="folder-column">Folder</th>
+                    <th class="public-link-column"><i class="fas fa-link mr-1"></i> Public Link</th>
+                    <th class="public-access-column"><i class="fas fa-lock-open mr-1"></i> Public Access</th>
                     <th><i class="fas fa-cogs mr-1"></i> Actions</th>
                 </tr>
             </thead>
@@ -983,12 +983,12 @@ function renderEntries(entries) {
         if (entry.type === 'folder') {
             tableHTML += `
             <tr class="folder-row" data-folder-path="${entry.full_path}">
-                <td><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
-                <td><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
-                <td class="filesize-cell">${formatFileSize(entry.size)}</td>
-                <td>${entry.full_path}</td>
-                <td></td>
-                <td></td>
+                <td class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
+                <td class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                <td class="size-column filesize-cell">${formatFileSize(entry.size)}</td>
+                <td class="folder-column">${entry.full_path}</td>
+                <td class="public-link-column"></td>
+                <td class="public-access-column"></td>
                 <td>
                     <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
                         <i class="fas fa-folder-open mr-1"></i>Open
@@ -1014,21 +1014,21 @@ function renderEntries(entries) {
 
             tableHTML += `
             <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
-                <td><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
-                <td>
+                <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
+                <td class="filename-column">
                     <span class="file-type-icon" data-filename="${entry.name}"></span>
                     <strong>${entry.name}</strong>
                 </td>
-                <td class="filesize-cell">${formatFileSize(entry.size)}</td>
-                <td>${entry.folder}</td>
-                <td>
+                <td class="size-column filesize-cell">${formatFileSize(entry.size)}</td>
+                <td class="folder-column">${entry.folder}</td>
+                <td class="public-link-column">
                     ${fileHash ?
                 `<a href="/d/${fileHash}" target="_blank" class="public-link">
                         <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0,10)}...
                     </a>` :
                 '<span class="text-muted">N/A</span>'}
                 </td>
-                <td>
+                <td class="public-access-column">
                     <label class="switch">
                         <input type="checkbox" class="public-toggle" data-file-id="${fileId}" data-file-hash="${fileHash}" ${isPublic ? 'checked' : ''}>
                         <span class="slider round"></span>
