@@ -358,7 +358,7 @@ button:hover,
 
 /* Ensure consistent spacing for file table columns */
 #files-container {
-    overflow-x: auto;
+    overflow-x: hidden;
 }
 
 #fileTable {
@@ -370,6 +370,7 @@ button:hover,
 #fileTable th,
 #fileTable td {
     padding: 12px;
+    box-sizing: border-box;
 }
 
 #fileTable .select-column {
@@ -402,7 +403,7 @@ button:hover,
 #fileTable .folder-column,
 #fileTable .public-link-column {
     white-space: normal;
-    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 #fileTable .public-link-column .public-link {
