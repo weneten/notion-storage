@@ -358,13 +358,15 @@ button:hover,
 
 /* Ensure consistent spacing for file table columns */
 #files-container {
-    overflow-x: hidden;
+    /* Allow the table to shrink without forcing hidden overflow */
+    overflow-x: auto;
 }
 
 #fileTable {
     width: 100%;
     max-width: 100%;
-    table-layout: fixed;
+    /* Let column widths adapt to content for responsiveness */
+    table-layout: auto;
 }
 
 #fileTable th,
@@ -374,7 +376,7 @@ button:hover,
 }
 
 #fileTable .select-column {
-    width: 3%;
+    width: clamp(30px, 3%, 40px);
     min-width: 30px;
 }
 
@@ -383,19 +385,19 @@ button:hover,
 }
 
 #fileTable .size-column {
-    width: 8%;
+    width: clamp(60px, 8%, 100px);
 }
 
 #fileTable .folder-column {
-    width: 12%;
+    width: clamp(120px, 15%, 200px);
 }
 
 #fileTable .public-link-column {
-    width: 18%;
+    width: clamp(150px, 20%, 280px);
 }
 
 #fileTable .public-access-column {
-    width: 4%;
+    width: clamp(60px, 5%, 80px);
 }
 
 /* Allow long text to wrap inside table cells */
@@ -414,7 +416,21 @@ button:hover,
 
 #fileTable th:last-child,
 #fileTable td:last-child {
-    width: 7%;
+    width: clamp(80px, 10%, 150px);
+}
+
+/* Hide less important columns on narrow screens */
+@media (max-width: 768px) {
+    #fileTable .folder-column,
+    #fileTable .public-link-column {
+        display: none;
+    }
+}
+
+@media (max-width: 576px) {
+    #fileTable .public-access-column {
+        display: none;
+    }
 }
 
 .filesize-cell {
