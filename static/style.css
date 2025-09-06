@@ -35,8 +35,9 @@ h2 {
     border-radius: 8px;
     box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
     width: 100%;
+    max-width: 1200px;
     box-sizing: border-box;
-    margin: 20px 0;
+    margin: 20px auto;
 }
 
 .form-group {
@@ -332,28 +333,26 @@ button:hover,
 
 /* Action buttons container improvements */
 .action-buttons {
-    white-space: nowrap;
-    min-width: 200px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
 }
 
 .action-buttons .btn {
-    margin-right: 5px;
-    margin-bottom: 2px;
+    margin: 0;
 }
 
 /* Responsive adjustments for action buttons */
 @media (max-width: 768px) {
     .action-buttons {
-        min-width: auto;
+        gap: 3px;
     }
-    
+
     .action-buttons .btn {
-        margin-right: 3px;
-        margin-bottom: 3px;
         padding: 4px 6px;
         font-size: 0.75em;
     }
-    
+
     .action-buttons .btn i {
         margin-right: 2px;
     }
@@ -366,6 +365,7 @@ button:hover,
 
 #fileTable {
     width: 100%;
+    max-width: 100%;
     table-layout: fixed;
 }
 
@@ -375,16 +375,16 @@ button:hover,
 }
 
 #fileTable .select-column {
-    width: 2%;
+    width: 5%;
     min-width: 30px;
 }
 
 #fileTable .filename-column {
-    width: 45%;
+    width: 35%;
 }
 
 #fileTable .size-column {
-    width: 5%;
+    width: 10%;
 }
 
 #fileTable .folder-column {
@@ -396,7 +396,7 @@ button:hover,
 }
 
 #fileTable .public-access-column {
-    width: 3%;
+    width: 5%;
 }
 
 /* Allow long text to wrap inside table cells */
@@ -413,7 +413,7 @@ button:hover,
 }
 
 #fileTable th:last-child,
-#fileTable .action-buttons {
+#fileTable td:last-child {
     width: 10%;
 }
 
@@ -592,11 +592,10 @@ input:checked + .slider:before {
         gap: 5px;
         align-items: flex-start;
     }
-    
+
     .action-buttons .btn {
         margin: 2px 0;
         width: auto;
-        min-width: 80px;
     }
 }
 
