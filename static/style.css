@@ -379,23 +379,23 @@ button:hover,
 }
 
 #fileTable .filename-column {
-    width: 40%;
+    width: auto;
 }
 
 #fileTable .size-column {
-    width: 10%;
+    width: 8%;
 }
 
 #fileTable .folder-column {
-    width: 15%;
+    width: 12%;
 }
 
 #fileTable .public-link-column {
-    width: 20%;
+    width: 18%;
 }
 
 #fileTable .public-access-column {
-    width: 5%;
+    width: 4%;
 }
 
 /* Allow long text to wrap inside table cells */
@@ -403,7 +403,8 @@ button:hover,
 #fileTable .folder-column,
 #fileTable .public-link-column {
     white-space: normal;
-    word-break: break-word;
+    overflow-wrap: anywhere;
+    word-break: normal;
 }
 
 #fileTable .public-link-column .public-link {
