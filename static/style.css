@@ -358,8 +358,7 @@ button:hover,
 
 /* Ensure consistent spacing for file table columns */
 #files-container {
-    /* Allow the table to shrink without forcing hidden overflow */
-    overflow-x: auto;
+    /* No overflow or height constraints so the table scrolls with the page */
 }
 
 #fileTable {

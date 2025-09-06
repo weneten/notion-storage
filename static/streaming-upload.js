@@ -222,32 +222,17 @@ function restoreDropdownState() {
     }
 }
 
-// Preserve file table scroll position across refreshes
-// Preserve both the overall page scroll position and the scroll position
-// within the files table container so that refreshes don't reset either.
+// Preserve file table scroll position across refreshes using only the page scroll
 window.fileTableScrollTop = window.fileTableScrollTop || 0;
-window.fileTableInnerScrollTop = window.fileTableInnerScrollTop || 0;
 
 function captureFileTableScroll() {
     // Capture the page's current scroll position
     window.fileTableScrollTop = window.scrollY || 0;
-
-    // Capture the scroll position of the files container
-    const tableWrapper = document.getElementById('files-container');
-    if (tableWrapper) {
-        window.fileTableInnerScrollTop = tableWrapper.scrollTop || 0;
-    }
 }
 
 function restoreFileTableScroll() {
-    // Restore the page scroll position first
+    // Restore the page scroll position
     window.scrollTo(0, window.fileTableScrollTop || 0);
-
-    // Then restore the files container scroll position
-    const tableWrapper = document.getElementById('files-container');
-    if (tableWrapper) {
-        tableWrapper.scrollTop = window.fileTableInnerScrollTop || 0;
-    }
 }
 
 function formatBytes(bytes) {
