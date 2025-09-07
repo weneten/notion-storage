@@ -197,7 +197,7 @@ window.openDropdownState = window.openDropdownState || null;
 function captureDropdownState() {
     const openMenu = document.querySelector('.action-buttons .dropdown-menu.show');
     if (openMenu) {
-        const row = openMenu.closest('.file-row');
+        const row = openMenu.closest('tr');
         window.openDropdownState = {
             fileId: row ? row.dataset.fileId : null,
             scrollTop: openMenu.scrollTop
@@ -209,7 +209,7 @@ function captureDropdownState() {
 
 function restoreDropdownState() {
     if (!window.openDropdownState || !window.openDropdownState.fileId) return;
-    const row = document.querySelector(`.file-row[data-file-id="${window.openDropdownState.fileId}"]`);
+    const row = document.querySelector(`tr[data-file-id="${window.openDropdownState.fileId}"]`);
     if (!row) return;
     const btnGroup = row.querySelector('.btn-group');
     const menu = row.querySelector('.dropdown-menu');
@@ -276,40 +276,39 @@ async function fetchRemainingEntries() {
 function appendEntries(entries) {
     if (!window.cachedEntries) window.cachedEntries = [];
     window.cachedEntries = window.cachedEntries.concat(entries);
-    const table = document.getElementById('fileTable');
-    if (!table) return;
+    const tbody = document.querySelector('#files-container tbody');
+    if (!tbody) return;
     entries.forEach(entry => {
-        let row = document.createElement('div');
-        row.classList.add('file-row');
+        let row = document.createElement('tr');
         if (entry.type === 'folder') {
-            row.classList.add('folder-row');
+            row.className = 'folder-row';
             row.dataset.folderPath = entry.full_path;
             row.innerHTML = `
-                <div class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></div>
-                <div class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></div>
-                <div class="size-column filesize-cell">${formatBytes(entry.size)}</div>
-                <div class="folder-column">${entry.full_path}</div>
-                <div class="public-link-column"></div>
-                <div class="public-access-column"></div>
-                <div class="action-buttons">
+                <td class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
+                <td class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
+                <td class="size-column filesize-cell">${formatBytes(entry.size)}</td>
+                <td class="folder-column">${entry.full_path}</td>
+                <td class="public-link-column"></td>
+                <td class="public-access-column"></td>
+                <td>
                     <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
                     <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
                     <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}"><i class="fas fa-edit mr-1"></i>Rename</button>
                     <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
-                </div>`;
+                </td>`;
         } else {
             row.dataset.fileId = entry.id;
             row.dataset.fileHash = entry.file_hash || '';
             const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
             const viewContainer = entry.file_hash ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${entry.file_hash}" data-filesize="${formatBytes(entry.size)}"></span>` : '';
             row.innerHTML = `
-                <div class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></div>
-                <div class="filename-column"><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></div>
-                <div class="size-column filesize-cell">${formatBytes(entry.size)}</div>
-                <div class="folder-column">${entry.folder}</div>
-                <div class="public-link-column">${link}</div>
-                <div class="public-access-column"><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></div>
-                <div class="action-buttons">
+                <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
+                <td class="filename-column"><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
+                <td class="size-column filesize-cell">${formatBytes(entry.size)}</td>
+                <td class="folder-column">${entry.folder}</td>
+                <td class="public-link-column">${link}</td>
+                <td class="public-access-column"><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
+                <td class="action-buttons">
                     ${viewContainer}
                     <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
                     <div class="btn-group">
@@ -322,9 +321,9 @@ function appendEntries(entries) {
                             <button type="button" class="dropdown-item delete-btn" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
                         </div>
                     </div>
-                </div>`;
+                </td>`;
         }
-        table.appendChild(row);
+        tbody.appendChild(row);
 
         const checkbox = row.querySelector('.select-item');
         if (checkbox) {
@@ -1267,7 +1266,7 @@ function setupFileActionEventHandlers(root = document) {
         button.addEventListener('click', async function () {
             closeAllDropdowns();
             const fileId = this.dataset.fileId;
-            const fileHash = this.dataset.fileHash || this.closest('.file-row').dataset.fileHash;
+            const fileHash = this.dataset.fileHash || this.closest('tr').dataset.fileHash;
 
             if (!confirm('Are you sure you want to delete this file?')) {
                 return;
@@ -1292,7 +1291,7 @@ function setupFileActionEventHandlers(root = document) {
 
                 const responseData = await response.json();
                 if (responseData.status === 'success') {
-                    this.closest('.file-row').remove();
+                    this.closest('tr').remove();
                     if (window.cachedEntries) {
                         window.cachedEntries = window.cachedEntries.filter(e => e.id !== fileId);
                     }
@@ -1300,7 +1299,7 @@ function setupFileActionEventHandlers(root = document) {
                     refreshServerCache();
 
                     // Check if there are any remaining files
-                    if (document.querySelectorAll('#fileTable .file-row:not(.header)').length === 0) {
+                    if (document.querySelectorAll('#fileTable tbody tr').length === 0) {
                         // If no files left, update the container
                         document.getElementById('files-container').innerHTML = `
                             <div class="alert alert-info text-center">
