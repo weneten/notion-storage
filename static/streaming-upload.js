@@ -197,7 +197,7 @@ window.openDropdownState = window.openDropdownState || null;
 function captureDropdownState() {
     const openMenu = document.querySelector('.action-buttons .dropdown-menu.show');
     if (openMenu) {
-        const row = openMenu.closest('tr');
+        const row = openMenu.closest('.file-row');
         window.openDropdownState = {
             fileId: row ? row.dataset.fileId : null,
             scrollTop: openMenu.scrollTop
@@ -209,7 +209,7 @@ function captureDropdownState() {
 
 function restoreDropdownState() {
     if (!window.openDropdownState || !window.openDropdownState.fileId) return;
-    const row = document.querySelector(`tr[data-file-id="${window.openDropdownState.fileId}"]`);
+    const row = document.querySelector(`.file-row[data-file-id="${window.openDropdownState.fileId}"]`);
     if (!row) return;
     const btnGroup = row.querySelector('.btn-group');
     const menu = row.querySelector('.dropdown-menu');
@@ -276,39 +276,40 @@ async function fetchRemainingEntries() {
 function appendEntries(entries) {
     if (!window.cachedEntries) window.cachedEntries = [];
     window.cachedEntries = window.cachedEntries.concat(entries);
-    const tbody = document.querySelector('#files-container tbody');
-    if (!tbody) return;
+    const table = document.getElementById('fileTable');
+    if (!table) return;
     entries.forEach(entry => {
-        let row = document.createElement('tr');
+        let row = document.createElement('div');
+        row.classList.add('file-row');
         if (entry.type === 'folder') {
-            row.className = 'folder-row';
+            row.classList.add('folder-row');
             row.dataset.folderPath = entry.full_path;
             row.innerHTML = `
-                <td class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
-                <td class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
-                <td class="size-column filesize-cell">${formatBytes(entry.size)}</td>
-                <td class="folder-column">${entry.full_path}</td>
-                <td class="public-link-column"></td>
-                <td class="public-access-column"></td>
-                <td>
+                <div class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></div>
+                <div class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></div>
+                <div class="size-column filesize-cell">${formatBytes(entry.size)}</div>
+                <div class="folder-column">${entry.full_path}</div>
+                <div class="public-link-column"></div>
+                <div class="public-access-column"></div>
+                <div class="action-buttons">
                     <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
                     <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
                     <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}"><i class="fas fa-edit mr-1"></i>Rename</button>
                     <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
-                </td>`;
+                </div>`;
         } else {
             row.dataset.fileId = entry.id;
             row.dataset.fileHash = entry.file_hash || '';
             const link = entry.file_hash ? `<a href="/d/${entry.file_hash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${location.origin}/d/${entry.file_hash.slice(0,10)}...</a>` : '<span class="text-muted">N/A</span>';
             const viewContainer = entry.file_hash ? `<span class="view-button-container" data-filename="${entry.name}" data-hash="${entry.file_hash}" data-filesize="${formatBytes(entry.size)}"></span>` : '';
             row.innerHTML = `
-                <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></td>
-                <td class="filename-column"><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></td>
-                <td class="size-column filesize-cell">${formatBytes(entry.size)}</td>
-                <td class="folder-column">${entry.folder}</td>
-                <td class="public-link-column">${link}</td>
-                <td class="public-access-column"><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
-                <td class="action-buttons">
+                <div class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${entry.id}"></div>
+                <div class="filename-column"><span class="file-type-icon" data-filename="${entry.name}"></span><strong>${entry.name}</strong></div>
+                <div class="size-column filesize-cell">${formatBytes(entry.size)}</div>
+                <div class="folder-column">${entry.folder}</div>
+                <div class="public-link-column">${link}</div>
+                <div class="public-access-column"><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></div>
+                <div class="action-buttons">
                     ${viewContainer}
                     <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
                     <div class="btn-group">
@@ -321,9 +322,9 @@ function appendEntries(entries) {
                             <button type="button" class="dropdown-item delete-btn" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
                         </div>
                     </div>
-                </td>`;
+                </div>`;
         }
-        tbody.appendChild(row);
+        table.appendChild(row);
 
         const checkbox = row.querySelector('.select-item');
         if (checkbox) {
@@ -949,46 +950,35 @@ function renderEntries(entries) {
     }
 
     let tableHTML = `
-        <table class="table" id="fileTable">
-            <thead>
-                <tr>
-                    <th class="select-column"></th>
-                    <th class="filename-column"><i class="fas fa-file mr-1"></i> Filename</th>
-                    <th class="size-column"><i class="fas fa-weight mr-1"></i> Size</th>
-                    <th class="folder-column">Folder</th>
-                    <th class="public-link-column"><i class="fas fa-link mr-1"></i> Public Link</th>
-                    <th class="public-access-column"><i class="fas fa-lock-open mr-1"></i> Public Access</th>
-                    <th><i class="fas fa-cogs mr-1"></i> Actions</th>
-                </tr>
-            </thead>
-            <tbody>
+        <div class="file-table" id="fileTable">
+            <div class="file-row file-header">
+                <div class="select-column"></div>
+                <div class="filename-column"><i class="fas fa-file mr-1"></i> Filename</div>
+                <div class="size-column"><i class="fas fa-weight mr-1"></i> Size</div>
+                <div class="folder-column">Folder</div>
+                <div class="public-link-column"><i class="fas fa-link mr-1"></i> Public Link</div>
+                <div class="public-access-column"><i class="fas fa-lock-open mr-1"></i> Public Access</div>
+                <div class="actions-column"><i class="fas fa-cogs mr-1"></i> Actions</div>
+            </div>
     `;
 
     entries.forEach(entry => {
         if (entry.type === 'folder') {
             tableHTML += `
-            <tr class="folder-row" data-folder-path="${entry.full_path}">
-                <td class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></td>
-                <td class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></td>
-                <td class="size-column filesize-cell">${formatFileSize(entry.size)}</td>
-                <td class="folder-column">${entry.full_path}</td>
-                <td class="public-link-column"></td>
-                <td class="public-access-column"></td>
-                <td>
-                    <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
-                        <i class="fas fa-folder-open mr-1"></i>Open
-                    </a>
-                    <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm">
-                        <i class="fas fa-download mr-1"></i>Download
-                    </a>
-                    <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}">
-                        <i class="fas fa-edit mr-1"></i>Rename
-                    </button>
-                    <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}">
-                        <i class="fas fa-trash-alt mr-1"></i>Delete
-                    </button>
-                </td>
-            </tr>`;
+            <div class="file-row folder-row" data-folder-path="${entry.full_path}">
+                <div class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="${entry.id}"></div>
+                <div class="filename-column"><i class="fas fa-folder mr-1"></i><strong>${entry.name}</strong></div>
+                <div class="size-column filesize-cell">${formatFileSize(entry.size)}</div>
+                <div class="folder-column">${entry.full_path}</div>
+                <div class="public-link-column"></div>
+                <div class="public-access-column"></div>
+                <div class="action-buttons">
+                    <a href="/?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
+                    <a href="/download_folder?folder=${encodeURIComponent(entry.full_path)}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                    <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="${entry.id}" data-folder-name="${entry.name}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                    <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="${entry.id}" data-folder-path="${entry.full_path}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                </div>
+            </div>`;
         } else {
             const fileId = entry.id || '';
             const fileHash = entry.file_hash || '';
@@ -998,28 +988,26 @@ function renderEntries(entries) {
                 : '';
 
             tableHTML += `
-            <tr data-file-id="${fileId}" data-file-hash="${fileHash}">
-                <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></td>
-                <td class="filename-column">
+            <div class="file-row" data-file-id="${fileId}" data-file-hash="${fileHash}">
+                <div class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="${fileId}"></div>
+                <div class="filename-column">
                     <span class="file-type-icon" data-filename="${entry.name}"></span>
                     <strong>${entry.name}</strong>
-                </td>
-                <td class="size-column filesize-cell">${formatFileSize(entry.size)}</td>
-                <td class="folder-column">${entry.folder}</td>
-                <td class="public-link-column">
+                </div>
+                <div class="size-column filesize-cell">${formatFileSize(entry.size)}</div>
+                <div class="folder-column">${entry.folder}</div>
+                <div class="public-link-column">
                     ${fileHash ?
-                `<a href="/d/${fileHash}" target="_blank" class="public-link">
-                        <i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0,10)}...
-                    </a>` :
+                `<a href="/d/${fileHash}" target="_blank" class="public-link"><i class="fas fa-external-link-alt mr-1"></i>${window.location.origin}/d/${fileHash.substring(0,10)}...</a>` :
                 '<span class="text-muted">N/A</span>'}
-                </td>
-                <td class="public-access-column">
+                </div>
+                <div class="public-access-column">
                     <label class="switch">
                         <input type="checkbox" class="public-toggle" data-file-id="${fileId}" data-file-hash="${fileHash}" ${isPublic ? 'checked' : ''}>
                         <span class="slider round"></span>
                     </label>
-                </td>
-                <td class="action-buttons">
+                </div>
+                <div class="action-buttons">
                     ${viewContainer}
                     <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
                         <i class="fas fa-download mr-1"></i>Download
@@ -1034,12 +1022,12 @@ function renderEntries(entries) {
                             <button type="button" class="dropdown-item delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
                         </div>
                     </div>
-                </td>
-            </tr>`;
+                </div>
+            </div>`;
         }
     });
 
-    tableHTML += `</tbody></table>`;
+    tableHTML += `</div>`;
     filesContainer.innerHTML = tableHTML;
 
     setupFileActionEventHandlers();
@@ -1266,7 +1254,7 @@ function setupFileActionEventHandlers(root = document) {
         button.addEventListener('click', async function () {
             closeAllDropdowns();
             const fileId = this.dataset.fileId;
-            const fileHash = this.dataset.fileHash || this.closest('tr').dataset.fileHash;
+            const fileHash = this.dataset.fileHash || this.closest('.file-row').dataset.fileHash;
 
             if (!confirm('Are you sure you want to delete this file?')) {
                 return;
@@ -1291,7 +1279,7 @@ function setupFileActionEventHandlers(root = document) {
 
                 const responseData = await response.json();
                 if (responseData.status === 'success') {
-                    this.closest('tr').remove();
+                    this.closest('.file-row').remove();
                     if (window.cachedEntries) {
                         window.cachedEntries = window.cachedEntries.filter(e => e.id !== fileId);
                     }
@@ -1299,7 +1287,7 @@ function setupFileActionEventHandlers(root = document) {
                     refreshServerCache();
 
                     // Check if there are any remaining files
-                    if (document.querySelectorAll('#fileTable tbody tr').length === 0) {
+                    if (document.querySelectorAll('#fileTable .file-row:not(.file-header)').length === 0) {
                         // If no files left, update the container
                         document.getElementById('files-container').innerHTML = `
                             <div class="alert alert-info text-center">
