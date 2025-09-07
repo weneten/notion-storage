@@ -368,47 +368,29 @@ button:hover,
 
 #fileTable {
     width: 100%;
-    max-width: 100%;
-    /* Let column widths adapt to content for responsiveness */
-    table-layout: auto;
 }
 
-#fileTable th,
-#fileTable td {
-    padding: 12px;
+#fileTable .file-row {
+    display: grid;
+    grid-template-columns: minmax(30px,40px) 1fr minmax(60px,80px) minmax(120px,150px) minmax(150px,200px) minmax(60px,80px) minmax(120px,160px);
+    column-gap: 8px;
+    padding: 8px 12px;
     box-sizing: border-box;
+    align-items: center;
 }
 
-#fileTable .select-column {
-    width: clamp(30px, 3%, 40px);
-    min-width: 30px;
+#fileTable .file-row.header {
+    font-weight: bold;
 }
 
-#fileTable .filename-column {
-    width: auto;
+#fileTable .file-row > div {
+    min-width: 0;
 }
 
-#fileTable .size-column {
-    width: clamp(60px, 8%, 100px);
-}
-
-#fileTable .folder-column {
-    width: clamp(120px, 15%, 200px);
-}
-
-#fileTable .public-link-column {
-    width: clamp(150px, 20%, 280px);
-}
-
-#fileTable .public-access-column {
-    width: clamp(60px, 5%, 80px);
-}
-
-/* Allow long text to wrap inside table cells */
+/* Allow long text to wrap inside grid cells */
 #fileTable .filename-column,
 #fileTable .folder-column,
 #fileTable .public-link-column {
-    white-space: normal;
     overflow-wrap: anywhere;
     word-break: normal;
 }
@@ -416,6 +398,22 @@ button:hover,
 #fileTable .public-link-column .public-link {
     display: inline;
     overflow-wrap: anywhere;
+}
+
+#fileTable .action-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+/* Responsive adjustments for narrow screens */
+@media (max-width: 576px) {
+    #fileTable .file-row {
+        grid-template-columns: minmax(30px,40px) 1fr minmax(60px,80px) minmax(120px,150px) minmax(150px,200px) minmax(120px,160px);
+    }
+    #fileTable .public-access-column {
+        display: none;
+    }
 }
 
 #fileTable th:last-child,

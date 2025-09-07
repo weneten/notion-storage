@@ -49,95 +49,76 @@
     </div>
     <div id="files-container">
         <!-- Files will be loaded here via JavaScript or directly from Flask context -->
-        <table class="table" id="fileTable">
-                <thead>
-                    <tr>
-                        <th class="select-column"></th>
-                        <th class="filename-column"><i class="fas fa-file mr-1"></i> Filename</th>
-                        <th class="size-column"><i class="fas fa-weight mr-1"></i> Size</th>
-                        <th class="folder-column">Folder</th>
-                        <th class="public-link-column"><i class="fas fa-link mr-1"></i> Public Link</th>
-                        <th class="public-access-column"><i class="fas fa-lock-open mr-1"></i> Public Access</th>
-                        <th><i class="fas fa-cogs mr-1"></i> Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for entry in entries %}
-                    {% if entry.type == 'folder' %}
-                    <tr class="folder-row" data-folder-path="{{ entry.full_path }}">
-                        <td class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="{{ entry.id }}"></td>
-                        <td class="filename-column">
-                            <i class="fas fa-folder mr-1"></i>
-                            <strong>{{ entry.name }}</strong>
-                        </td>
-                        <td class="size-column filesize-cell">{{ entry.size | format_bytes }}</td>
-                        <td class="folder-column">{{ entry.full_path }}</td>
-                        <td class="public-link-column"></td>
-                        <td class="public-access-column"></td>
-                        <td>
-                            <a href="{{ url_for('home', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
-                                <i class="fas fa-folder-open mr-1"></i>Open
-                            </a>
-                            <a href="{{ url_for('download_folder', folder=entry.full_path) }}" class="btn btn-primary btn-sm">
-                                <i class="fas fa-download mr-1"></i>Download
-                            </a>
-                            <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="{{ entry.id }}" data-folder-name="{{ entry.name }}">
-                                <i class="fas fa-edit mr-1"></i>Rename
-                            </button>
-                            <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="{{ entry.id }}" data-folder-path="{{ entry.full_path }}">
-                                <i class="fas fa-trash-alt mr-1"></i>Delete
-                            </button>
-                        </td>
-                    </tr>
+        <div id="fileTable" class="file-table">
+            <div class="file-row header">
+                <div class="select-column"></div>
+                <div class="filename-column"><i class="fas fa-file mr-1"></i> Filename</div>
+                <div class="size-column"><i class="fas fa-weight mr-1"></i> Size</div>
+                <div class="folder-column">Folder</div>
+                <div class="public-link-column"><i class="fas fa-link mr-1"></i> Public Link</div>
+                <div class="public-access-column"><i class="fas fa-lock-open mr-1"></i> Public Access</div>
+                <div class="action-column"><i class="fas fa-cogs mr-1"></i> Actions</div>
+            </div>
+            {% for entry in entries %}
+            {% if entry.type == 'folder' %}
+            <div class="file-row folder-row" data-folder-path="{{ entry.full_path }}">
+                <div class="select-column"><input type="checkbox" class="select-item" data-type="folder" data-id="{{ entry.id }}"></div>
+                <div class="filename-column"><i class="fas fa-folder mr-1"></i><strong>{{ entry.name }}</strong></div>
+                <div class="size-column filesize-cell">{{ entry.size | format_bytes }}</div>
+                <div class="folder-column">{{ entry.full_path }}</div>
+                <div class="public-link-column"></div>
+                <div class="public-access-column"></div>
+                <div class="action-buttons">
+                    <a href="{{ url_for('home', folder=entry.full_path) }}" class="btn btn-primary btn-sm"><i class="fas fa-folder-open mr-1"></i>Open</a>
+                    <a href="{{ url_for('download_folder', folder=entry.full_path) }}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                    <button class="btn btn-secondary btn-sm rename-folder-btn" data-folder-id="{{ entry.id }}" data-folder-name="{{ entry.name }}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                    <button class="btn btn-danger btn-sm delete-folder-btn" data-folder-id="{{ entry.id }}" data-folder-path="{{ entry.full_path }}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                </div>
+            </div>
+            {% else %}
+            <div class="file-row" data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}">
+                <div class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="{{ entry.id }}"></div>
+                <div class="filename-column">
+                    <span class="file-type-icon" data-filename="{{ entry.name }}"></span>
+                    <strong>{{ entry.name }}</strong>
+                </div>
+                <div class="size-column filesize-cell">{{ entry.size | format_bytes }}</div>
+                <div class="folder-column">{{ entry.folder }}</div>
+                <div class="public-link-column">
+                    {% if entry.file_hash %}
+                    <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}" target="_blank" class="public-link">
+                        <i class="fas fa-external-link-alt mr-1"></i>{{ request.url_root }}d/{{ entry.file_hash[:10] }}...
+                    </a>
                     {% else %}
-                    <tr data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}">
-                        <td class="select-column"><input type="checkbox" class="select-item" data-type="file" data-id="{{ entry.id }}"></td>
-                        <td class="filename-column">
-                            <span class="file-type-icon" data-filename="{{ entry.name }}"></span>
-                            <strong>{{ entry.name }}</strong>
-                        </td>
-                        <td class="size-column filesize-cell">{{ entry.size | format_bytes }}</td>
-                        <td class="folder-column">{{ entry.folder }}</td>
-                        <td class="public-link-column">
-                            {% if entry.file_hash %}
-                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}"
-                                target="_blank" class="public-link">
-                                <i class="fas fa-external-link-alt mr-1"></i>{{ request.url_root }}d/{{
-                                entry.file_hash[:10] }}...
-                            </a>
-                            {% else %}
-                            <span class="text-muted">N/A</span>
-                            {% endif %}
-                        </td>
-                        <td class="public-access-column">
-                            <label class="switch">
-                                <input type="checkbox" class="public-toggle" data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}" {% if entry.is_public %}checked{% endif %}>
-                                <span class="slider round"></span>
-                            </label>
-                        </td>
-                        <td class="action-buttons">
-                            {% if entry.file_hash %}
-                            <span class="view-button-container" data-filename="{{ entry.name }}" data-hash="{{ entry.file_hash }}" data-filesize="{{ entry.size | format_bytes }}"></span>
-                            {% endif %}
-                            <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}" class="btn btn-primary btn-sm">
-                                <i class="fas fa-download mr-1"></i>Download
-                            </a>
-                            <div class="btn-group">
-                                <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                                    <i class="fas fa-bars"></i>
-                                </button>
-                                <div class="dropdown-menu dropdown-menu-right">
-                                    <button type="button" class="dropdown-item rename-btn" data-file-id="{{ entry.id }}"><i class="fas fa-edit mr-1"></i>Rename</button>
-                                    <button type="button" class="dropdown-item move-btn" data-file-id="{{ entry.id }}"><i class="fas fa-folder-open mr-1"></i>Move</button>
-                                    <button type="button" class="dropdown-item delete-btn" data-file-id="{{ entry.id }}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
-                                </div>
-                            </div>
-                        </td>
-                    </tr>
+                    <span class="text-muted">N/A</span>
                     {% endif %}
-                    {% endfor %}
-                </tbody>
-            </table>
+                </div>
+                <div class="public-access-column">
+                    <label class="switch">
+                        <input type="checkbox" class="public-toggle" data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}" {% if entry.is_public %}checked{% endif %}>
+                        <span class="slider round"></span>
+                    </label>
+                </div>
+                <div class="action-buttons">
+                    {% if entry.file_hash %}
+                    <span class="view-button-container" data-filename="{{ entry.name }}" data-hash="{{ entry.file_hash }}" data-filesize="{{ entry.size | format_bytes }}"></span>
+                    {% endif %}
+                    <a href="{{ url_for('download_by_hash', salted_sha512_hash=entry.file_hash) }}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                            <i class="fas fa-bars"></i>
+                        </button>
+                        <div class="dropdown-menu dropdown-menu-right">
+                            <button type="button" class="dropdown-item rename-btn" data-file-id="{{ entry.id }}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                            <button type="button" class="dropdown-item move-btn" data-file-id="{{ entry.id }}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                            <button type="button" class="dropdown-item delete-btn" data-file-id="{{ entry.id }}" data-file-hash="{{ entry.file_hash }}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+            {% endfor %}
+        </div>
         {% if not entries and next_cursor is none %}
         <div class="alert alert-info text-center">
             <p><i class="fas fa-info-circle mr-2"></i>No files found. Upload your first file above.</p>
@@ -715,11 +696,9 @@
 <style>
     /* Additional local styles */
     .action-buttons {
-        white-space: nowrap;
-    }
-
-    .action-buttons > * {
-        margin-right: 5px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 5px;
     }
 
     #uploadButton {
