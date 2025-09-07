@@ -900,9 +900,9 @@ function getFilenameFromButton(button) {
     }
     
     // Fallback to extracting from table row
-    const row = button.closest('.file-row');
+    const row = button.closest('tr');
     if (row) {
-        const filenameCell = row.querySelector('.filename-column strong');
+        const filenameCell = row.querySelector('td:first-child strong');
         if (filenameCell) return filenameCell.textContent.trim();
     }
     return 'Unknown File';
@@ -915,7 +915,7 @@ function getFilesizeFromButton(button) {
     }
     
     // Fallback to extracting from table row
-    const row = button.closest('.file-row');
+    const row = button.closest('tr');
     if (row) {
         const filesizeCell = row.querySelector('.filesize-cell');
         if (filesizeCell) return filesizeCell.textContent.trim();
