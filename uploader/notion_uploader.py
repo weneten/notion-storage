@@ -84,6 +84,17 @@ def _clamp(val: int, min_v: int, max_v: int) -> int:
 
 DOWNLOAD_CHUNK_SIZE = _parse_size(os.getenv("DOWNLOAD_CHUNK_SIZE", str(1 * 1024 * 1024)), 1 * 1024 * 1024)
 
+# Define a shared default multipart chunk size (in bytes).
+# Notion's S3-compatible multipart uploads typically require parts of at least 5 MiB.
+# Keep this consistent with ChunkProcessor's logic and allow overrides via env.
+_MIN_MP = 5 * 1024 * 1024
+_MAX_MP = 20 * 1024 * 1024
+MULTIPART_CHUNK_SIZE_BYTES = _clamp(
+    _parse_size(os.getenv("NOTION_MULTIPART_CHUNK_SIZE", str(_MIN_MP)), _MIN_MP),
+    _MIN_MP,
+    _MAX_MP,
+)
+
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):
         self.chunk_buffer = io.BytesIO()
