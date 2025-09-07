@@ -329,7 +329,7 @@ class NotionFileUploader:
             if next_part:
                 start_prefetch(next_part)
     def __init__(self, api_token: str, socketio: SocketIO = None, notion_version: str = "2022-06-28",
-                 global_file_index_db_id: str = None, notion_space_id: str = None):
+                 global_file_index_db_id: str = None):
         self.api_token = api_token
         self.socketio = socketio
         self.base_url = "https://api.notion.com/v1"
@@ -342,7 +342,6 @@ class NotionFileUploader:
         self.session = requests.Session()
         self.session.headers.update({**self.headers, "Connection": "keep-alive"})
         self.global_file_index_db_id = global_file_index_db_id
-        self.notion_space_id = notion_space_id or "c91485e6-ff71-811c-b300-000345011419"  # Default space ID
         
         # Validation configuration
         self.validation_config = {

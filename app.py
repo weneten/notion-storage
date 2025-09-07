@@ -316,13 +316,11 @@ login_manager.login_view = 'login'
 NOTION_API_TOKEN = os.environ.get('NOTION_API_TOKEN')
 NOTION_USER_DB_ID = os.environ.get('NOTION_USER_DB_ID')
 GLOBAL_FILE_INDEX_DB_ID = os.environ.get('GLOBAL_FILE_INDEX_DB_ID')
-NOTION_SPACE_ID = os.environ.get('NOTION_SPACE_ID')  # Add space ID configuration
 
 uploader = NotionFileUploader(
     api_token=NOTION_API_TOKEN,
     socketio=socketio,
-    global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID,
-    notion_space_id=NOTION_SPACE_ID
+    global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID
 )
 
 # Initialize streaming upload manager
@@ -2289,17 +2287,6 @@ def migrate_to_permanent_urls():
     """
     try:
         print(f"🔄 Starting permanent URL migration for user: {current_user.id}")
-        
-        # Validate that NOTION_SPACE_ID is configured
-        if not NOTION_SPACE_ID:
-            error_msg = "NOTION_SPACE_ID is not configured. Cannot generate permanent URLs."
-            print(f"❌ Migration failed: {error_msg}")
-            return jsonify({
-                'status': 'error',
-                'error': error_msg,
-                'code': 'MISSING_SPACE_ID'
-            }), 400
-        
         # Get user's database ID
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
@@ -2341,8 +2328,7 @@ def migrate_to_permanent_urls():
                 'migrated': migrated_count,
                 'skipped': skipped_count,
                 'errors': error_count,
-                'database_id': user_database_id,
-                'space_id': NOTION_SPACE_ID
+                'database_id': user_database_id
             },
             'message': f"Migration completed successfully: {migrated_count} files migrated, {skipped_count} skipped, {error_count} errors",
             'summary': {
