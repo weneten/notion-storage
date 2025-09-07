@@ -437,59 +437,6 @@ button:hover,
     }
 }
 
-/* Grid-based file list */
-.file-table {
-    width: 100%;
-    overflow-x: hidden;
-    display: flex;
-    flex-direction: column;
-}
-
-.file-row {
-    display: grid;
-    grid-template-columns: 40px 3fr 1fr 2fr 2fr 1fr 1fr;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 0;
-    border-bottom: 1px solid #333;
-}
-
-.file-row.file-header {
-    font-weight: bold;
-    border-bottom: 2px solid #333;
-}
-
-.file-row > div {
-    overflow-wrap: anywhere;
-}
-
-.file-row .filename-column strong {
-    display: inline-block;
-    max-width: 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-@media (max-width: 768px) {
-    .file-row {
-        grid-template-columns: 40px 3fr 1fr 1fr 1fr;
-    }
-    .file-row .folder-column,
-    .file-row .public-link-column {
-        display: none;
-    }
-}
-
-@media (max-width: 576px) {
-    .file-row {
-        grid-template-columns: 40px 3fr 1fr 1fr;
-    }
-    .file-row .public-access-column {
-        display: none;
-    }
-}
-
 .filesize-cell {
     white-space: nowrap;
     text-align: right;
@@ -1351,8 +1298,8 @@ input:checked + .slider:before {
 
 
 /* Add visual indicator for viewable files */
-.file-row[data-file-hash] .view-button-container .modal-view-btn::before,
-.file-row[data-file-hash] .view-button-container .modal-view-link::before {
+tr[data-file-hash] .view-button-container .modal-view-btn::before,
+tr[data-file-hash] .view-button-container .modal-view-link::before {
     content: '';
     position: absolute;
     top: -2px;
@@ -1367,8 +1314,8 @@ input:checked + .slider:before {
     pointer-events: none;
 }
 
-.file-row[data-file-hash] .view-button-container .modal-view-btn:hover::before,
-.file-row[data-file-hash] .view-button-container .modal-view-link:hover::before {
+tr[data-file-hash] .view-button-container .modal-view-btn:hover::before,
+tr[data-file-hash] .view-button-container .modal-view-link:hover::before {
     opacity: 0.3;
 }
 
