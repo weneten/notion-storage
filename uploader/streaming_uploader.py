@@ -317,10 +317,53 @@ class NotionStreamingUploader:
     Handles streaming file uploads with automatic single-part/multi-part decision making
     based on Notion API specifications.
     """
-      # Notion API constants
-    SINGLE_PART_THRESHOLD = 20 * 1024 * 1024  # 20 MiB
-    MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024    # 5 MiB for multipart uploads
-    SPLIT_THRESHOLD = 5 * 1024 * 1024       # 5 MiB
+      # Notion API constants (env-tunable via .env)
+    def _parse_size(value: str, default_bytes: int) -> int:
+        if not value:
+            return default_bytes
+        s = value.strip().lower()
+        if s.isdigit():
+            try:
+                return int(s)
+            except Exception:
+                return default_bytes
+        num = ""
+        unit = ""
+        for ch in s:
+            if ch.isdigit() or ch == ".":
+                num += ch
+            else:
+                unit += ch
+        try:
+            fnum = float(num) if "." in num else int(num)
+        except Exception:
+            return default_bytes
+        unit = unit.strip()
+        units = {
+            "b": 1,
+            "kb": 1000,
+            "kib": 1024,
+            "mb": 1000 * 1000,
+            "mib": 1024 * 1024,
+            "gb": 1000 * 1000 * 1000,
+            "gib": 1024 * 1024 * 1024,
+            "m": 1000 * 1000,
+            "mi": 1024 * 1024,
+            "g": 1000 * 1000 * 1000,
+        }
+        mult = units.get(unit)
+        if mult is None:
+            return default_bytes
+        return int(fnum * mult)
+
+    def _clamp(val: int, min_v: int, max_v: int) -> int:
+        return max(min_v, min(max_v, val))
+
+    SINGLE_PART_THRESHOLD = _parse_size(os.getenv("NOTION_SINGLE_PART_THRESHOLD", str(20 * 1024 * 1024)), 20 * 1024 * 1024)
+    _MIN_MP = 5 * 1024 * 1024
+    _MAX_MP = 20 * 1024 * 1024
+    MULTIPART_CHUNK_SIZE = _clamp(_parse_size(os.getenv("NOTION_MULTIPART_CHUNK_SIZE", str(_MIN_MP)), _MIN_MP), _MIN_MP, _MAX_MP)
+    SPLIT_THRESHOLD = _parse_size(os.getenv("FILE_SPLIT_THRESHOLD", str(5 * 1024 * 1024)), 5 * 1024 * 1024)
 
     class _PartStream:
         """Iterator that yields exactly ``part_size`` bytes from ``stream_iter``.
@@ -702,7 +745,12 @@ class NotionStreamingUploader:
 
             if file_size > self.SPLIT_THRESHOLD:
                 # --- Stream large files in parts without buffering the entire part ---
-                print(f"INFO: File size > 500 MiB, splitting and uploading in parts...")
+                # Informative log reflects the configured split threshold
+                try:
+                    threshold_mib = self.SPLIT_THRESHOLD / (1024 * 1024)
+                except Exception:
+                    threshold_mib = 0
+                print(f"INFO: File size > {threshold_mib:.0f} MiB, splitting and uploading in parts...")
 
                 total_parts = (file_size + self.SPLIT_THRESHOLD - 1) // self.SPLIT_THRESHOLD
                 last_part_size = file_size - self.SPLIT_THRESHOLD * (total_parts - 1)

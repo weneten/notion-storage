@@ -98,7 +98,8 @@ def cleanup_old_sessions():
 load_dotenv()
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY')  # Default secret key for development
+# Use a safe default for development if SECRET_KEY is not provided
+app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
 CORS(app)  # Enable CORS for all routes
 socketio = SocketIO(
     app, 

@@ -18,6 +18,7 @@ from .s3_downloader import (
     stream_file_from_url,
     stream_file_range_from_url,
 )
+import os
 
 
 def _fetch_json(url: str):
@@ -38,16 +39,58 @@ def _fetch_json(url: str):
         return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
 
 
-# Default chunk size for downloading files from Notion (1 MiB). Can be overridden
-# by setting the ``DOWNLOAD_CHUNK_SIZE`` environment variable or by passing a
-# ``chunk_size`` parameter to streaming functions.
-DOWNLOAD_CHUNK_SIZE = int(os.getenv("DOWNLOAD_CHUNK_SIZE", 1 * 1024 * 1024))
+# Default chunk size for downloading files from Notion (1 MiB by default).
+# Controlled via the DOWNLOAD_CHUNK_SIZE env var (supports 1MiB, 5MB, etc.).
+def _parse_size(value: str, default_bytes: int) -> int:
+    if not value:
+        return default_bytes
+    s = value.strip().lower()
+    if s.isdigit():
+        try:
+            return int(s)
+        except Exception:
+            return default_bytes
+    num = ""
+    unit = ""
+    for ch in s:
+        if ch.isdigit() or ch == ".":
+            num += ch
+        else:
+            unit += ch
+    try:
+        fnum = float(num) if "." in num else int(num)
+    except Exception:
+        return default_bytes
+    unit = unit.strip()
+    units = {
+        "b": 1,
+        "kb": 1000,
+        "kib": 1024,
+        "mb": 1000 * 1000,
+        "mib": 1024 * 1024,
+        "gb": 1000 * 1000 * 1000,
+        "gib": 1024 * 1024 * 1024,
+        "m": 1000 * 1000,
+        "mi": 1024 * 1024,
+        "g": 1000 * 1000 * 1000,
+    }
+    mult = units.get(unit)
+    if mult is None:
+        return default_bytes
+    return int(fnum * mult)
+
+def _clamp(val: int, min_v: int, max_v: int) -> int:
+    return max(min_v, min(max_v, val))
+
+DOWNLOAD_CHUNK_SIZE = _parse_size(os.getenv("DOWNLOAD_CHUNK_SIZE", str(1 * 1024 * 1024)), 1 * 1024 * 1024)
 
 class ChunkProcessor:
     def __init__(self, max_concurrent_uploads=3, max_pending_chunks=5):
         self.chunk_buffer = io.BytesIO()
         self.buffer_size = 0
-        self.chunk_size = 5 * 1024 * 1024  # 5MB chunks for Notion API
+        _MIN_MP = 5 * 1024 * 1024
+        _MAX_MP = 20 * 1024 * 1024
+        self.chunk_size = _clamp(_parse_size(os.getenv("NOTION_MULTIPART_CHUNK_SIZE", str(_MIN_MP)), _MIN_MP), _MIN_MP, _MAX_MP)
         self.upload_queue = queue.Queue(maxsize=max_pending_chunks)  # Limit pending chunks
         self.lock = threading.Lock()
         self.upload_futures = []
@@ -959,7 +1002,8 @@ class NotionFileUploader:
         filename = self.ensure_txt_filename(filename)
         content_type = self.get_mime_type(filename)
 
-        if total_size <= 5 * 1024 * 1024:  # 5 MiB limit for single file upload
+        single_threshold = _parse_size(os.getenv("NOTION_SINGLE_PART_THRESHOLD", str(20 * 1024 * 1024)), 20 * 1024 * 1024)
+        if total_size <= single_threshold:  # Single-part limit
             return self.upload_single_file_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
         else:
             return self.upload_large_file_multipart_stream(
@@ -1050,7 +1094,7 @@ class NotionFileUploader:
             
             raise Exception(f"Error uploading single file: {e}")
 
-    def upload_large_file_multipart_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str, chunk_size: int = 5 * 1024 * 1024, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
+    def upload_large_file_multipart_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str, chunk_size: int = MULTIPART_CHUNK_SIZE_BYTES, existing_upload_info: Dict[str, Any] = None) -> Dict[str, Any]:
         """Handles the multipart upload of a large file from a stream."""
         try:
             # Always use "file.txt" for Notion's site (the original filename is preserved elsewhere)
@@ -2427,7 +2471,7 @@ class NotionFileUploader:
 
     def handle_streaming_upload(self, stream: Iterable[bytes], total_size: int, upload_info: Dict[str, Any]) -> Dict[str, Any]:
         """Handle streaming upload by accumulating chunks efficiently with concurrent uploading"""
-        chunk_size = 5 * 1024 * 1024  # 5MB chunks for Notion API
+        chunk_size = self.chunk_size  # Configured Notion multipart chunk size
         current_chunk = io.BytesIO()
         current_size = 0
         part_number = 1
@@ -2531,7 +2575,7 @@ class NotionFileUploader:
         }
         
         # Calculate total parts from the total size and chunk size
-        chunk_size = 5 * 1024 * 1024  # 5MB chunk size
+        chunk_size = self.chunk_size  # Configured Notion multipart chunk size
         total_parts = len(self.upload_futures) + 1  # Current queued parts plus this one
         chunk_size_mb = len(chunk_data) / (1024*1024)
         print(f"Uploading part {part_number} of {total_parts} ({chunk_size_mb:.2f} MB)...")

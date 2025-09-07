@@ -10,11 +10,55 @@ from typing import Optional, Dict, Any
 import time
 import hashlib
 import secrets
+import os
 import psutil
 
-# Simple configuration for upload limits
-MAX_WORKERS = 10
-CHUNK_SIZE = 5 * 1024 * 1024  # 5MB chunks for Notion API
+def _parse_size(value: str, default_bytes: int) -> int:
+    if not value:
+        return default_bytes
+    s = value.strip().lower()
+    if s.isdigit():
+        try:
+            return int(s)
+        except Exception:
+            return default_bytes
+    num = ""
+    unit = ""
+    for ch in s:
+        if ch.isdigit() or ch == ".":
+            num += ch
+        else:
+            unit += ch
+    try:
+        fnum = float(num) if "." in num else int(num)
+    except Exception:
+        return default_bytes
+    unit = unit.strip()
+    units = {
+        "b": 1,
+        "kb": 1000,
+        "kib": 1024,
+        "mb": 1000 * 1000,
+        "mib": 1024 * 1024,
+        "gb": 1000 * 1000 * 1000,
+        "gib": 1024 * 1024 * 1024,
+        "m": 1000 * 1000,
+        "mi": 1024 * 1024,
+        "g": 1000 * 1000 * 1000,
+    }
+    mult = units.get(unit)
+    if mult is None:
+        return default_bytes
+    return int(fnum * mult)
+
+def _clamp(val: int, min_v: int, max_v: int) -> int:
+    return max(min_v, min(max_v, val))
+
+# Simple configuration for upload limits (env-tunable)
+MAX_WORKERS = int(os.getenv("MAX_PARALLEL_UPLOAD_WORKERS", "10"))
+_MIN_MP = 5 * 1024 * 1024
+_MAX_MP = 20 * 1024 * 1024
+CHUNK_SIZE = _clamp(_parse_size(os.getenv("NOTION_MULTIPART_CHUNK_SIZE", str(_MIN_MP)), _MIN_MP), _MIN_MP, _MAX_MP)
 
 # Import checkpoint management
 try:
@@ -25,9 +69,9 @@ except ImportError:
     create_checkpoint_key = None
 
 
-# Notion API constants
-SINGLE_PART_THRESHOLD = 20 * 1024 * 1024  # 20 MiB
-MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024    # 5 MiB for multipart uploads
+# Notion API constants (kept for compatibility; match configured chunk size)
+SINGLE_PART_THRESHOLD = _parse_size(os.getenv("NOTION_SINGLE_PART_THRESHOLD", str(20 * 1024 * 1024)), 20 * 1024 * 1024)
+MULTIPART_CHUNK_SIZE = CHUNK_SIZE
 
 # Helper for DB patching after part upload (used by streaming_uploader.py)
 def patch_db_entry_is_visible_and_file_data(notion_uploader, db_entry_id, file_list, is_visible):
