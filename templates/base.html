@@ -145,6 +145,11 @@
                         </a>
                     </li>
                     <li class="nav-item">
+                        <a class="nav-link" href="#" onclick="if(confirm('Are you sure you want to delete your account? This cannot be undone.')) { fetch('/delete_account', {method: 'POST'}).then(() => { window.location = '/login'; }); } return false;">
+                            <i class="fas fa-user-times mr-1"></i> Delete Account
+                        </a>
+                    </li>
+                    <li class="nav-item">
                         <a class="nav-link" href="/logout">
                             <i class="fas fa-sign-out-alt mr-1"></i> Logout
                         </a>

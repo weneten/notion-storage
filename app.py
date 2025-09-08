@@ -191,6 +191,31 @@ def purge_cache_endpoint():
     return jsonify({'status': 'purged'})
 
 
+def delete_account_data(user_id: str, user_database_id: str) -> None:
+    """Background task to remove all user files and the user entry."""
+    try:
+        if user_database_id:
+            try:
+                files_data = uploader.get_files_from_user_database(user_database_id)
+                file_ids = [entry.get('id') for entry in files_data.get('results', [])]
+                if file_ids:
+                    max_workers = min(10, len(file_ids))
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        def _delete(file_id):
+                            streaming_upload_manager.uploader.delete_file_entry(file_id, user_database_id)
+                        list(executor.map(_delete, file_ids))
+            except Exception as e:
+                print(f"Error deleting files for user {user_id}: {e}")
+            with _cache_lock:
+                _user_cache.pop(user_database_id, None)
+        try:
+            uploader.delete_file_from_db(user_id)
+        except Exception as e:
+            print(f"Error deleting user entry {user_id}: {e}")
+    except Exception as e:
+        print(f"Account deletion failed for {user_id}: {e}")
+
+
 def ensure_folder_structure(user_database_id: str, folder_path: str):
     """Ensure that all folders in ``folder_path`` exist in the user's database."""
     # Normalize the incoming path to avoid duplicates caused by varying slashes
@@ -563,6 +588,17 @@ def change_username():
             return f"Error changing username: {str(e)}", 500
 
     return render_template('change_username.html')
+
+
+@app.route('/delete_account', methods=['POST'])
+@login_required
+def delete_account():
+    """Initiate background account deletion for the current user."""
+    user_id = current_user.id
+    user_database_id = uploader.get_user_database_id(user_id)
+    threading.Thread(target=delete_account_data, args=(user_id, user_database_id), daemon=True).start()
+    logout_user()
+    return jsonify({'status': 'deletion started'})
 
 # FILE DOWNLOAD ROUTES
 
