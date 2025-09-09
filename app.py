@@ -765,13 +765,17 @@ def download_by_hash(salted_sha512_hash):
                 pass
 
         if password_hash:
-            hashed_bytes = base64.b64decode(password_hash)
-            if request.method == 'POST':
-                supplied_password = request.form.get('password', '')
-                if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
-                    return render_template('password_prompt.html', error='Invalid password'), 403
-            else:
-                return render_template('password_prompt.html'), 401
+            verified_hashes = session.get('verified_hashes', [])
+            if salted_sha512_hash not in verified_hashes:
+                hashed_bytes = base64.b64decode(password_hash)
+                if request.method == 'POST':
+                    supplied_password = request.form.get('password', '')
+                    if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
+                        return render_template('password_prompt.html', filename=original_filename, error='Invalid password'), 403
+                    verified_hashes.append(salted_sha512_hash)
+                    session['verified_hashes'] = verified_hashes
+                else:
+                    return render_template('password_prompt.html', filename=original_filename), 401
 
         # Check if this is a manifest JSON (multi-part file)
         is_manifest = original_filename.lower().endswith('.json')
