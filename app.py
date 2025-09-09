@@ -162,10 +162,7 @@ def _enforce_expirations(user_database_id: str, data: Dict[str, Any]) -> None:
                 continue
             file_id = entry.get('id')
             file_hash = _get_prop_text(props.get('filehash', {}))
-            salt = _get_prop_text(props.get('salt', {}))
-            salted_hash = None
-            if salt and file_hash:
-                salted_hash = hashlib.sha512((file_hash + salt).encode('utf-8')).hexdigest()
+            salted_hash = file_hash if file_hash else None
             uploader.update_file_public_status(file_id, False, salted_hash)
             uploader.update_file_security_settings(file_id, expires_at='', salted_sha512_hash=salted_hash)
             props['is_public'] = {'checkbox': False}
@@ -356,7 +353,7 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
                         'id': file_id,
                         'is_public': is_public,
                         'file_hash': file_hash,
-                        'salted_hash': '',
+                        'salted_hash': file_hash,
                         'file_data': file_data_files,
                         'folder': folder_path,
                         'password_protected': password_protected,
@@ -1324,15 +1321,12 @@ def get_files_api():
 
             password_protected = bool(password_hash)
 
-            # Compute salted hash for download link if salt is present
+            # Stored file_hash is already salted; use as-is
             salted_hash = file_hash
-            if salt and file_hash:
-                import hashlib
-                salted_hash = hashlib.sha512((file_hash + salt).encode('utf-8')).hexdigest()
 
             print(f"🔍 DIAGNOSTIC: File {i+1} - {name}:")
             print(f"  - ID: {file_id} (needed for delete button)")
-            print(f"  - Hash: {file_hash} (needed for toggle)")
+            print(f"  - Hash: {file_hash} (already salted, needed for toggle)")
             print(f"  - Salt: {salt}")
             print(f"  - Salted Hash: {salted_hash}")
             print(f"  - Is Public: {is_public} (needed for toggle state)")
@@ -1344,7 +1338,7 @@ def get_files_api():
                     'id': file_id,
                     'name': name,
                     'size': size,
-                    'file_hash': file_hash,
+                    'file_hash': salted_hash,
                     'salted_hash': salted_hash,
                     'is_public': is_public,
                     'password_protected': password_protected,
