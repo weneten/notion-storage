@@ -1453,3 +1453,27 @@ tr[data-file-hash] .view-button-container .modal-view-link:hover::before {
     background-color: #2c2c2c;
     color: #bb86fc;
 }
+
+/* Dark theme styling for share link modal */
+#shareModal .modal-content {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #bb86fc;
+}
+
+#shareModal .modal-header {
+    border-bottom: 1px solid #333;
+}
+
+#shareModal .modal-title {
+    color: #bb86fc;
+}
+
+#shareModal .close {
+    color: #e0e0e0;
+    text-shadow: none;
+}
+
+#shareModal .close:hover {
+    color: #bb86fc;
+}

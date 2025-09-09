@@ -318,6 +318,7 @@ function appendEntries(entries) {
                         <div class="dropdown-menu dropdown-menu-right">
                             <button type="button" class="dropdown-item rename-btn" data-file-id="${entry.id}"><i class="fas fa-edit mr-1"></i>Rename</button>
                             <button type="button" class="dropdown-item move-btn" data-file-id="${entry.id}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                            <button type="button" class="dropdown-item share-btn" data-file-id="${entry.id}"><i class="fas fa-share-alt mr-1"></i>Share...</button>
                             <button type="button" class="dropdown-item delete-btn" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
                         </div>
                     </div>
@@ -891,6 +892,11 @@ document.addEventListener('DOMContentLoaded', function () {
     if (window.nextCursor !== null && window.nextCursor !== undefined) {
         fetchRemainingEntries();
     }
+    const shareSaveBtn = document.getElementById('shareSaveButton');
+    if (shareSaveBtn && !shareSaveBtn.dataset.listenerAdded) {
+        shareSaveBtn.addEventListener('click', saveShareSettings);
+        shareSaveBtn.dataset.listenerAdded = 'true';
+    }
     setInterval(checkForUpdates, 5000);
 });
 
@@ -1031,6 +1037,7 @@ function renderEntries(entries) {
                         <div class="dropdown-menu dropdown-menu-right">
                             <button type="button" class="dropdown-item rename-btn" data-file-id="${fileId}"><i class="fas fa-edit mr-1"></i>Rename</button>
                             <button type="button" class="dropdown-item move-btn" data-file-id="${fileId}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                            <button type="button" class="dropdown-item share-btn" data-file-id="${fileId}"><i class="fas fa-share-alt mr-1"></i>Share...</button>
                             <button type="button" class="dropdown-item delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
                         </div>
                     </div>
@@ -1385,11 +1392,22 @@ function setupFileActionEventHandlers(root = document) {
     // Add event handlers for move buttons
     root.querySelectorAll('.move-btn').forEach(btn => {
         if (btn.dataset.listenerAttached) return;
+       btn.dataset.listenerAttached = 'true';
+       btn.addEventListener('click', function () {
+           closeAllDropdowns();
+           const fileId = this.dataset.fileId;
+           openMoveDialog([fileId], []);
+       });
+    });
+
+    // Add event handlers for share buttons
+    root.querySelectorAll('.share-btn').forEach(btn => {
+        if (btn.dataset.listenerAttached) return;
         btn.dataset.listenerAttached = 'true';
         btn.addEventListener('click', function () {
             closeAllDropdowns();
             const fileId = this.dataset.fileId;
-            openMoveDialog([fileId], []);
+            openShareDialog(fileId);
         });
     });
 }
@@ -1494,6 +1512,73 @@ async function openMoveDialog(fileIds = [], folderIds = []) {
         showStatus('Failed to load folders: ' + error.message, 'error');
     }
     $('#moveModal').modal('show');
+}
+
+// =============================================
+// Share link settings modal
+// =============================================
+let shareTarget = { fileId: null, saltedHash: '' };
+
+async function openShareDialog(fileId) {
+    shareTarget = { fileId, saltedHash: '' };
+    try {
+        const folderParam = encodeURIComponent(window.currentFolder || '/');
+        const resp = await fetch(`/api/files?folder=${folderParam}`);
+        const data = await resp.json();
+        const file = (data.files || []).find(f => f.id === fileId);
+        if (file) {
+            shareTarget.saltedHash = file.salted_hash || '';
+            const toggle = document.getElementById('sharePublicToggle');
+            const password = document.getElementById('sharePassword');
+            const expires = document.getElementById('shareExpires');
+            if (toggle) toggle.checked = !!file.is_public;
+            if (password) {
+                password.value = '';
+                password.placeholder = file.password_protected ? '(existing)' : '';
+            }
+            if (expires) {
+                expires.value = file.expires_at ? file.expires_at.slice(0,16) : '';
+            }
+        }
+    } catch (error) {
+        console.error('Error loading file details:', error);
+        showStatus('Failed to load file details: ' + error.message, 'error');
+    }
+    $('#shareModal').modal('show');
+}
+
+async function saveShareSettings() {
+    const isPublic = document.getElementById('sharePublicToggle').checked;
+    const password = document.getElementById('sharePassword').value;
+    const expires = document.getElementById('shareExpires').value;
+    try {
+        const resp = await fetch('/update_link_settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                file_id: shareTarget.fileId,
+                is_public: isPublic,
+                password: password,
+                expires_at: expires || null,
+                salted_sha512_hash: shareTarget.saltedHash
+            })
+        });
+        const data = await resp.json();
+        if (resp.ok && data.status === 'success') {
+            $('#shareModal').modal('hide');
+            refreshServerCache();
+            setTimeout(() => {
+                if (typeof loadFiles === 'function') {
+                    loadFiles();
+                }
+            }, 500);
+        } else {
+            showStatus(data.error || 'Failed to update link settings', 'error');
+        }
+    } catch (error) {
+        console.error('Error updating link settings:', error);
+        showStatus('Error updating link settings: ' + error.message, 'error');
+    }
 }
 
 document.addEventListener('DOMContentLoaded', function () {
