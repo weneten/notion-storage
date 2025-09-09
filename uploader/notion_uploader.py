@@ -2125,7 +2125,7 @@ class NotionFileUploader:
         # Ensure the is_folder property exists for this database
         self.ensure_database_property(database_id, "is_folder", "checkbox")
         self.ensure_database_property(database_id, "password_hash", "rich_text")
-        self.ensure_database_property(database_id, "expires_at", "date")
+        self.ensure_database_property(database_id, "expires_at", "rich_text")
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
@@ -2442,7 +2442,7 @@ class NotionFileUploader:
             }
         if expires_at is not None:
             properties["expires_at"] = {
-                "date": {"start": expires_at}
+                "rich_text": [{"text": {"content": expires_at}}]
             }
 
         if not properties:
@@ -2581,7 +2581,7 @@ class NotionFileUploader:
             }
         if expires_at is not None:
             payload["properties"]["Expires At"] = {
-                "date": {"start": expires_at}
+                "rich_text": [{"text": {"content": expires_at}}]
             }
 
         headers = {**self.headers, "Content-Type": "application/json"}
