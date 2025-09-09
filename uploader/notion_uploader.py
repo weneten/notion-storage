@@ -2215,6 +2215,12 @@ class NotionFileUploader:
             },
             "is_folder": {
                 "checkbox": False
+            },
+            "password_hash": {
+                "rich_text": []
+            },
+            "expires_at": {
+                "rich_text": []
             }
         }
         # Add is_manifest property if this is a manifest entry
@@ -2316,8 +2322,8 @@ class NotionFileUploader:
             try:
                 file_page = self.get_user_by_id(file_page_id)
                 file_props = file_page.get('properties', {})
-                password_prop = file_props.get('password_hash', {})
-                expires_prop = file_props.get('expires_at', {})
+                password_prop = file_props.get('password_hash', {'rich_text': []})
+                expires_prop = file_props.get('expires_at', {'rich_text': []})
                 index_entry['properties']['password_hash'] = password_prop
                 index_entry['properties']['expires_at'] = expires_prop
             except Exception as e:
@@ -2438,11 +2444,11 @@ class NotionFileUploader:
 
         if password_hash is not None:
             properties["password_hash"] = {
-                "rich_text": [{"text": {"content": password_hash}}]
+                "rich_text": [{"text": {"content": password_hash}}] if password_hash else []
             }
         if expires_at is not None:
             properties["expires_at"] = {
-                "rich_text": [{"text": {"content": expires_at}}]
+                "rich_text": [{"text": {"content": expires_at}}] if expires_at else []
             }
 
         if not properties:
@@ -2464,6 +2470,10 @@ class NotionFileUploader:
         """Create a folder entry in the user's database."""
         url = f"{self.base_url}/pages"
 
+        # Ensure security properties exist
+        self.ensure_database_property(database_id, "password_hash", "rich_text")
+        self.ensure_database_property(database_id, "expires_at", "rich_text")
+
         properties = {
             "filename": {
                 "title": [
@@ -2477,7 +2487,9 @@ class NotionFileUploader:
             "salt": {"rich_text": [{"text": {"content": ""}}]},
             "folder_path": {"rich_text": [{"text": {"content": parent_path}}]},
             "is_folder": {"checkbox": True},
-            "is_visible": {"checkbox": True}
+            "is_visible": {"checkbox": True},
+            "password_hash": {"rich_text": []},
+            "expires_at": {"rich_text": []}
         }
 
         payload = {"parent": {"database_id": database_id}, "properties": properties}
@@ -2552,6 +2564,10 @@ class NotionFileUploader:
         if not global_index_db_id:
             raise Exception("GLOBAL_FILE_INDEX_DB_ID not set in NotionFileUploader instance. Global File Index database must be created manually.")
 
+        # Ensure security properties exist on the Global File Index
+        self.ensure_database_property(global_index_db_id, "Password Hash", "rich_text")
+        self.ensure_database_property(global_index_db_id, "Expires At", "rich_text")
+
         url = f"{self.base_url}/pages"
 
         payload = {
@@ -2571,18 +2587,15 @@ class NotionFileUploader:
                 },
                 "Is Public": {
                     "checkbox": is_public
+                },
+                "Password Hash": {
+                    "rich_text": [{"text": {"content": password_hash}}] if password_hash else {"rich_text": []}
+                },
+                "Expires At": {
+                    "rich_text": [{"text": {"content": expires_at}}] if expires_at else {"rich_text": []}
                 }
             }
         }
-
-        if password_hash is not None:
-            payload["properties"]["Password Hash"] = {
-                "rich_text": [{"text": {"content": password_hash}}]
-            }
-        if expires_at is not None:
-            payload["properties"]["Expires At"] = {
-                "rich_text": [{"text": {"content": expires_at}}]
-            }
 
         headers = {**self.headers, "Content-Type": "application/json"}
 
