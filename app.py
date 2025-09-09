@@ -265,7 +265,9 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
     folder_sizes = defaultdict(int)
     for file_data in results:
         try:
-            properties = file_data.get('properties', {})
+            if not file_data:
+                continue
+            properties = (file_data.get('properties') or {})
             name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
             size = properties.get('filesize', {}).get('number', 0)
             folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
@@ -285,7 +287,9 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
 
     for file_data in results:
         try:
-            properties = file_data.get('properties', {})
+            if not file_data:
+                continue
+            properties = (file_data.get('properties') or {})
             name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
             size = properties.get('filesize', {}).get('number', 0)
             file_id = file_data.get('id')
@@ -1259,7 +1263,7 @@ def get_files_api():
         
         current_folder = request.args.get('folder', '/')
         files_response, _ = get_cached_files(user_database_id)
-        files = files_response.get('results', [])
+        files = (files_response or {}).get('results', [])
         
         print(f"🔍 DIAGNOSTIC: Raw files from database: {len(files)} files")
         
@@ -1336,7 +1340,7 @@ def get_entries_api():
 
         current_folder = request.args.get('folder', '/')
         files_response, _ = get_cached_files(user_database_id)
-        files = files_response.get('results', [])
+        files = (files_response or {}).get('results', [])
 
         def _get_prop_text(prop, key='rich_text', default=''):
             values = prop.get(key, [])
@@ -1346,7 +1350,9 @@ def get_entries_api():
         folder_sizes = defaultdict(int)
         for file_data in files:
             try:
-                properties = file_data.get('properties', {})
+                if not file_data:
+                    continue
+                properties = (file_data.get('properties') or {})
                 name = _get_prop_text(properties.get('filename', {}), 'title')
                 size = properties.get('filesize', {}).get('number', 0)
                 folder_path = _get_prop_text(properties.get('folder_path', {}), default='/')
@@ -1369,7 +1375,9 @@ def get_entries_api():
         entries = []
         for file_data in files:
             try:
-                properties = file_data.get('properties', {})
+                if not file_data:
+                    continue
+                properties = (file_data.get('properties') or {})
                 name = _get_prop_text(properties.get('filename', {}), 'title')
                 size = properties.get('filesize', {}).get('number', 0)
                 file_id = file_data.get('id')
