@@ -2216,12 +2216,8 @@ class NotionFileUploader:
             "is_folder": {
                 "checkbox": False
             },
-            "password_hash": {
-                "rich_text": []
-            },
-            "expires_at": {
-                "rich_text": []
-            }
+            "password_hash": None,
+            "expires_at": None
         }
         # Add is_manifest property if this is a manifest entry
         if is_manifest:
@@ -2488,8 +2484,8 @@ class NotionFileUploader:
             "folder_path": {"rich_text": [{"text": {"content": parent_path}}]},
             "is_folder": {"checkbox": True},
             "is_visible": {"checkbox": True},
-            "password_hash": {"rich_text": []},
-            "expires_at": {"rich_text": []}
+            "password_hash": None,
+            "expires_at": None
         }
 
         payload = {"parent": {"database_id": database_id}, "properties": properties}
@@ -2590,13 +2586,13 @@ class NotionFileUploader:
                 },
                 "Password Hash": (
                     {"rich_text": [{"text": {"content": password_hash}}]}
-                    if password_hash
-                    else {"rich_text": []}
+                    if password_hash is not None
+                    else None
                 ),
                 "Expires At": (
                     {"rich_text": [{"text": {"content": expires_at}}]}
-                    if expires_at
-                    else {"rich_text": []}
+                    if expires_at is not None
+                    else None
                 ),
             }
         }
