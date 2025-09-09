@@ -143,7 +143,15 @@ def get_cached_files(
     force_refresh: bool = False,
     fetch_if_missing: bool = True,
 ):
-    """Retrieve Notion files for a user, using in-memory cache."""
+    """Retrieve Notion files for a user, using in-memory cache.
+
+    Ensures the ``is_visible`` checkbox property exists and defaults to
+    ``True`` for all pages. This prevents newly introduced properties from
+    hiding existing files.
+    """
+    uploader.ensure_database_property(
+        user_database_id, 'is_visible', 'checkbox', default_value={'checkbox': True}
+    )
     with _cache_lock:
         _purge_stale_cache_locked()
         now = time.time()
@@ -197,6 +205,9 @@ def delete_account_data(user_id: str, user_database_id: str) -> None:
     try:
         if user_database_id:
             try:
+                uploader.ensure_database_property(
+                    user_database_id, 'is_visible', 'checkbox', default_value={'checkbox': True}
+                )
                 files_data = uploader.get_files_from_user_database(user_database_id)
                 file_ids = [entry.get('id') for entry in files_data.get('results', [])]
                 if file_ids:
