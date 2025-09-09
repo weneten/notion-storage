@@ -2070,6 +2070,8 @@ class NotionFileUploader:
 
         # Ensure the is_folder property exists for this database
         self.ensure_database_property(database_id, "is_folder", "checkbox")
+        self.ensure_database_property(database_id, "password_hash", "rich_text")
+        self.ensure_database_property(database_id, "expires_at", "date")
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
@@ -2256,6 +2258,17 @@ class NotionFileUploader:
                 print("Missing File Page ID or User Database ID in Global File Index entry.")
                 return None
 
+            # Fetch security properties from the user's database
+            try:
+                file_page = self.get_user_by_id(file_page_id)
+                file_props = file_page.get('properties', {})
+                password_prop = file_props.get('password_hash', {})
+                expires_prop = file_props.get('expires_at', {})
+                index_entry['properties']['password_hash'] = password_prop
+                index_entry['properties']['expires_at'] = expires_prop
+            except Exception as e:
+                print(f"Warning: Failed to fetch security properties for file page {file_page_id}: {e}")
+
             with self.index_cache_lock:
                 self.index_cache[salted_sha512_hash] = {
                     'entry': index_entry,
@@ -2353,6 +2366,31 @@ class NotionFileUploader:
             raise Exception(f"Failed to update file metadata: {response.text}")
         return response.json()
 
+    def update_file_security_settings(self, file_id: str, password_hash: str = None, expires_at: str = None) -> Dict[str, Any]:
+        """Update security-related properties for a file entry."""
+        url = f"{self.base_url}/pages/{file_id}"
+        properties: Dict[str, Any] = {}
+
+        if password_hash is not None:
+            properties["password_hash"] = {
+                "rich_text": [{"text": {"content": password_hash}}]
+            }
+        if expires_at is not None:
+            properties["expires_at"] = {
+                "date": {"start": expires_at}
+            }
+
+        if not properties:
+            return {}
+
+        payload = {"properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+
+        response = requests.patch(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to update file security settings: {response.text}")
+        return response.json()
+
     def create_folder(self, database_id: str, folder_name: str, parent_path: str = "/") -> Dict[str, Any]:
         """Create a folder entry in the user's database."""
         url = f"{self.base_url}/pages"
@@ -2439,7 +2477,7 @@ class NotionFileUploader:
         yield from stream_file_range_from_url(
             notion_download_url, start, end, chunk_size=chunk_size
         )
-    def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool) -> Dict[str, Any]:
+    def add_file_to_index(self, salted_sha512_hash: str, file_page_id: str, user_database_id: str, original_filename: str, is_public: bool, password_hash: str = None, expires_at: str = None) -> Dict[str, Any]:
         """Adds an entry to the Global File Index database."""
         global_index_db_id = self.global_file_index_db_id
         if not global_index_db_id:
@@ -2467,6 +2505,15 @@ class NotionFileUploader:
                 }
             }
         }
+
+        if password_hash is not None:
+            payload["properties"]["Password Hash"] = {
+                "rich_text": [{"text": {"content": password_hash}}]
+            }
+        if expires_at is not None:
+            payload["properties"]["Expires At"] = {
+                "date": {"start": expires_at}
+            }
 
         headers = {**self.headers, "Content-Type": "application/json"}
 
