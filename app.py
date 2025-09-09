@@ -765,14 +765,19 @@ def download_by_hash(salted_sha512_hash):
                 pass
 
         if password_hash:
-            verified_hashes = session.get('verified_hashes', [])
-            if salted_sha512_hash not in verified_hashes:
+            verified_hashes = session.get('verified_hashes', {})
+            if isinstance(verified_hashes, list):
+                # Backward compatibility for older sessions storing a list
+                verified_hashes = {h: None for h in verified_hashes}
+
+            cached_hash = verified_hashes.get(salted_sha512_hash)
+            if cached_hash != password_hash:
                 hashed_bytes = base64.b64decode(password_hash)
                 if request.method == 'POST':
                     supplied_password = request.form.get('password', '')
                     if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
                         return render_template('password_prompt.html', filename=original_filename, error='Invalid password'), 403
-                    verified_hashes.append(salted_sha512_hash)
+                    verified_hashes[salted_sha512_hash] = password_hash
                     session['verified_hashes'] = verified_hashes
                 else:
                     return render_template('password_prompt.html', filename=original_filename), 401
