@@ -41,6 +41,11 @@ def set_content_disposition(response, disposition, filename):
         **{"filename*": f"UTF-8''{encoded_name}"}
     )
 
+
+def _get_prop_text(prop: Dict[str, Any], key: str = 'rich_text', default: Any = None):
+    values = prop.get(key, [])
+    return values[0].get('text', {}).get('content', default) if values else default
+
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
     """Clean up old upload sessions every minute"""
@@ -290,17 +295,17 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
             if not file_data:
                 continue
             properties = (file_data.get('properties') or {})
-            name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            name = _get_prop_text(properties.get('filename', {}), 'title', '')
             size = properties.get('filesize', {}).get('number', 0)
             file_id = file_data.get('id')
             is_public = properties.get('is_public', {}).get('checkbox', False)
-            file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            file_hash = _get_prop_text(properties.get('filehash', {}), default='')
             file_data_files = properties.get('file_data', {}).get('files', [])
-            folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+            folder_path = _get_prop_text(properties.get('folder_path', {}), default='/')
             is_folder = properties.get('is_folder', {}).get('checkbox', False)
             is_visible = properties.get('is_visible', {}).get('checkbox', True)
-            password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            expires_at = properties.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            password_hash = _get_prop_text(properties.get('password_hash', {}))
+            expires_at = _get_prop_text(properties.get('expires_at', {}))
             password_protected = bool(password_hash)
             if name and is_visible and folder_path == current_folder:
                 if is_folder:
@@ -767,8 +772,8 @@ def download_by_hash(salted_sha512_hash):
                 return "Access Denied: You do not have permission to download this file.", 403
 
         file_props = file_details.get('properties', {})
-        password_hash = file_props.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        expires_at = file_props.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        password_hash = _get_prop_text(file_props.get('password_hash', {}))
+        expires_at = _get_prop_text(file_props.get('expires_at', {}))
 
         if expires_at:
             try:
@@ -1271,20 +1276,20 @@ def get_files_api():
         formatted_files = []
         for i, file_data in enumerate(files):
             file_props = file_data.get('properties', {})
-            
+
             # Extract all properties with diagnostic logging
             file_id = file_data.get('id')
-            name = file_props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', 'Unknown')
+            name = _get_prop_text(file_props.get('filename', {}), 'title', 'Unknown')
             size = file_props.get('filesize', {}).get('number', 0)
-            file_hash = file_props.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            file_hash = _get_prop_text(file_props.get('filehash', {}), default='')
             is_public = file_props.get('is_public', {}).get('checkbox', False)
             is_manifest = file_props.get('is_manifest', {}).get('checkbox', False)
             is_visible = file_props.get('is_visible', {}).get('checkbox', True)
             is_folder = file_props.get('is_folder', {}).get('checkbox', False)
-            folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
-            salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            password_hash = file_props.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            expires_at = file_props.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            folder_path = _get_prop_text(file_props.get('folder_path', {}), default='/')
+            salt = _get_prop_text(file_props.get('salt', {}), default='')
+            password_hash = _get_prop_text(file_props.get('password_hash', {}))
+            expires_at = _get_prop_text(file_props.get('expires_at', {}))
 
             password_protected = bool(password_hash)
 
@@ -1342,10 +1347,6 @@ def get_entries_api():
         files_response, _ = get_cached_files(user_database_id)
         files = (files_response or {}).get('results', [])
 
-        def _get_prop_text(prop, key='rich_text', default=''):
-            values = prop.get(key, [])
-            return values[0].get('text', {}).get('content', default) if values else default
-
         # Pre-calculate cumulative sizes for all folders
         folder_sizes = defaultdict(int)
         for file_data in files:
@@ -1353,7 +1354,7 @@ def get_entries_api():
                 if not file_data:
                     continue
                 properties = (file_data.get('properties') or {})
-                name = _get_prop_text(properties.get('filename', {}), 'title')
+                name = _get_prop_text(properties.get('filename', {}), 'title', '')
                 size = properties.get('filesize', {}).get('number', 0)
                 folder_path = _get_prop_text(properties.get('folder_path', {}), default='/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
@@ -1468,16 +1469,16 @@ def search_files_api():
         for file_data in files:
             try:
                 properties = file_data.get('properties', {})
-                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                name = _get_prop_text(properties.get('filename', {}), 'title', '')
                 size = properties.get('filesize', {}).get('number', 0)
                 file_id = file_data.get('id')
                 is_public = properties.get('is_public', {}).get('checkbox', False)
-                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                file_hash = _get_prop_text(properties.get('filehash', {}), default='')
+                folder_path = _get_prop_text(properties.get('folder_path', {}), default='/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
-                password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                expires_at = properties.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                password_hash = _get_prop_text(properties.get('password_hash', {}))
+                expires_at = _get_prop_text(properties.get('expires_at', {}))
                 password_protected = bool(password_hash)
 
                 if not is_visible:
@@ -1684,6 +1685,8 @@ def update_link_settings():
         is_public = data.get('is_public')
         password = data.get('password')
         expires_at = data.get('expires_at')
+        if expires_at is None:
+            expires_at = ''
         salted_sha512_hash = data.get('salted_sha512_hash')
 
         if not file_id or is_public is None:
