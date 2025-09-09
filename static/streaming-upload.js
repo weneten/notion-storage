@@ -1549,7 +1549,8 @@ async function openShareDialog(fileId) {
 
 async function saveShareSettings() {
     const isPublic = document.getElementById('sharePublicToggle').checked;
-    const password = document.getElementById('sharePassword').value;
+    const passwordField = document.getElementById('sharePassword');
+    const password = passwordField.value;
     const expires = document.getElementById('shareExpires').value;
     try {
         const body = {
@@ -1558,7 +1559,7 @@ async function saveShareSettings() {
             expires_at: expires || null,
             salted_sha512_hash: shareTarget.saltedHash
         };
-        if (password !== '') {
+        if (password !== '' || passwordField.placeholder === '(existing)') {
             body.password = password;
         }
         const resp = await fetch('/update_link_settings', {
