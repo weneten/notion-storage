@@ -29,6 +29,7 @@ import gc
 import zipstream
 from urllib.parse import quote
 from werkzeug.utils import secure_filename
+from datetime import datetime, timezone
 
 def set_content_disposition(response, disposition, filename):
     fallback_name = secure_filename(filename) or "download"
@@ -283,6 +284,9 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
             folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             is_folder = properties.get('is_folder', {}).get('checkbox', False)
             is_visible = properties.get('is_visible', {}).get('checkbox', True)
+            password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
+            password_protected = bool(password_hash)
             if name and is_visible and folder_path == current_folder:
                 if is_folder:
                     full_path = folder_path.rstrip('/') + '/' + name if folder_path != '/' else '/' + name
@@ -303,7 +307,9 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
                         'file_hash': file_hash,
                         'salted_hash': '',
                         'file_data': file_data_files,
-                        'folder': folder_path
+                        'folder': folder_path,
+                        'password_protected': password_protected,
+                        'expires_at': expires_at
                     })
         except Exception:
             continue
@@ -709,7 +715,7 @@ def download_folder():
         return str(e), 500
 
 
-@app.route('/d/<salted_sha512_hash>')
+@app.route('/d/<salted_sha512_hash>', methods=['GET', 'POST'])
 def download_by_hash(salted_sha512_hash):
     """
     Download file by hash (public/private route with access control)
@@ -744,6 +750,28 @@ def download_by_hash(salted_sha512_hash):
 
             if file_user_db_id != current_user_db_id:
                 return "Access Denied: You do not have permission to download this file.", 403
+
+        file_props = file_details.get('properties', {})
+        password_hash = file_props.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+        expires_at = file_props.get('expires_at', {}).get('date', {}).get('start')
+
+        if expires_at:
+            try:
+                expiry_dt = datetime.fromisoformat(expires_at)
+                now = datetime.now(expiry_dt.tzinfo or timezone.utc)
+                if expiry_dt < now:
+                    return "Link expired", 403
+            except Exception:
+                pass
+
+        if password_hash:
+            hashed_bytes = base64.b64decode(password_hash)
+            if request.method == 'POST':
+                supplied_password = request.form.get('password', '')
+                if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
+                    return render_template('password_prompt.html', error='Invalid password'), 403
+            else:
+                return render_template('password_prompt.html'), 401
 
         # Check if this is a manifest JSON (multi-part file)
         is_manifest = original_filename.lower().endswith('.json')
@@ -1231,6 +1259,10 @@ def get_files_api():
             is_folder = file_props.get('is_folder', {}).get('checkbox', False)
             folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            password_hash = file_props.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            expires_at = file_props.get('expires_at', {}).get('date', {}).get('start')
+
+            password_protected = bool(password_hash)
 
             # Compute salted hash for download link if salt is present
             salted_hash = file_hash
@@ -1254,7 +1286,9 @@ def get_files_api():
                     'size': size,
                     'file_hash': file_hash,
                     'salted_hash': salted_hash,
-                    'is_public': is_public
+                    'is_public': is_public,
+                    'password_protected': password_protected,
+                    'expires_at': expires_at
                 }
                 formatted_files.append(formatted_file)
         
@@ -1320,6 +1354,12 @@ def get_entries_api():
                 folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
+                password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
+                password_protected = bool(password_hash)
+                password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
+                password_protected = bool(password_hash)
 
                 if name and is_visible and folder_path == current_folder:
                     if is_folder:
@@ -1339,7 +1379,9 @@ def get_entries_api():
                             'id': file_id,
                             'is_public': is_public,
                             'file_hash': file_hash,
-                            'folder': folder_path
+                            'folder': folder_path,
+                            'password_protected': password_protected,
+                            'expires_at': expires_at
                         })
             except Exception as e:
                 print(f"Error processing file data in get_entries_api: {e}")
@@ -1405,6 +1447,9 @@ def search_files_api():
                 folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
+                password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
+                password_protected = bool(password_hash)
 
                 if not is_visible:
                     continue
@@ -1427,7 +1472,9 @@ def search_files_api():
                             'id': file_id,
                             'is_public': is_public,
                             'file_hash': file_hash,
-                            'folder': folder_path
+                            'folder': folder_path,
+                            'password_protected': password_protected,
+                            'expires_at': expires_at
                         })
             except Exception as e:
                 print(f"Error processing file data in search_files_api: {e}")
@@ -1597,6 +1644,50 @@ def toggle_public_access():
         error_trace = traceback.format_exc()
         print(f"DEBUG: Toggling public access failed with error: {str(e)}\n{error_trace}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/update_link_settings', methods=['POST'])
+@login_required
+def update_link_settings():
+    try:
+        data = request.get_json() or {}
+        file_id = data.get('file_id')
+        is_public = data.get('is_public')
+        password = data.get('password')
+        expires_at = data.get('expires_at')
+        salted_sha512_hash = data.get('salted_sha512_hash')
+
+        if not file_id or is_public is None:
+            return jsonify({'error': 'file_id and is_public required'}), 400
+
+        user_database_id = uploader.get_user_database_id(current_user.id)
+        if not user_database_id:
+            return jsonify({'error': 'User database not found'}), 404
+
+        # Ensure properties exist in the user's database
+        uploader.ensure_database_property(user_database_id, 'is_public', 'checkbox')
+        uploader.ensure_database_property(user_database_id, 'password_hash', 'rich_text')
+        uploader.ensure_database_property(user_database_id, 'expires_at', 'date')
+
+        password_hash = None
+        if password is not None:
+            if password == '':
+                password_hash = ''
+            else:
+                hashed_bytes = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+                password_hash = base64.b64encode(hashed_bytes).decode('utf-8')
+
+        # Update public status and security settings
+        uploader.update_file_public_status(file_id, is_public, salted_sha512_hash)
+        uploader.update_file_security_settings(file_id, password_hash=password_hash, expires_at=expires_at)
+
+        # Invalidate cache for user to reflect changes
+        with _cache_lock:
+            _user_cache.pop(user_database_id, None)
+
+        return jsonify({'status': 'success'}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/update_file_metadata', methods=['POST'])
