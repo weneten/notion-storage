@@ -154,6 +154,10 @@ def _enforce_expirations(user_database_id: str, data: Dict[str, Any]) -> None:
             if not (is_public and expires_at):
                 continue
             expiry_dt = datetime.fromisoformat(expires_at)
+            if expiry_dt.tzinfo is None:
+                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
+            else:
+                expiry_dt = expiry_dt.astimezone(timezone.utc)
             if expiry_dt >= now:
                 continue
             file_id = entry.get('id')
