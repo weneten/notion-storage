@@ -300,7 +300,7 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
             is_folder = properties.get('is_folder', {}).get('checkbox', False)
             is_visible = properties.get('is_visible', {}).get('checkbox', True)
             password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
+            expires_at = properties.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
             password_protected = bool(password_hash)
             if name and is_visible and folder_path == current_folder:
                 if is_folder:
@@ -768,7 +768,7 @@ def download_by_hash(salted_sha512_hash):
 
         file_props = file_details.get('properties', {})
         password_hash = file_props.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-        expires_at = file_props.get('expires_at', {}).get('date', {}).get('start')
+        expires_at = file_props.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
 
         if expires_at:
             try:
@@ -1284,7 +1284,7 @@ def get_files_api():
             folder_path = file_props.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
             salt = file_props.get('salt', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
             password_hash = file_props.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            expires_at = file_props.get('expires_at', {}).get('date', {}).get('start')
+            expires_at = file_props.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
 
             password_protected = bool(password_hash)
 
@@ -1387,7 +1387,7 @@ def get_entries_api():
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
                 password_hash = _get_prop_text(properties.get('password_hash', {}))
-                expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
+                expires_at = _get_prop_text(properties.get('expires_at', {}))
                 password_protected = bool(password_hash)
 
                 if name and is_visible and folder_path == current_folder:
@@ -1477,7 +1477,7 @@ def search_files_api():
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
                 password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
+                expires_at = properties.get('expires_at', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
                 password_protected = bool(password_hash)
 
                 if not is_visible:
@@ -1696,7 +1696,7 @@ def update_link_settings():
         # Ensure properties exist in the user's database
         uploader.ensure_database_property(user_database_id, 'is_public', 'checkbox')
         uploader.ensure_database_property(user_database_id, 'password_hash', 'rich_text')
-        uploader.ensure_database_property(user_database_id, 'expires_at', 'date')
+        uploader.ensure_database_property(user_database_id, 'expires_at', 'rich_text')
 
         password_hash = None
         if password is not None:
