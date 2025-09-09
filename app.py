@@ -143,6 +143,32 @@ def _purge_stale_cache_locked():
     while len(_user_cache) > CACHE_MAX_USERS:
         _user_cache.popitem(last=False)
 
+def _enforce_expirations(user_database_id: str, data: Dict[str, Any]) -> None:
+    """Disable public access for files whose expiration has passed."""
+    now = datetime.now(timezone.utc)
+    for entry in data.get('results', []):
+        try:
+            props = entry.get('properties', {})
+            is_public = props.get('is_public', {}).get('checkbox', False)
+            expires_at = _get_prop_text(props.get('expires_at', {}))
+            if not (is_public and expires_at):
+                continue
+            expiry_dt = datetime.fromisoformat(expires_at)
+            if expiry_dt >= now:
+                continue
+            file_id = entry.get('id')
+            file_hash = _get_prop_text(props.get('filehash', {}))
+            salt = _get_prop_text(props.get('salt', {}))
+            salted_hash = None
+            if salt and file_hash:
+                salted_hash = hashlib.sha512((file_hash + salt).encode('utf-8')).hexdigest()
+            uploader.update_file_public_status(file_id, False, salted_hash)
+            uploader.update_file_security_settings(file_id, expires_at='', salted_sha512_hash=salted_hash)
+            props['is_public'] = {'checkbox': False}
+            props['expires_at'] = {'rich_text': []}
+        except Exception:
+            continue
+
 def get_cached_files(
     user_database_id: str,
     force_refresh: bool = False,
@@ -169,6 +195,7 @@ def get_cached_files(
         return None, 0
 
     data = uploader.get_files_from_user_database(user_database_id)
+    _enforce_expirations(user_database_id, data)
     now = time.time()
     with _cache_lock:
         _user_cache[user_database_id] = {"data": data, "timestamp": now}
@@ -436,7 +463,7 @@ def home():
         next_cursor = None
         last_sync = 0
         if user_database_id:
-            files_data, last_sync = get_cached_files(user_database_id, fetch_if_missing=False)
+            files_data, last_sync = get_cached_files(user_database_id)
             if files_data:
                 results = files_data.get('results', [])
                 all_entries = build_entries(results, current_folder)
