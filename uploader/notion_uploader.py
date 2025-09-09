@@ -2366,8 +2366,19 @@ class NotionFileUploader:
             raise Exception(f"Failed to update file metadata: {response.text}")
         return response.json()
 
-    def update_file_security_settings(self, file_id: str, password_hash: str = None, expires_at: str = None) -> Dict[str, Any]:
-        """Update security-related properties for a file entry."""
+    def update_file_security_settings(
+        self,
+        file_id: str,
+        password_hash: str = None,
+        expires_at: str = None,
+        salted_sha512_hash: str = None,
+    ) -> Dict[str, Any]:
+        """Update security-related properties for a file entry.
+
+        Optionally invalidate the cached index entry corresponding to
+        ``salted_sha512_hash`` so that subsequent lookups reflect the
+        new security settings immediately.
+        """
         url = f"{self.base_url}/pages/{file_id}"
         properties: Dict[str, Any] = {}
 
@@ -2389,6 +2400,10 @@ class NotionFileUploader:
         response = requests.patch(url, json=payload, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Failed to update file security settings: {response.text}")
+
+        if salted_sha512_hash:
+            self.invalidate_index_cache(salted_sha512_hash)
+
         return response.json()
 
     def create_folder(self, database_id: str, folder_name: str, parent_path: str = "/") -> Dict[str, Any]:

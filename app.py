@@ -1679,7 +1679,12 @@ def update_link_settings():
 
         # Update public status and security settings
         uploader.update_file_public_status(file_id, is_public, salted_sha512_hash)
-        uploader.update_file_security_settings(file_id, password_hash=password_hash, expires_at=expires_at)
+        uploader.update_file_security_settings(
+            file_id,
+            password_hash=password_hash,
+            expires_at=expires_at,
+            salted_sha512_hash=salted_sha512_hash,
+        )
 
         # Invalidate cache for user to reflect changes
         with _cache_lock:
