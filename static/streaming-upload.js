@@ -1552,16 +1552,19 @@ async function saveShareSettings() {
     const password = document.getElementById('sharePassword').value;
     const expires = document.getElementById('shareExpires').value;
     try {
+        const body = {
+            file_id: shareTarget.fileId,
+            is_public: isPublic,
+            expires_at: expires || null,
+            salted_sha512_hash: shareTarget.saltedHash
+        };
+        if (password !== '') {
+            body.password = password;
+        }
         const resp = await fetch('/update_link_settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                file_id: shareTarget.fileId,
-                is_public: isPublic,
-                password: password,
-                expires_at: expires || null,
-                salted_sha512_hash: shareTarget.saltedHash
-            })
+            body: JSON.stringify(body)
         });
         const data = await resp.json();
         if (resp.ok && data.status === 'success') {
