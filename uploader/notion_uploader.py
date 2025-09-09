@@ -2588,12 +2588,16 @@ class NotionFileUploader:
                 "Is Public": {
                     "checkbox": is_public
                 },
-                "Password Hash": {
-                    "rich_text": [{"text": {"content": password_hash}}] if password_hash else {"rich_text": []}
-                },
-                "Expires At": {
-                    "rich_text": [{"text": {"content": expires_at}}] if expires_at else {"rich_text": []}
-                }
+                "Password Hash": (
+                    {"rich_text": [{"text": {"content": password_hash}}]}
+                    if password_hash
+                    else {"rich_text": []}
+                ),
+                "Expires At": (
+                    {"rich_text": [{"text": {"content": expires_at}}]}
+                    if expires_at
+                    else {"rich_text": []}
+                ),
             }
         }
 
