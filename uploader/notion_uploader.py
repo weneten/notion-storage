@@ -2118,7 +2118,22 @@ class NotionFileUploader:
             print(f"Error deleting file from Global File Index by hash {salted_sha512_hash}: {e}")
             raise
 
-    def add_file_to_user_database(self, database_id: str, filename: str, file_size: int, file_hash: str, file_upload_id: str, is_public: bool = False, salt: str = "", original_filename: str = None, file_url: str = None, is_manifest: bool = False, folder_path: str = "/") -> Dict[str, Any]:
+    def add_file_to_user_database(
+        self,
+        database_id: str,
+        filename: str,
+        file_size: int,
+        file_hash: str,
+        file_upload_id: str,
+        is_public: bool = False,
+        salt: str = "",
+        original_filename: str = None,
+        file_url: str = None,
+        is_manifest: bool = False,
+        folder_path: str = "/",
+        password_hash: str = None,
+        expires_at: str = None,
+    ) -> Dict[str, Any]:
         """Add a file entry to a user's Notion database with enhanced ID validation"""
         url = f"{self.base_url}/pages"
 
@@ -2215,10 +2230,17 @@ class NotionFileUploader:
             },
             "is_folder": {
                 "checkbox": False
-            },
-            "password_hash": None,
-            "expires_at": None
+            }
         }
+
+        if password_hash is not None:
+            properties["password_hash"] = {
+                "rich_text": [{"text": {"content": password_hash}}] if password_hash else []
+            }
+        if expires_at is not None:
+            properties["expires_at"] = {
+                "rich_text": [{"text": {"content": expires_at}}] if expires_at else []
+            }
         # Add is_manifest property if this is a manifest entry
         if is_manifest:
             properties["is_manifest"] = {"checkbox": True}
@@ -2484,8 +2506,6 @@ class NotionFileUploader:
             "folder_path": {"rich_text": [{"text": {"content": parent_path}}]},
             "is_folder": {"checkbox": True},
             "is_visible": {"checkbox": True},
-            "password_hash": None,
-            "expires_at": None
         }
 
         payload = {"parent": {"database_id": database_id}, "properties": properties}
@@ -2566,35 +2586,36 @@ class NotionFileUploader:
 
         url = f"{self.base_url}/pages"
 
+        properties = {
+            "Salted SHA512 Hash": {
+                "rich_text": [{"text": {"content": salted_sha512_hash}}]
+            },
+            "File Page ID": {
+                "rich_text": [{"text": {"content": file_page_id}}]
+            },
+            "User Database ID": {
+                "rich_text": [{"text": {"content": user_database_id}}]
+            },
+            "Original Filename": {
+                "title": [{"text": {"content": original_filename}}]
+            },
+            "Is Public": {
+                "checkbox": is_public
+            },
+        }
+
+        if password_hash is not None:
+            properties["Password Hash"] = {
+                "rich_text": [{"text": {"content": password_hash}}]
+            }
+        if expires_at is not None:
+            properties["Expires At"] = {
+                "rich_text": [{"text": {"content": expires_at}}]
+            }
+
         payload = {
             "parent": {"database_id": global_index_db_id},
-            "properties": {
-                "Salted SHA512 Hash": {
-                    "rich_text": [{"text": {"content": salted_sha512_hash}}]
-                },
-                "File Page ID": {
-                    "rich_text": [{"text": {"content": file_page_id}}]
-                },
-                "User Database ID": {
-                    "rich_text": [{"text": {"content": user_database_id}}]
-                },
-                "Original Filename": {
-                    "title": [{"text": {"content": original_filename}}]
-                },
-                "Is Public": {
-                    "checkbox": is_public
-                },
-                "Password Hash": (
-                    {"rich_text": [{"text": {"content": password_hash}}]}
-                    if password_hash is not None
-                    else None
-                ),
-                "Expires At": (
-                    {"rich_text": [{"text": {"content": expires_at}}]}
-                    if expires_at is not None
-                    else None
-                ),
-            }
+            "properties": properties,
         }
 
         headers = {**self.headers, "Content-Type": "application/json"}
