@@ -1597,35 +1597,45 @@ class NotionFileUploader:
         except Exception as e:
             raise Exception(f"User creation failed: {str(e)}")
 
-    def ensure_database_property(self, database_id: str, property_name: str, property_type: str, property_config: Optional[Dict[str, Any]] = None) -> bool:
-        """Ensure a property exists in a database, creating it if needed"""
+    def ensure_database_property(
+        self,
+        database_id: str,
+        property_name: str,
+        property_type: str,
+        property_config: Optional[Dict[str, Any]] = None,
+        default_value: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Ensure a property exists in a database, creating it if needed.
+
+        If ``default_value`` is provided and the property is newly created, the
+        value will be applied to all existing pages in the database. This helps
+        when adding new checkbox fields like ``is_visible`` which should default
+        to ``True`` for existing entries.
+        """
         try:
             # First get the database schema
             url = f"{self.base_url}/databases/{database_id}"
             response = requests.get(url, headers=self.headers)
-            
+
             if response.status_code != 200:
                 raise Exception(f"Failed to get database schema: {response.text}")
-                
+
             schema = response.json().get('properties', {})
-            
-            # If property already exists, return
+
+            # If property already exists, nothing else to do
             if property_name in schema:
                 return True
-                
+
             # Create the property with proper configuration based on type
-            url = f"{self.base_url}/databases/{database_id}"
-            
-            # Handle relation properties specially
             if property_type == "relation":
                 if not property_config or "database_id" not in property_config:
                     raise ValueError("Relation properties require a database_id in property_config")
-                
+
                 payload = {
                     "properties": {
                         property_name: {
                             "type": "relation",
-                            "relation": property_config
+                            "relation": property_config,
                         }
                     }
                 }
@@ -1633,30 +1643,74 @@ class NotionFileUploader:
                 payload = {
                     "properties": {
                         property_name: {
-                            property_type: property_config if property_config is not None else {}
+                            property_type: property_config if property_config is not None else {},
                         }
                     }
                 }
-            
+
             response = requests.patch(url, json=payload, headers=self.headers)
-            
+
             if response.status_code != 200:
                 raise Exception(f"Failed to create property: {response.text}")
-            
+
             # Re-fetch the database schema to confirm the property is now present
             response = requests.get(url, headers=self.headers)
             if response.status_code != 200:
-                raise Exception(f"Failed to re-fetch database schema after property creation: {response.text}")
-            
+                raise Exception(
+                    f"Failed to re-fetch database schema after property creation: {response.text}"
+                )
+
             updated_schema = response.json().get('properties', {})
             if property_name in updated_schema:
+                if default_value is not None:
+                    self._backfill_database_property(
+                        database_id, property_name, default_value
+                    )
                 return True
             else:
-                raise Exception(f"Property '{property_name}' was not found in database schema after creation attempt.")
-                
+                raise Exception(
+                    f"Property '{property_name}' was not found in database schema after creation attempt."
+                )
+
         except Exception as e:
             print(f"Error ensuring database property: {e}")
             return False
+
+    def _backfill_database_property(
+        self, database_id: str, property_name: str, property_value: Dict[str, Any]
+    ) -> None:
+        """Set a property's value for all existing pages in a database."""
+        query_url = f"{self.base_url}/databases/{database_id}/query"
+        headers = {**self.headers, "Content-Type": "application/json"}
+        payload: Dict[str, Any] = {}
+
+        try:
+            while True:
+                resp = requests.post(query_url, json=payload, headers=headers)
+                if resp.status_code != 200:
+                    print(
+                        f"Error querying database for backfill of '{property_name}': {resp.text}"
+                    )
+                    return
+                data = resp.json()
+                for page in data.get("results", []):
+                    page_id = page.get("id")
+                    update_url = f"{self.base_url}/pages/{page_id}"
+                    update_payload = {
+                        "properties": {property_name: property_value}
+                    }
+                    upd_resp = requests.patch(
+                        update_url, json=update_payload, headers=headers
+                    )
+                    if upd_resp.status_code != 200:
+                        print(
+                            f"Error updating page {page_id} for backfill of '{property_name}': {upd_resp.text}"
+                        )
+                if not data.get("has_more"):
+                    break
+                payload["start_cursor"] = data.get("next_cursor")
+        except Exception as e:
+            print(f"Error backfilling property '{property_name}': {e}")
 
     def _get_database_properties_map(self, database_id: str) -> Dict[str, Any]:
         """Helper to get a map of property names to their full property objects (including IDs)"""
