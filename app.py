@@ -1338,14 +1338,18 @@ def get_entries_api():
         files_response, _ = get_cached_files(user_database_id)
         files = files_response.get('results', [])
 
+        def _get_prop_text(prop, key='rich_text', default=''):
+            values = prop.get(key, [])
+            return values[0].get('text', {}).get('content', default) if values else default
+
         # Pre-calculate cumulative sizes for all folders
         folder_sizes = defaultdict(int)
         for file_data in files:
             try:
                 properties = file_data.get('properties', {})
-                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                name = _get_prop_text(properties.get('filename', {}), 'title')
                 size = properties.get('filesize', {}).get('number', 0)
-                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                folder_path = _get_prop_text(properties.get('folder_path', {}), default='/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
 
@@ -1366,18 +1370,15 @@ def get_entries_api():
         for file_data in files:
             try:
                 properties = file_data.get('properties', {})
-                name = properties.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+                name = _get_prop_text(properties.get('filename', {}), 'title')
                 size = properties.get('filesize', {}).get('number', 0)
                 file_id = file_data.get('id')
                 is_public = properties.get('is_public', {}).get('checkbox', False)
-                file_hash = properties.get('filehash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                folder_path = properties.get('folder_path', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '/')
+                file_hash = _get_prop_text(properties.get('filehash', {}))
+                folder_path = _get_prop_text(properties.get('folder_path', {}), default='/')
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
-                password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-                expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
-                password_protected = bool(password_hash)
-                password_hash = properties.get('password_hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+                password_hash = _get_prop_text(properties.get('password_hash', {}))
                 expires_at = properties.get('expires_at', {}).get('date', {}).get('start')
                 password_protected = bool(password_hash)
 
