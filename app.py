@@ -716,6 +716,19 @@ def download_folder():
             if entry_path != folder_path and not entry_path.startswith(prefix):
                 continue
 
+            if is_manifest:
+                try:
+                    file_property = props.get('file_data', {})
+                    files_array = file_property.get('files', [])
+                    manifest_file = files_array[0] if files_array else None
+                    manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
+                    manifest_metadata = fetch_download_metadata(entry.get('id'), manifest_filename)
+                    manifest_url = manifest_metadata.get('url', '')
+                    if manifest_url:
+                        manifest = fetch_json_from_url(manifest_url)
+                        name = manifest.get('original_filename', name)
+                except Exception:
+                    pass
             rel_path = entry_path[len(folder_path):].lstrip('/') if entry_path.startswith(folder_path) else ''
             orig_name = (
                 props.get('Original Filename', {})
@@ -737,20 +750,20 @@ def download_folder():
 
         for item in files_to_zip:
             archive_name = (
-                os.path.join(item['rel_path'], item['orig_name'])
+                os.path.join(item['rel_path'], item['name'])
                 if item['rel_path']
-                else item['orig_name']
+                else item['name']
             )
             if item['is_manifest']:
                 z.write_iter(archive_name, uploader.stream_multi_part_file(item['id']))
             else:
-                def file_generator(file_id=item['id'], filename=item['orig_name']):
-                    metadata = fetch_download_metadata(file_id, filename)
+                def file_generator(file_id=item['id'], orig_name=item['orig_name']):
+                    metadata = fetch_download_metadata(file_id, orig_name)
                     url = metadata.get('url')
                     if not url:
                         return
                     yield from uploader.stream_file_from_notion(
-                        file_id, filename, download_url=url
+                        file_id, orig_name, download_url=url
                     )
 
                 z.write_iter(archive_name, file_generator())
@@ -800,6 +813,7 @@ def download_by_hash(salted_sha512_hash):
                 return "Access Denied: You do not have permission to download this file.", 403
 
         file_props = file_details.get('properties', {})
+        display_name = _get_prop_text(file_props.get('filename', {}), 'title', original_filename)
         password_hash = _get_prop_text(file_props.get('password_hash', {}))
         expires_at = _get_prop_text(file_props.get('expires_at', {}))
 
@@ -817,9 +831,9 @@ def download_by_hash(salted_sha512_hash):
             if request.method == 'POST':
                 supplied_password = request.form.get('password', '')
                 if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
-                    return render_template('password_prompt.html', filename=original_filename, error='Invalid password', action='download'), 403
+                    return render_template('password_prompt.html', filename=display_name, error='Invalid password', action='download'), 403
             else:
-                return render_template('password_prompt.html', filename=original_filename, action='download'), 401
+                return render_template('password_prompt.html', filename=display_name, action='download'), 401
 
         # Check if this is a manifest JSON (multi-part file)
         is_manifest = original_filename.lower().endswith('.json')
@@ -841,7 +855,7 @@ def download_by_hash(salted_sha512_hash):
                     return "Manifest file not found", 404
 
                 manifest = fetch_json_from_url(manifest_url)
-                orig_name = manifest.get('original_filename', 'download')
+                orig_name = manifest.get('original_filename', display_name)
                 total_size = manifest.get('total_size', 0)
                 # Use video mimetype if possible, fallback to octet-stream
                 import mimetypes
@@ -908,7 +922,7 @@ def download_by_hash(salted_sha512_hash):
         mimetype = file_metadata['content_type']
         if mimetype == 'application/octet-stream':
             import mimetypes
-            detected_type, _ = mimetypes.guess_type(original_filename)
+            detected_type, _ = mimetypes.guess_type(display_name)
             if detected_type:
                 mimetype = detected_type
         response = Response(
@@ -921,13 +935,13 @@ def download_by_hash(salted_sha512_hash):
             ),
             mimetype=mimetype
         )
-        set_content_disposition(response, 'attachment', original_filename)
+        set_content_disposition(response, 'attachment', display_name)
         if file_metadata['file_size'] > 0:
             response.headers['Content-Length'] = str(file_metadata['file_size'])
             # Avoid printing Unicode emoji to stdout to prevent UnicodeEncodeError in some environments
-            print(f"Download response includes Content-Length: {file_metadata['file_size']} bytes for {original_filename}")
+            print(f"Download response includes Content-Length: {file_metadata['file_size']} bytes for {display_name}")
         else:
-            print(f"No file size available for Content-Length header for {original_filename}")
+            print(f"No file size available for Content-Length header for {display_name}")
         return response
 
     except Exception as e:
@@ -980,6 +994,7 @@ def stream_by_hash(salted_sha512_hash):
                 return "Access Denied: You do not have permission to view this file.", 403
 
         file_props = file_details.get('properties', {})
+        display_name = _get_prop_text(file_props.get('filename', {}), 'title', original_filename)
         password_hash = _get_prop_text(file_props.get('password_hash', {}))
         expires_at = _get_prop_text(file_props.get('expires_at', {}))
 
@@ -997,11 +1012,11 @@ def stream_by_hash(salted_sha512_hash):
             if request.method == 'POST':
                 supplied_password = request.form.get('password', '')
                 if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
-                    return render_template('password_prompt.html', filename=original_filename, error='Invalid password', action='view'), 403
+                    return render_template('password_prompt.html', filename=display_name, error='Invalid password', action='view'), 403
             else:
                 if request.method == 'HEAD':
                     return Response(status=401)
-                return render_template('password_prompt.html', filename=original_filename, action='view'), 401
+                return render_template('password_prompt.html', filename=display_name, action='view'), 401
 
         # Check if this entry is actually a manifest JSON describing a multi-part file
         is_manifest = original_filename.lower().endswith('.json')
@@ -1023,7 +1038,7 @@ def stream_by_hash(salted_sha512_hash):
 
                 manifest = fetch_json_from_url(manifest_url)
 
-                orig_name = manifest.get('original_filename', 'file')
+                orig_name = manifest.get('original_filename', display_name)
                 total_size = manifest.get('total_size', 0)
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
                 disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
@@ -1099,7 +1114,7 @@ def stream_by_hash(salted_sha512_hash):
         file_size = file_metadata['file_size']
         detected_content_type = file_metadata['content_type']
 
-        print(f"📊 Streaming file: {original_filename}, size: {file_size} bytes, type: {detected_content_type}")
+        print(f"📊 Streaming file: {display_name}, size: {file_size} bytes, type: {detected_content_type}")
 
         # Enhanced MIME type detection for media files
         def get_enhanced_mimetype(filename):
@@ -1158,14 +1173,14 @@ def stream_by_hash(salted_sha512_hash):
         # Use detected content type from metadata, with enhanced fallback
         mimetype = detected_content_type
         if mimetype == 'application/octet-stream':
-            mimetype = get_enhanced_mimetype(original_filename)
+            mimetype = get_enhanced_mimetype(display_name)
 
         disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
 
         if request.method == 'HEAD':
             # Respond with headers only, no body
             response = Response(status=200, mimetype=mimetype)
-            set_content_disposition(response, disposition, original_filename)
+            set_content_disposition(response, disposition, display_name)
             if file_size > 0:
                 response.headers['Content-Length'] = str(file_size)
             return add_stream_headers(response, mimetype)
@@ -1227,7 +1242,7 @@ def stream_by_hash(salted_sha512_hash):
 
                 # Create partial content response
                 response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
-                set_content_disposition(response, disposition, original_filename)
+                set_content_disposition(response, disposition, display_name)
                 response.headers['Content-Length'] = str(end - start + 1)
                 
                 # Include total file size in Content-Range if known
@@ -1267,14 +1282,14 @@ def stream_by_hash(salted_sha512_hash):
                 ),
                 mimetype=mimetype
             )
-            set_content_disposition(response, disposition, original_filename)
+            set_content_disposition(response, disposition, display_name)
 
             # Add Content-Length header if file size is available
             if file_size > 0:
                 response.headers['Content-Length'] = str(file_size)
-                print(f"📊 Full content response includes Content-Length: {file_size} bytes for {original_filename}")
+                print(f"📊 Full content response includes Content-Length: {file_size} bytes for {display_name}")
             else:
-                print(f"⚠️ No file size available for Content-Length header for {original_filename}")
+                print(f"⚠️ No file size available for Content-Length header for {display_name}")
                 
             response.headers['Accept-Ranges'] = 'bytes'
             
@@ -1781,6 +1796,17 @@ def update_file_metadata():
 
         if not file_id:
             return jsonify({'error': 'file_id required'}), 400
+
+        if new_name:
+            # Preserve existing file extension if present
+            entry = uploader.get_user_by_id(file_id)
+            props = entry.get('properties', {}) if entry else {}
+            current_name = props.get('filename', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+            extension = ''
+            if '.' in current_name:
+                extension = '.' + current_name.split('.')[-1]
+            base_name = new_name.split('.')[0]
+            new_name = f"{base_name}{extension}"
 
         uploader.update_file_metadata(file_id, filename=new_name, folder_path=new_folder)
         return jsonify({'status': 'success'})

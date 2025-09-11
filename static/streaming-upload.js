@@ -1373,12 +1373,17 @@ function setupFileActionEventHandlers(root = document) {
         btn.addEventListener('click', async function () {
             closeAllDropdowns();
             const fileId = this.dataset.fileId;
-            const newName = prompt('New filename:');
-            if (!newName) return;
+            const row = this.closest('tr');
+            const filenameCell = row ? row.querySelector('td:first-child strong') : null;
+            const currentName = filenameCell ? filenameCell.textContent.trim() : '';
+            const dotIndex = currentName.lastIndexOf('.');
+            const baseName = dotIndex !== -1 ? currentName.slice(0, dotIndex) : currentName;
+            const newBase = prompt('New filename:', baseName);
+            if (newBase === null || newBase.trim() === '') return;
             await fetch('/update_file_metadata', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ file_id: fileId, filename: newName })
+                body: JSON.stringify({ file_id: fileId, filename: newBase })
             });
             refreshServerCache();
             setTimeout(() => {
