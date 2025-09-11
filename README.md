@@ -1,5 +1,14 @@
 # Notion Storage
 
+## Features
+
+- Upload single files or entire folders through the web interface. Large files are
+  streamed and split into multipart uploads automatically.
+- Create, rename, delete, and move files or folders to organize content in a
+  hierarchical structure.
+- Share files with publicly accessible links that can be protected with a
+  password and optional expiration time.
+
 ## Environment Variables
 
 You can configure behavior via a `.env` file. See `.env.example` for a full set
