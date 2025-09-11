@@ -339,7 +339,8 @@ button:hover,
 /* Action buttons container improvements */
 .action-buttons {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    align-items: center;
     gap: 5px;
 }
 
@@ -607,10 +608,9 @@ input:checked + .slider:before {
 
 /* Mobile-specific adjustments for action buttons */
 @media (max-width: 768px) {
-    /* Stack action buttons vertically on small screens */
+    /* Allow action buttons to wrap on small screens */
     .action-buttons {
-        display: flex;
-        flex-direction: column;
+        flex-wrap: wrap;
         gap: 5px;
         align-items: flex-start;
     }
