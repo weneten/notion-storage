@@ -725,8 +725,8 @@ def download_folder():
                     manifest_metadata = fetch_download_metadata(entry.get('id'), manifest_filename)
                     manifest_url = manifest_metadata.get('url', '')
                     if manifest_url:
-                        manifest = fetch_json_from_url(manifest_url)
-                        name = manifest.get('original_filename', name)
+                        # Fetch manifest to ensure it exists but keep user-defined filename
+                        fetch_json_from_url(manifest_url)
                 except Exception:
                     pass
             rel_path = entry_path[len(folder_path):].lstrip('/') if entry_path.startswith(folder_path) else ''
@@ -855,7 +855,8 @@ def download_by_hash(salted_sha512_hash):
                     return "Manifest file not found", 404
 
                 manifest = fetch_json_from_url(manifest_url)
-                orig_name = manifest.get('original_filename', display_name)
+                # Respect the filename stored in Notion so renames are applied
+                orig_name = display_name
                 total_size = manifest.get('total_size', 0)
                 # Use video mimetype if possible, fallback to octet-stream
                 import mimetypes
@@ -1038,7 +1039,8 @@ def stream_by_hash(salted_sha512_hash):
 
                 manifest = fetch_json_from_url(manifest_url)
 
-                orig_name = manifest.get('original_filename', display_name)
+                # Use the filename from Notion to honor user renames
+                orig_name = display_name
                 total_size = manifest.get('total_size', 0)
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
                 disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
@@ -2637,9 +2639,11 @@ def download_multipart_by_page_id(manifest_page_id):
         manifest_page = uploader.get_user_by_id(manifest_page_id)
         if not manifest_page:
             return "Manifest page not found", 404
-        file_property = manifest_page.get('properties', {}).get('file_data', {})
+        props = manifest_page.get('properties', {})
+        file_property = props.get('file_data', {})
         files_array = file_property.get('files', [])
         manifest_file = files_array[0] if files_array else None
+        display_name = _get_prop_text(props.get('filename', {}), 'title', '')
 
         # Use NotionFileUploader's method to get a fresh signed URL for the manifest JSON
         manifest_filename = manifest_file.get('name', 'file.txt') if manifest_file else 'file.txt'
@@ -2649,7 +2653,7 @@ def download_multipart_by_page_id(manifest_page_id):
             return "Manifest file not found", 404
 
         manifest = fetch_json_from_url(manifest_url)
-        orig_name = manifest.get('original_filename', 'download')
+        orig_name = display_name or manifest.get('original_filename', 'download')
         total_size = manifest.get('total_size', 0)
         import mimetypes
         mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
