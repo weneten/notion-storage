@@ -308,18 +308,20 @@ function appendEntries(entries) {
                 <td class="folder-column">${entry.folder}</td>
                 <td class="public-link-column">${link}</td>
                 <td class="public-access-column"><label class="switch"><input type="checkbox" class="public-toggle" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}" ${entry.is_public ? 'checked' : ''}><span class="slider round"></span></label></td>
-                <td class="action-buttons">
-                    ${viewContainer}
-                    <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                            <i class="fas fa-bars"></i>
-                        </button>
-                        <div class="dropdown-menu dropdown-menu-right">
-                            <button type="button" class="dropdown-item rename-btn" data-file-id="${entry.id}"><i class="fas fa-edit mr-1"></i>Rename</button>
-                            <button type="button" class="dropdown-item move-btn" data-file-id="${entry.id}"><i class="fas fa-folder-open mr-1"></i>Move</button>
-                            <button type="button" class="dropdown-item share-btn" data-file-id="${entry.id}"><i class="fas fa-share-alt mr-1"></i>Share...</button>
-                            <button type="button" class="dropdown-item delete-btn" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                <td>
+                    <div class="action-buttons">
+                        ${viewContainer}
+                        <a href="/d/${entry.file_hash}" class="btn btn-primary btn-sm"><i class="fas fa-download mr-1"></i>Download</a>
+                        <div class="btn-group">
+                            <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                                <i class="fas fa-bars"></i>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-right">
+                                <button type="button" class="dropdown-item rename-btn" data-file-id="${entry.id}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                                <button type="button" class="dropdown-item move-btn" data-file-id="${entry.id}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                                <button type="button" class="dropdown-item share-btn" data-file-id="${entry.id}"><i class="fas fa-share-alt mr-1"></i>Share...</button>
+                                <button type="button" class="dropdown-item delete-btn" data-file-id="${entry.id}" data-file-hash="${entry.file_hash || ''}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                            </div>
                         </div>
                     </div>
                 </td>`;
@@ -1025,20 +1027,22 @@ function renderEntries(entries) {
                         <span class="slider round"></span>
                     </label>
                 </td>
-                <td class="action-buttons">
-                    ${viewContainer}
-                    <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
-                        <i class="fas fa-download mr-1"></i>Download
-                    </a>
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
-                            <i class="fas fa-bars"></i>
-                        </button>
-                        <div class="dropdown-menu dropdown-menu-right">
-                            <button type="button" class="dropdown-item rename-btn" data-file-id="${fileId}"><i class="fas fa-edit mr-1"></i>Rename</button>
-                            <button type="button" class="dropdown-item move-btn" data-file-id="${fileId}"><i class="fas fa-folder-open mr-1"></i>Move</button>
-                            <button type="button" class="dropdown-item share-btn" data-file-id="${fileId}"><i class="fas fa-share-alt mr-1"></i>Share...</button>
-                            <button type="button" class="dropdown-item delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                <td>
+                    <div class="action-buttons">
+                        ${viewContainer}
+                        <a href="/d/${fileHash}" class="btn btn-primary btn-sm">
+                            <i class="fas fa-download mr-1"></i>Download
+                        </a>
+                        <div class="btn-group">
+                            <button type="button" class="btn btn-secondary btn-sm dropdown-toggle" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+                                <i class="fas fa-bars"></i>
+                            </button>
+                            <div class="dropdown-menu dropdown-menu-right">
+                                <button type="button" class="dropdown-item rename-btn" data-file-id="${fileId}"><i class="fas fa-edit mr-1"></i>Rename</button>
+                                <button type="button" class="dropdown-item move-btn" data-file-id="${fileId}"><i class="fas fa-folder-open mr-1"></i>Move</button>
+                                <button type="button" class="dropdown-item share-btn" data-file-id="${fileId}"><i class="fas fa-share-alt mr-1"></i>Share...</button>
+                                <button type="button" class="dropdown-item delete-btn" data-file-id="${fileId}" data-file-hash="${fileHash}"><i class="fas fa-trash-alt mr-1"></i>Delete</button>
+                            </div>
                         </div>
                     </div>
                 </td>

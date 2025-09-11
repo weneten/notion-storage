@@ -260,14 +260,16 @@ async function loadFiles() {
                             <span class="slider round"></span>
                         </label>
                     </td>
-                    <td class="action-buttons">
-                        <span class="view-button-container" data-filename="${file.name}" data-hash="${saltedHash}" data-filesize="${formatFileSize(file.size)}"></span>
-                        <a href="/d/${saltedHash}" class="btn btn-primary btn-sm">
-                            <i class="fas fa-download mr-1"></i>Download
-                        </a>
-                        <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}">
-                            <i class="fas fa-trash-alt mr-1"></i>Delete
-                        </button>
+                    <td>
+                        <div class="action-buttons">
+                            <span class="view-button-container" data-filename="${file.name}" data-hash="${saltedHash}" data-filesize="${formatFileSize(file.size)}"></span>
+                            <a href="/d/${saltedHash}" class="btn btn-primary btn-sm">
+                                <i class="fas fa-download mr-1"></i>Download
+                            </a>
+                            <button class="btn btn-danger btn-sm delete-btn" data-file-id="${fileId}">
+                                <i class="fas fa-trash-alt mr-1"></i>Delete
+                            </button>
+                        </div>
                     </td>
                 </tr>
             `;
