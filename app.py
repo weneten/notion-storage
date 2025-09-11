@@ -817,9 +817,9 @@ def download_by_hash(salted_sha512_hash):
             if request.method == 'POST':
                 supplied_password = request.form.get('password', '')
                 if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
-                    return render_template('password_prompt.html', filename=original_filename, error='Invalid password'), 403
+                    return render_template('password_prompt.html', filename=original_filename, error='Invalid password', action='download'), 403
             else:
-                return render_template('password_prompt.html', filename=original_filename), 401
+                return render_template('password_prompt.html', filename=original_filename, action='download'), 401
 
         # Check if this is a manifest JSON (multi-part file)
         is_manifest = original_filename.lower().endswith('.json')
@@ -937,7 +937,7 @@ def download_by_hash(salted_sha512_hash):
         return "An error occurred during download.", 500
 
 
-@app.route('/v/<salted_sha512_hash>', methods=['GET', 'HEAD'])
+@app.route('/v/<salted_sha512_hash>', methods=['GET', 'POST', 'HEAD'])
 def stream_by_hash(salted_sha512_hash):
     """
     Stream a file by hash with HTTP range support.
@@ -979,6 +979,30 @@ def stream_by_hash(salted_sha512_hash):
             if file_user_db_id != current_user_db_id:
                 return "Access Denied: You do not have permission to view this file.", 403
 
+        file_props = file_details.get('properties', {})
+        password_hash = _get_prop_text(file_props.get('password_hash', {}))
+        expires_at = _get_prop_text(file_props.get('expires_at', {}))
+
+        if expires_at:
+            try:
+                expiry_dt = datetime.fromisoformat(expires_at)
+                now = datetime.now(expiry_dt.tzinfo or timezone.utc)
+                if expiry_dt < now:
+                    return "Link expired", 403
+            except Exception:
+                pass
+
+        if password_hash:
+            hashed_bytes = base64.b64decode(password_hash)
+            if request.method == 'POST':
+                supplied_password = request.form.get('password', '')
+                if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
+                    return render_template('password_prompt.html', filename=original_filename, error='Invalid password', action='view'), 403
+            else:
+                if request.method == 'HEAD':
+                    return Response(status=401)
+                return render_template('password_prompt.html', filename=original_filename, action='view'), 401
+
         # Check if this entry is actually a manifest JSON describing a multi-part file
         is_manifest = original_filename.lower().endswith('.json')
         if is_manifest:
@@ -1002,12 +1026,13 @@ def stream_by_hash(salted_sha512_hash):
                 orig_name = manifest.get('original_filename', 'file')
                 total_size = manifest.get('total_size', 0)
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
+                disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
 
                 if request.method == 'HEAD':
                     response = Response(status=200, mimetype=mimetype)
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
-                    set_content_disposition(response, 'inline', orig_name)
+                    set_content_disposition(response, disposition, orig_name)
                     return add_stream_headers(response, mimetype)
 
                 range_header = request.headers.get('Range')
@@ -1048,7 +1073,7 @@ def stream_by_hash(salted_sha512_hash):
                     if total_size > 0:
                         response.headers['Content-Length'] = str(total_size)
 
-                set_content_disposition(response, 'inline', orig_name)
+                set_content_disposition(response, disposition, orig_name)
                 response.headers['Accept-Ranges'] = 'bytes'
                 response.headers['Cache-Control'] = 'public, max-age=3600, must-revalidate'
                 response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -1135,10 +1160,12 @@ def stream_by_hash(salted_sha512_hash):
         if mimetype == 'application/octet-stream':
             mimetype = get_enhanced_mimetype(original_filename)
 
+        disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
+
         if request.method == 'HEAD':
             # Respond with headers only, no body
             response = Response(status=200, mimetype=mimetype)
-            set_content_disposition(response, 'inline', original_filename)
+            set_content_disposition(response, disposition, original_filename)
             if file_size > 0:
                 response.headers['Content-Length'] = str(file_size)
             return add_stream_headers(response, mimetype)
@@ -1200,7 +1227,7 @@ def stream_by_hash(salted_sha512_hash):
 
                 # Create partial content response
                 response = Response(stream_with_context(stream_range()), mimetype=mimetype, status=206)
-                set_content_disposition(response, 'inline', original_filename)
+                set_content_disposition(response, disposition, original_filename)
                 response.headers['Content-Length'] = str(end - start + 1)
                 
                 # Include total file size in Content-Range if known
@@ -1240,7 +1267,7 @@ def stream_by_hash(salted_sha512_hash):
                 ),
                 mimetype=mimetype
             )
-            set_content_disposition(response, 'inline', original_filename)
+            set_content_disposition(response, disposition, original_filename)
 
             # Add Content-Length header if file size is available
             if file_size > 0:
