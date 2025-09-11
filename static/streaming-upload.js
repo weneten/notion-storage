@@ -925,6 +925,17 @@ async function loadFiles() {
         }
 
         renderEntries(data.entries);
+
+        // After a manual refresh (e.g. deletion), clear any pagination
+        // state so background loaders don't re-append stale entries.
+        // The /api/entries endpoint already returns the complete listing
+        // for the current folder, so any leftover cursor from previous
+        // sync operations would cause deleted items to reappear when
+        // fetchRemainingEntries runs.  Resetting these globals ensures the
+        // UI reflects the latest state immediately.
+        window.nextCursor = null;
+        window.cacheTimestamp = Date.now();
+
         refreshServerCache();
     } catch (error) {
         console.error('🚨 DIAGNOSTIC: Error loading files:', error);
