@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, g, Response, stream_with_context
+from flask import Flask, request, jsonify, render_template, redirect, url_for, g, Response, stream_with_context
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_socketio import SocketIO
 from flask_cors import CORS
@@ -813,22 +813,13 @@ def download_by_hash(salted_sha512_hash):
                 pass
 
         if password_hash:
-            verified_hashes = session.get('verified_hashes', {})
-            if isinstance(verified_hashes, list):
-                # Backward compatibility for older sessions storing a list
-                verified_hashes = {h: None for h in verified_hashes}
-
-            cached_hash = verified_hashes.get(salted_sha512_hash)
-            if cached_hash != password_hash:
-                hashed_bytes = base64.b64decode(password_hash)
-                if request.method == 'POST':
-                    supplied_password = request.form.get('password', '')
-                    if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
-                        return render_template('password_prompt.html', filename=original_filename, error='Invalid password'), 403
-                    verified_hashes[salted_sha512_hash] = password_hash
-                    session['verified_hashes'] = verified_hashes
-                else:
-                    return render_template('password_prompt.html', filename=original_filename), 401
+            hashed_bytes = base64.b64decode(password_hash)
+            if request.method == 'POST':
+                supplied_password = request.form.get('password', '')
+                if not (supplied_password and bcrypt.checkpw(supplied_password.encode('utf-8'), hashed_bytes)):
+                    return render_template('password_prompt.html', filename=original_filename, error='Invalid password'), 403
+            else:
+                return render_template('password_prompt.html', filename=original_filename), 401
 
         # Check if this is a manifest JSON (multi-part file)
         is_manifest = original_filename.lower().endswith('.json')
