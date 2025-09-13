@@ -912,12 +912,27 @@ async function loadFiles() {
         console.log('🔍 DIAGNOSTIC: Fetching entry list from /api/entries...');
 
         const folderParam = encodeURIComponent(window.currentFolder || '/');
-        const response = await fetch(`/api/entries?folder=${folderParam}`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch file list');
+        const response = await fetch(`/api/entries?folder=${folderParam}`, {
+            credentials: 'include'
+        });
+
+        if (response.redirected) {
+            window.location.href = response.url;
+            return;
         }
 
-        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(`Failed to fetch file list (${response.status})`);
+        }
+
+        let data;
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            throw new Error(`Unexpected response: ${text.slice(0, 100)}`);
+        }
         console.log('🔍 DIAGNOSTIC: API Response received:', data);
 
         if (!data.entries) {
