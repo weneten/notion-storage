@@ -760,7 +760,10 @@ class NotionStreamingUploader:
 
                 stream_iter = iter(stream_generator)
                 leftover = b""
-                parts_metadata = []
+                # Track part metadata directly on the upload session so that
+                # concurrent uploads don't accidentally share state.
+                upload_session['parts_metadata'] = []
+                parts_metadata = upload_session['parts_metadata']
                 total_uploaded = 0
 
                 # Upload parts in background threads so incoming data can keep
@@ -786,6 +789,8 @@ class NotionStreamingUploader:
                                 )
                                 with parts_lock:
                                     upload_session['uploaded_parts'].append(db_entry['id'])
+                                    # Store part details on the session's
+                                    # metadata list (scoped per upload).
                                     parts_metadata.append({
                                         "part_number": idx,
                                         "filename": part_filename,
@@ -941,6 +946,7 @@ class NotionStreamingUploader:
                 })
 
                 upload_session.pop('uploaded_parts', None)
+                upload_session.pop('parts_metadata', None)
                 return {
                     "status": "finalizing",
                     "split": True,
