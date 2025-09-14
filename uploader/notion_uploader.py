@@ -764,10 +764,17 @@ class NotionFileUploader:
             
             # Get file size from Notion file properties if available
             file_size = self.get_file_size_from_notion(page_info, original_filename)
-            
+
             # If not available from Notion, try to get it from the download URL
             if file_size == 0:
                 file_size = self.get_file_size_from_url(file_url)
+
+            if file_size == 0:
+                error_msg = (
+                    f"Unable to determine file size for page {page_id} and file {original_filename}"
+                )
+                print(error_msg)
+                raise ValueError(error_msg)
             
             # Determine content type
             content_type = self.get_content_type_from_filename(original_filename)
@@ -1015,17 +1022,44 @@ class NotionFileUploader:
 
         single_threshold = _parse_size(os.getenv("NOTION_SINGLE_PART_THRESHOLD", str(20 * 1024 * 1024)), 20 * 1024 * 1024)
         if total_size <= single_threshold:  # Single-part limit
-            return self.upload_single_file_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
+            upload_result = self.upload_single_file_stream(file_stream, filename, database_id, content_type, total_size, original_filename)
         else:
-            return self.upload_large_file_multipart_stream(
-                file_stream, 
-                filename, 
-                database_id, 
-                content_type, 
-                total_size, 
+            upload_result = self.upload_large_file_multipart_stream(
+                file_stream,
+                filename,
+                database_id,
+                content_type,
+                total_size,
                 original_filename,
                 existing_upload_info=existing_upload_info
             )
+
+        # Create the database page for this file immediately so we can store metadata
+        page = self.add_file_to_user_database(
+            database_id,
+            filename,
+            total_size,
+            "",
+            upload_result["file_upload_id"],
+            original_filename=original_filename,
+            file_url=upload_result.get("download_link")
+        )
+
+        page_id = page.get("id")
+
+        # Re-fetch and ensure filesize is recorded correctly
+        try:
+            page_info = self.get_user_by_id(page_id) if page_id else None
+            stored_size = page_info.get('properties', {}).get('filesize', {}).get('number', 0) if page_info else 0
+            if stored_size == 0:
+                computed_size = total_size or self.get_file_size_from_url(upload_result.get("download_link", ""))
+                if computed_size > 0 and page_id:
+                    self.update_file_entry(page_id, {"filesize": {"number": computed_size}})
+        except Exception as e:
+            print(f"Error ensuring filesize metadata: {e}")
+
+        upload_result["page_id"] = page_id
+        return upload_result
 
     def upload_single_file_stream(self, file_stream: Iterable[bytes], filename: str, database_id: str, content_type: str, file_size: int, original_filename: str = None) -> Dict[str, Any]:
         """Handles the upload of a single file from a stream to user's database."""
@@ -2282,6 +2316,16 @@ class NotionFileUploader:
         print(f"  - These IDs serve different purposes and should never be confused")
         return result
 
+    def update_file_entry(self, page_id: str, properties: Dict[str, Any]) -> Dict[str, Any]:
+        """Update arbitrary properties on a file entry page."""
+        url = f"{self.base_url}/pages/{page_id}"
+        payload = {"properties": properties}
+        headers = {**self.headers, "Content-Type": "application/json"}
+        response = requests.patch(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            raise Exception(f"Failed to update file entry: {response.text}")
+        return response.json()
+
     def get_file_by_salted_sha512_hash(self, salted_sha512_hash: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         """
         Queries the Global File Index database for a file by its salted SHA512 hash,
@@ -2705,16 +2749,14 @@ class NotionFileUploader:
                 self._abort_multipart_upload(upload_info['upload_url'], upload_info['upload_id'])
                 raise
 
-    def upload_file_stream(self, stream: Iterable[bytes], filename: str, user_id: str, total_size: int, 
-                          existing_upload_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Handle file upload with proper streaming support"""
+    def upload_file_stream_simple(self, stream: Iterable[bytes], filename: str, user_id: str, total_size: int,
+                                  existing_upload_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Legacy simplified streaming upload interface."""
         try:
             if existing_upload_info:
-                # Use existing multipart upload info
                 print("Using existing multipart upload info")
                 return self.handle_streaming_upload(stream, total_size, existing_upload_info)
             else:
-                # Create new upload for small files
                 print(f"Creating single-part upload for {filename}")
                 upload_info = self.create_file_upload(self.get_mime_type(filename))
                 return self.handle_streaming_upload(stream, total_size, upload_info)

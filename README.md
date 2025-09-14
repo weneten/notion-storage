@@ -26,3 +26,9 @@ of defaults and inline docs. Key settings:
 Notes:
 - Multipart uploads are used for files larger than 20MiB. The multipart part size must be set between 5MiB and 20MiB.
 - Defaults are applied automatically if a variable is not present in `.env`.
+
+## Notes
+
+- The `/v/<hash>` download endpoint uses the stored `filesize` property to set
+  an accurate `Content-Length` header. Uploads must record a correct `filesize`
+  or the header may report `0`.
