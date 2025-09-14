@@ -210,7 +210,10 @@ class _PresignedStream:
                     end = int(end_str)
                     target_bytes = end - start + 1
                     if self._resp.status_code == 200:
-                        skip = start
+                        self.close()
+                        raise requests.HTTPError(
+                            "Requested byte range not honored", response=self._resp
+                        )
 
                 bytes_read = 0
                 for chunk in self._resp.iter_content(chunk_size=self.chunk_size):
@@ -235,8 +238,8 @@ class _PresignedStream:
                         if chunk:
                             yield chunk
                 return
-            except Exception:
-                if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1:
+            except Exception as e:
+                if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1 or isinstance(e, requests.HTTPError):
                     raise
                 time.sleep(2**attempt)
             finally:
