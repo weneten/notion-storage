@@ -187,12 +187,30 @@ async function loadFiles() {
         console.log('Refreshing file list with AJAX...');
         // Fetch the file list data from the API
         const folderParam = encodeURIComponent(window.currentFolder || '/');
-        const response = await fetch(`/files-api?folder=${folderParam}`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch file list');
+        const response = await fetch(`/files-api?folder=${folderParam}`, {
+            credentials: 'include'
+        });
+
+        if (response.redirected) {
+            // If the user was redirected (e.g. session expired), follow the redirect
+            window.location.href = response.url;
+            return;
         }
 
-        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(`Failed to fetch file list (${response.status})`);
+        }
+
+        // Ensure the response is JSON before attempting to parse
+        let data;
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+            data = await response.json();
+        } else {
+            const text = await response.text();
+            throw new Error(`Unexpected response: ${text.slice(0, 100)}`);
+        }
+
         if (!data.files) {
             throw new Error('Invalid response format');
         }
