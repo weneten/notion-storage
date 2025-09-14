@@ -387,6 +387,41 @@ def add_stream_headers(resp, mimetype=''):
         resp.headers.setdefault('Content-Transfer-Encoding', 'binary')
     return resp
 
+
+def parse_byte_range(range_header: str, total_size: int):
+    """Parse a HTTP Range header into a (start, end) tuple.
+
+    Returns ``None`` if the header is malformed or unsatisfiable.
+    """
+    if not range_header:
+        return None
+    range_value = range_header.strip().lower()
+    if '=' not in range_value:
+        return None
+    units, range_spec = range_value.split('=', 1)
+    if units != 'bytes':
+        return None
+    range_start, range_end = range_spec.split('-', 1)
+    try:
+        if range_start and range_end:
+            start = int(range_start)
+            end = int(range_end)
+        elif range_start and not range_end:
+            start = int(range_start)
+            end = total_size - 1
+        elif not range_start and range_end:
+            suffix_length = int(range_end)
+            start = max(0, total_size - suffix_length)
+            end = total_size - 1
+        else:
+            return None
+    except ValueError:
+        return None
+
+    if total_size > 0 and (start < 0 or end >= total_size or start > end):
+        return None
+    return start, end
+
 # Initialize Flask-Login
 login_manager = LoginManager()
 login_manager.init_app(app)
@@ -1051,9 +1086,21 @@ def stream_by_hash(salted_sha512_hash):
                 disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
 
                 if request.method == 'HEAD':
-                    response = Response(status=200, mimetype=mimetype)
-                    if total_size > 0:
-                        response.headers['Content-Length'] = str(total_size)
+                    range_header = request.headers.get('Range')
+                    if range_header and total_size > 0:
+                        parsed = parse_byte_range(range_header, total_size)
+                        if not parsed:
+                            response = Response(status=416)
+                            response.headers['Content-Range'] = f'bytes */{total_size}'
+                            return response
+                        start, end = parsed
+                        response = Response(status=206, mimetype=mimetype)
+                        response.headers['Content-Length'] = str(end - start + 1)
+                        response.headers['Content-Range'] = f'bytes {start}-{end}/{total_size}'
+                    else:
+                        response = Response(status=200, mimetype=mimetype)
+                        if total_size > 0:
+                            response.headers['Content-Length'] = str(total_size)
                     set_content_disposition(response, disposition, orig_name)
                     return add_stream_headers(response, mimetype)
 
@@ -1185,11 +1232,22 @@ def stream_by_hash(salted_sha512_hash):
         disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
 
         if request.method == 'HEAD':
-            # Respond with headers only, no body
-            response = Response(status=200, mimetype=mimetype)
+            range_header = request.headers.get('Range')
+            if range_header and file_size > 0:
+                parsed = parse_byte_range(range_header, file_size)
+                if not parsed:
+                    response = Response(status=416)
+                    response.headers['Content-Range'] = f'bytes */{file_size}'
+                    return response
+                start, end = parsed
+                response = Response(status=206, mimetype=mimetype)
+                response.headers['Content-Length'] = str(end - start + 1)
+                response.headers['Content-Range'] = f'bytes {start}-{end}/{file_size}'
+            else:
+                response = Response(status=200, mimetype=mimetype)
+                if file_size > 0:
+                    response.headers['Content-Length'] = str(file_size)
             set_content_disposition(response, disposition, display_name)
-            if file_size > 0:
-                response.headers['Content-Length'] = str(file_size)
             return add_stream_headers(response, mimetype)
 
         # Parse Range header for partial content requests
