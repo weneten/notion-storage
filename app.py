@@ -429,6 +429,11 @@ def fetch_json_from_url(url: str) -> Dict[str, Any]:
         resp.raise_for_status()
         return resp.json() if resp.headers.get('content-type','').startswith('application/json') else json.loads(resp.content)
 
+
+def calculate_manifest_total_size(manifest: Dict[str, Any]) -> int:
+    """Calculate total file size from a manifest's parts array."""
+    return sum(part.get('size', 0) for part in manifest.get('parts', []))
+
 # User class for Flask-Login
 class User(UserMixin):
     def __init__(self, id, username, password_hash):
@@ -857,7 +862,7 @@ def download_by_hash(salted_sha512_hash):
                 manifest = fetch_json_from_url(manifest_url)
                 # Respect the filename stored in Notion so renames are applied
                 orig_name = display_name
-                total_size = manifest.get('total_size', 0)
+                total_size = calculate_manifest_total_size(manifest)
                 # Use video mimetype if possible, fallback to octet-stream
                 import mimetypes
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
@@ -1041,7 +1046,7 @@ def stream_by_hash(salted_sha512_hash):
 
                 # Use the filename from Notion to honor user renames
                 orig_name = display_name
-                total_size = manifest.get('total_size', 0)
+                total_size = calculate_manifest_total_size(manifest)
                 mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
                 disposition = 'inline' if mimetype.startswith(('video/', 'audio/', 'image/')) else 'attachment'
 
@@ -2654,7 +2659,7 @@ def download_multipart_by_page_id(manifest_page_id):
 
         manifest = fetch_json_from_url(manifest_url)
         orig_name = display_name or manifest.get('original_filename', 'download')
-        total_size = manifest.get('total_size', 0)
+        total_size = calculate_manifest_total_size(manifest)
         import mimetypes
         mimetype = mimetypes.guess_type(orig_name)[0] or 'application/octet-stream'
 
