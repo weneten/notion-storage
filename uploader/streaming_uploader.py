@@ -632,33 +632,68 @@ class NotionStreamingUploader:
         upload loop can continue accepting data without waiting for database
         operations to complete.
         """
-        max_attempts = 3
-        for attempt in range(1, max_attempts + 1):
-            db_entry = self.notion_uploader.add_file_to_user_database(
-                database_id=user_database_id,
-                filename=part_filename,
-                file_size=part_size,
-                file_hash=part_salted_hash,
-                file_upload_id=notion_file_upload_id,
-                is_public=False,
-                salt=part_salt,
-                original_filename=original_filename,
-                file_url=file_url,
-                # Store part entries at root to avoid orphaned parts when moving folders
-                folder_path='/'
-            )
+        max_attempts = 5
+        last_error: Optional[Exception] = None
+        db_entry: Optional[Dict[str, Any]] = None
 
-            if self._validate_file_attachment(db_entry, notion_file_upload_id):
-                break
+        for attempt in range(1, max_attempts + 1):
+            try:
+                db_entry = self.notion_uploader.add_file_to_user_database(
+                    database_id=user_database_id,
+                    filename=part_filename,
+                    file_size=part_size,
+                    file_hash=part_salted_hash,
+                    file_upload_id=notion_file_upload_id,
+                    is_public=False,
+                    salt=part_salt,
+                    original_filename=original_filename,
+                    file_url=file_url,
+                    # Store part entries at root to avoid orphaned parts when moving folders
+                    folder_path='/'
+                )
+            except Exception as exc:
+                last_error = exc
+                print(
+                    f"WARNING: Failed to add part {part_filename} to database (attempt {attempt}/{max_attempts}): {exc}"
+                )
+            else:
+                page_id = db_entry.get('id') if isinstance(db_entry, dict) else None
+                if not page_id:
+                    last_error = Exception(
+                        f"Missing page id for part {part_filename} (attempt {attempt}/{max_attempts})"
+                    )
+                else:
+                    try:
+                        refreshed_entry = self.notion_uploader.get_user_by_id(page_id)
+                        if refreshed_entry:
+                            db_entry = refreshed_entry
+                    except Exception as exc:
+                        last_error = exc
+                        print(
+                            f"WARNING: Failed to refresh part {part_filename} metadata (attempt {attempt}/{max_attempts}): {exc}"
+                        )
+                    else:
+                        if self._validate_file_attachment(db_entry, notion_file_upload_id):
+                            last_error = None
+                            break
+                        last_error = Exception(
+                            f"Validation failed for part {part_filename} (attempt {attempt}/{max_attempts})"
+                        )
+                        print(
+                            f"WARNING: Validation failed for part {part_filename} (attempt {attempt}/{max_attempts}), retrying..."
+                        )
 
             if attempt == max_attempts:
                 raise Exception(
                     f"Failed to attach part {part_filename} after {max_attempts} attempts"
-                )
-            print(
-                f"WARNING: Validation failed for part {part_filename} (attempt {attempt}/{max_attempts}), retrying..."
+                ) from last_error
+
+            time.sleep(0.5 * attempt)
+
+        if db_entry is None:
+            raise Exception(
+                f"Failed to store part {part_filename} metadata after retries"
             )
-            time.sleep(1)
 
         if self.notion_uploader.global_file_index_db_id:
             self.notion_uploader.add_file_to_index(
@@ -772,6 +807,10 @@ class NotionStreamingUploader:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as upload_executor:
                     part_futures: List[concurrent.futures.Future] = []
                     parts_lock = threading.Lock()
+                    callback_errors: List[Exception] = []
+                    callback_errors_lock = threading.Lock()
+                    callback_state = {"completed": 0}
+                    callback_state_lock = threading.Lock()
 
                     def make_callback(idx, part_filename, part_size, part_salted_hash, part_salt):
                         def _callback(fut: concurrent.futures.Future) -> None:
@@ -800,6 +839,11 @@ class NotionStreamingUploader:
                                     })
                             except Exception as e:
                                 print(f"ERROR: Failed to store part {idx} metadata: {e}")
+                                with callback_errors_lock:
+                                    callback_errors.append(e)
+                            finally:
+                                with callback_state_lock:
+                                    callback_state["completed"] += 1
                         return _callback
 
                     for idx, part_size in enumerate(part_sizes, start=1):
@@ -841,7 +885,29 @@ class NotionStreamingUploader:
                         upload_session['last_activity'] = time.time()
 
                     concurrent.futures.wait(part_futures)
+
+                    while True:
+                        with callback_state_lock:
+                            completed_callbacks = callback_state["completed"]
+                        if completed_callbacks >= len(part_futures):
+                            break
+                        time.sleep(0.01)
+
+                    for future in part_futures:
+                        exc = future.exception()
+                        if exc is not None:
+                            raise exc
+
+                    if callback_errors:
+                        first_error = callback_errors[0]
+                        raise RuntimeError("One or more part metadata callbacks failed") from first_error
+
                     parts_metadata.sort(key=lambda x: x["part_number"])
+
+                    if len(parts_metadata) != len(part_sizes):
+                        raise RuntimeError(
+                            "Upload completed but part metadata is incomplete"
+                        )
 
                     if total_uploaded != file_size:
                         raise ValueError(
