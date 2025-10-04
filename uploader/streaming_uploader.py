@@ -11,7 +11,7 @@ import time
 import hashlib
 import uuid
 import secrets
-from typing import Optional, Callable, Dict, Any, List
+from typing import Optional, Callable, Dict, Any, List, Set
 import concurrent.futures
 import queue
 import requests
@@ -735,6 +735,7 @@ class NotionStreamingUploader:
         part_session: Dict[str, Any],
         chunk_queue: queue.Queue,
         part_size: int,
+        start_event: Optional[threading.Event] = None,
     ) -> Dict[str, str]:
         """Upload a part by streaming bytes from ``chunk_queue``.
 
@@ -742,6 +743,9 @@ class NotionStreamingUploader:
         worker consumes them and uploads to Notion. It returns the Notion file
         upload ID and resulting file URL so the caller can persist metadata
         once the hash is known."""
+
+        if start_event is not None:
+            start_event.set()
 
         def file_generator():
             while True:
@@ -806,6 +810,8 @@ class NotionStreamingUploader:
                 # finish for each part.
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as upload_executor:
                     part_futures: List[concurrent.futures.Future] = []
+                    inflight_futures: Set[concurrent.futures.Future] = set()
+                    executor_max_workers = getattr(upload_executor, "_max_workers", 1) or 1
                     parts_lock = threading.Lock()
                     callback_errors: List[Exception] = []
                     callback_errors_lock = threading.Lock()
@@ -847,17 +853,36 @@ class NotionStreamingUploader:
                         return _callback
 
                     for idx, part_size in enumerate(part_sizes, start=1):
+                        inflight_futures = {f for f in inflight_futures if not f.done()}
+                        while len(inflight_futures) >= executor_max_workers:
+                            _, not_done = concurrent.futures.wait(
+                                inflight_futures,
+                                return_when=concurrent.futures.FIRST_COMPLETED,
+                            )
+                            inflight_futures = set(not_done)
+
                         part_filename = f"{filename}.part{idx}"
                         part_session = self.create_upload_session(part_filename, part_size, user_database_id)
                         part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
 
                         chunk_queue: queue.Queue = queue.Queue(maxsize=4)
+                        worker_started = threading.Event()
                         future = upload_executor.submit(
                             self._upload_part_worker,
                             part_session,
                             chunk_queue,
                             part_size,
+                            worker_started,
                         )
+
+                        inflight_futures.add(future)
+                        part_futures.append(future)
+
+                        while not worker_started.wait(timeout=0.1):
+                            if future.done():
+                                # Propagate errors if the worker failed before signaling readiness.
+                                future.result()
+                                break
 
                         for chunk in part_stream:
                             chunk_queue.put(chunk)
@@ -881,7 +906,6 @@ class NotionStreamingUploader:
                         future.add_done_callback(
                             make_callback(idx, part_filename, part_size, part_salted_hash, part_salt)
                         )
-                        part_futures.append(future)
                         upload_session['last_activity'] = time.time()
 
                     concurrent.futures.wait(part_futures)
