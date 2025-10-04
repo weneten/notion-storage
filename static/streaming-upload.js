@@ -7,6 +7,129 @@
 // Track uploads awaiting database integration before refreshing UI
 window.pendingUploads = window.pendingUploads || new Set();
 
+const PENDING_UPLOAD_POLL_INTERVAL_MS = 2000;
+
+function ensurePendingUploadState() {
+    if (!window.__pendingUploadState) {
+        window.__pendingUploadState = {
+            waiters: [],
+            active: false,
+            timerId: null,
+        };
+    }
+    return window.__pendingUploadState;
+}
+
+function clearPendingUploadTimer() {
+    const state = ensurePendingUploadState();
+    if (state.timerId) {
+        clearTimeout(state.timerId);
+        state.timerId = null;
+    }
+    state.active = false;
+}
+
+function resolvePendingUploadWaiters() {
+    const state = ensurePendingUploadState();
+    const waiters = state.waiters.splice(0, state.waiters.length);
+    clearPendingUploadTimer();
+    waiters.forEach(({ resolve }) => resolve());
+}
+
+function rejectPendingUploadWaiters(error) {
+    const state = ensurePendingUploadState();
+    const waiters = state.waiters.splice(0, state.waiters.length);
+    clearPendingUploadTimer();
+    waiters.forEach(({ reject }) => reject(error));
+}
+
+function updatePendingUploadStatusMessage() {
+    if (!window.pendingUploads || window.pendingUploads.size === 0) {
+        return;
+    }
+    const count = window.pendingUploads.size;
+    const plural = count === 1 ? '' : 's';
+    showStatus(`Waiting for server to finalize ${count} upload${plural}...`, 'info');
+}
+
+async function pollPendingUploadsOnce() {
+    const state = ensurePendingUploadState();
+    if (!window.pendingUploads || window.pendingUploads.size === 0) {
+        resolvePendingUploadWaiters();
+        return;
+    }
+
+    const ids = Array.from(window.pendingUploads);
+    try {
+        await Promise.all(ids.map(async (uploadId) => {
+            const response = await (window.fetch ? window.fetch(`/api/upload/status/${encodeURIComponent(uploadId)}`) : fetch(`/api/upload/status/${encodeURIComponent(uploadId)}`));
+            if (!response.ok) {
+                throw new Error(`Failed to finalize upload ${uploadId}`);
+            }
+            const data = await response.json();
+            if (data.status === 'failed' || data.status === 'error') {
+                const message = data.error || data.message || `Upload ${uploadId} failed to finalize.`;
+                throw new Error(message);
+            }
+            if (data.status === 'completed' || data.status === 'finalized') {
+                window.pendingUploads.delete(uploadId);
+            }
+        }));
+    } catch (error) {
+        rejectPendingUploadWaiters(error);
+        return;
+    }
+
+    if (!window.pendingUploads || window.pendingUploads.size === 0) {
+        resolvePendingUploadWaiters();
+        return;
+    }
+
+    updatePendingUploadStatusMessage();
+
+    state.timerId = setTimeout(() => {
+        pollPendingUploadsOnce().catch(err => {
+            rejectPendingUploadWaiters(err);
+        });
+    }, PENDING_UPLOAD_POLL_INTERVAL_MS);
+}
+
+function finalizePendingUpload(uploadId) {
+    if (!window.pendingUploads) {
+        return;
+    }
+    window.pendingUploads.delete(uploadId);
+    if (window.pendingUploads.size === 0) {
+        resolvePendingUploadWaiters();
+    } else {
+        updatePendingUploadStatusMessage();
+    }
+}
+
+async function waitForPendingUploads() {
+    if (!window.pendingUploads || window.pendingUploads.size === 0) {
+        return;
+    }
+
+    const state = ensurePendingUploadState();
+    updatePendingUploadStatusMessage();
+
+    const promise = new Promise((resolve, reject) => {
+        state.waiters.push({ resolve, reject });
+    });
+
+    if (!state.active) {
+        state.active = true;
+        pollPendingUploadsOnce().catch(err => {
+            rejectPendingUploadWaiters(err);
+        });
+    }
+
+    return promise;
+}
+
+window.waitForPendingUploads = waitForPendingUploads;
+
 // Essential utility functions for UI updates
 function showStatus(message, type) {
     const messageContainer = document.getElementById('messageContainer');
@@ -780,13 +903,16 @@ const uploadFile = async () => {
         uploadForm.reset();
     }
 
-    showStatus('Finalizing uploads...', 'info');
-
-    setTimeout(() => {
+    try {
+        await waitForPendingUploads();
+        showStatus('Uploads finalized and ready to view.', 'success');
         if (progressContainer) {
             progressContainer.innerHTML = '';
         }
-    }, 3000);
+    } catch (error) {
+        console.error('Pending upload finalization failed:', error);
+        showStatus(`Upload finalization failed: ${error.message}`, 'error');
+    }
 };
 
 async function resumeFailedUpload() {
@@ -832,13 +958,64 @@ async function resumeFailedUpload() {
             window.pendingUploads.add(result.upload_id);
         }
         showStatus(`File "${file.name}" uploaded successfully!`, 'success');
-        showStatus('Finalizing uploads...', 'info');
+        try {
+            await waitForPendingUploads();
+            showStatus('Uploads finalized and ready to view.', 'success');
+            const progressContainer = document.getElementById('progressBars');
+            if (progressContainer) {
+                progressContainer.innerHTML = '';
+            }
+        } catch (error) {
+            console.error('Pending upload finalization failed:', error);
+            showStatus(`Upload finalization failed: ${error.message}`, 'error');
+        }
     } catch (error) {
         console.error('Resume upload error:', error);
         showStatus(`Resume failed: ${error.message}`, 'error');
         showRetryButton();
     }
 }
+
+function handleUploadProgressEvent(data) {
+    if (!data) {
+        return;
+    }
+
+    const progressBar = document.getElementById('progressBar');
+    const progressText = document.getElementById('progressText');
+    const progressSubText = document.getElementById('progressSubText');
+
+    if (progressBar && data.percentage !== undefined) {
+        const percentage = Math.min(data.percentage, 95);
+        progressBar.style.width = percentage + '%';
+        if (progressText) {
+            progressText.textContent = percentage.toFixed(0) + '%';
+        }
+
+        if (progressSubText && data.bytes_uploaded !== undefined && data.total_bytes !== undefined) {
+            const uploadedFormatted = formatFileSize(data.bytes_uploaded);
+            const totalFormatted = formatFileSize(data.total_bytes);
+            progressSubText.textContent = `${uploadedFormatted} / ${totalFormatted}`;
+        }
+    }
+
+    if (data.status === 'completed') {
+        updateProgressBar(100, 'Upload complete');
+        if (data.file_id) {
+            showStatus(`File uploaded successfully. ID: ${data.file_id}`, 'success');
+        }
+        if (data.upload_id) {
+            finalizePendingUpload(data.upload_id);
+        }
+        setTimeout(() => {
+            if (typeof loadFiles === 'function') {
+                loadFiles();
+            }
+        }, 500);
+    }
+}
+
+window.handleUploadProgressEvent = handleUploadProgressEvent;
 
 // Initialize when page loads
 document.addEventListener('DOMContentLoaded', function () {

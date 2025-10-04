@@ -236,33 +236,8 @@
 
         // Socket event handlers for upload progress
         socket.on('upload_progress', function (data) {
-            const progressBar = document.getElementById('progressBar');
-            const progressText = document.getElementById('progressText');
-            const progressSubText = document.getElementById('progressSubText');
-
-            if (progressBar && data.percentage !== undefined) {
-                const percentage = Math.min(data.percentage, 95); // Cap at 95% until finalization
-                progressBar.style.width = percentage + '%';
-                progressText.textContent = percentage.toFixed(0) + '%';
-
-                if (data.bytes_uploaded !== undefined && data.total_bytes !== undefined) {
-                    const uploadedFormatted = formatFileSize(data.bytes_uploaded);
-                    const totalFormatted = formatFileSize(data.total_bytes);
-                    progressSubText.textContent = `${uploadedFormatted} / ${totalFormatted}`;
-                }
-            }
-
-            if (data.status === 'completed') {
-                updateProgressBar(100, 'Upload complete');
-                showStatus(`File uploaded successfully. ID: ${data.file_id}`, 'success');
-                if (data.upload_id && window.pendingUploads) {
-                    window.pendingUploads.delete(data.upload_id);
-                }
-                setTimeout(() => {
-                    if (typeof loadFiles === 'function') {
-                        loadFiles();
-                    }
-                }, 500);
+            if (typeof window.handleUploadProgressEvent === 'function') {
+                window.handleUploadProgressEvent(data);
             }
         });
 
