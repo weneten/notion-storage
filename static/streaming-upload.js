@@ -71,7 +71,7 @@ async function pollPendingUploadsOnce() {
                 const message = data.error || data.message || `Upload ${uploadId} failed to finalize.`;
                 throw new Error(message);
             }
-            if (data.status === 'completed' || data.status === 'finalized') {
+            if (data.status === 'completed' || data.status === 'finalized' || data.status === 'success') {
                 window.pendingUploads.delete(uploadId);
             }
         }));
