@@ -1,6 +1,7 @@
 import os
 import sys
 import threading
+import time
 import types
 from typing import Any, Dict, Optional
 
@@ -97,7 +98,9 @@ def uploader(monkeypatch):
     monkeypatch.setattr(NotionStreamingUploader, "SPLIT_THRESHOLD", 4)
     monkeypatch.setattr(NotionStreamingUploader, "SINGLE_PART_THRESHOLD", 4)
 
-    def fake_worker(self, part_session, chunk_queue, part_size):
+    def fake_worker(self, part_session, chunk_queue, part_size, start_event=None):
+        if start_event is not None:
+            start_event.set()
         data = b""
         while True:
             chunk = chunk_queue.get()
@@ -159,3 +162,68 @@ def test_process_stream_aborts_on_persistent_database_errors(uploader):
     ids = list(fake.pages.keys())
     assert all(".file.json" not in page_id for page_id in ids)
     assert all("bigfile.part1" not in page_id for page_id in ids)
+
+
+def test_streaming_uploader_waits_for_available_workers(monkeypatch):
+    fake = FakeNotionUploader()
+    uploader = NotionStreamingUploader(api_token="token", notion_uploader=fake)
+    monkeypatch.setattr(NotionStreamingUploader, "SPLIT_THRESHOLD", 4)
+    monkeypatch.setattr(NotionStreamingUploader, "SINGLE_PART_THRESHOLD", 4)
+
+    active = 0
+    max_active = 0
+    active_lock = threading.Lock()
+    processed_parts: list[str] = []
+
+    def slow_worker(self, part_session, chunk_queue, part_size, start_event=None):
+        nonlocal active, max_active
+        if start_event is not None:
+            start_event.set()
+        local_total = 0
+        with active_lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            while True:
+                chunk = chunk_queue.get()
+                if chunk is None:
+                    break
+                local_total += len(chunk)
+                time.sleep(0.05)
+            assert local_total == part_size
+            processed_parts.append(part_session["filename"])
+            return {
+                "file_upload_id": f"upload-{part_session['filename']}",
+                "file_url": f"https://example.com/{part_session['filename']}",
+            }
+        finally:
+            with active_lock:
+                active -= 1
+
+    monkeypatch.setattr(NotionStreamingUploader, "_upload_part_worker", slow_worker, raising=False)
+    monkeypatch.setattr(
+        NotionStreamingUploader,
+        "_upload_to_notion_single_part",
+        lambda self, user_database_id, metadata_filename, stream, size: {
+            "file_upload_id": "meta-upload",
+            "result": {"file": {"url": "https://example.com/meta"}},
+        },
+        raising=False,
+    )
+
+    total_parts = 5
+    part_size = 4
+    session = uploader.create_upload_session("slowfile", total_parts * part_size, "db1")
+
+    def stream_gen():
+        for idx in range(total_parts):
+            yield bytes([97 + (idx % 26)]) * part_size
+
+    result = uploader.process_stream(session, stream_gen())
+
+    assert result["status"] == "finalizing"
+    assert result["split"] is True
+    assert len(result["parts"]) == total_parts
+    assert len(processed_parts) == total_parts
+    assert max_active <= 3
+    assert active == 0
