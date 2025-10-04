@@ -97,7 +97,7 @@ context.window.fetch = async (url) => {{
     results.fetchCount += 1;
     return {{
         ok: true,
-        json: async () => ({{ status: 'completed' }}),
+        json: async () => ({{ status: 'success' }}),
     }};
 }};
 
