@@ -23,6 +23,7 @@ import uuid
 import random
 import string
 import json
+import re
 from flask_socketio import emit
 from collections import defaultdict
 import gc
@@ -161,6 +162,26 @@ def clear_user_credentials(user_id: Optional[str] = None) -> None:
             _user_auth_cache.clear()
         else:
             _user_auth_cache.pop(user_id, None)
+
+
+_HTTP_STATUS_RE = re.compile(r"HTTP\s+(\d{3})")
+
+
+def _extract_http_status_code(exc: Exception) -> Optional[int]:
+    """Attempt to extract an HTTP status code from an exception."""
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    match = _HTTP_STATUS_RE.search(str(exc))
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+    return None
 
 def _purge_stale_cache_locked():
     """Remove expired cache entries and enforce size limit."""
@@ -515,7 +536,10 @@ def load_user(user_id):
     try:
         user_data = uploader.get_user_by_id(user_id)
     except Exception as e:
+        status_code = _extract_http_status_code(e)
         if cached:
+            if status_code in {404, 410}:
+                clear_user_credentials(user_id)
             app.logger.warning("Failed to refresh user %s from Notion, using cached credentials: %s", user_id, e)
             return User(
                 id=user_id,
