@@ -247,6 +247,7 @@ def test_load_user_returns_cached_user_on_notion_error(monkeypatch):
 
     cache_user_credentials = app_module.cache_user_credentials
     clear_user_credentials = app_module.clear_user_credentials
+    get_cached_user_credentials = app_module.get_cached_user_credentials
 
     user_id = "user-123"
     username = "alice"
@@ -265,6 +266,8 @@ def test_load_user_returns_cached_user_on_notion_error(monkeypatch):
         assert user.id == user_id
         assert user.username == username
         assert user.password_hash == password_hash
+        cached = get_cached_user_credentials(user_id)
+        assert cached is not None
     finally:
         clear_user_credentials(user_id)
 
@@ -366,6 +369,43 @@ def test_load_user_respects_deletion(monkeypatch):
     try:
         user = app_module.load_user(user_id)
         assert user is None
+        assert get_cached_user_credentials(user_id) is None
+    finally:
+        clear_user_credentials(user_id)
+
+
+def test_load_user_clears_cache_on_notion_not_found(monkeypatch):
+    if "app" in sys.modules:
+        app_module = sys.modules["app"]
+    else:
+        class _NoopTimer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(threading, "Timer", lambda *args, **kwargs: _NoopTimer(*args, **kwargs))
+        app_module = importlib.import_module("app")
+
+    cache_user_credentials = app_module.cache_user_credentials
+    clear_user_credentials = app_module.clear_user_credentials
+    get_cached_user_credentials = app_module.get_cached_user_credentials
+
+    user_id = "user-404"
+    username = "carol"
+    password_hash = base64.b64encode(b"pw").decode("utf-8")
+    cache_user_credentials(user_id, username, password_hash)
+
+    def raiser(*args, **kwargs):
+        raise Exception("Failed to get user by ID: HTTP 404 - not found")
+
+    monkeypatch.setattr(app_module.uploader, "get_user_by_id", raiser)
+
+    try:
+        user = app_module.load_user(user_id)
+        assert user is not None
+        assert user.id == user_id
         assert get_cached_user_credentials(user_id) is None
     finally:
         clear_user_credentials(user_id)
