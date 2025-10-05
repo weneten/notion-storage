@@ -16,7 +16,7 @@ import base64
 import bcrypt
 import mimetypes
 import traceback
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import threading
 import time
 import uuid
@@ -133,6 +133,34 @@ CACHE_TTL = 600  # 10 minutes
 CACHE_MAX_USERS = 100
 _user_cache = OrderedDict()  # user_id -> {"data": ..., "timestamp": ...}
 _cache_lock = threading.RLock()
+
+# -------------------------------------------------------------
+# Authentication cache for Flask-Login user loading
+# -------------------------------------------------------------
+_user_auth_cache: Dict[str, Dict[str, str]] = {}
+_auth_cache_lock = threading.RLock()
+
+
+def get_cached_user_credentials(user_id: str) -> Optional[Dict[str, str]]:
+    with _auth_cache_lock:
+        cached = _user_auth_cache.get(user_id)
+        return dict(cached) if cached else None
+
+
+def cache_user_credentials(user_id: str, username: str, password_hash: str) -> None:
+    with _auth_cache_lock:
+        _user_auth_cache[user_id] = {
+            "username": username,
+            "password_hash": password_hash,
+        }
+
+
+def clear_user_credentials(user_id: Optional[str] = None) -> None:
+    with _auth_cache_lock:
+        if user_id is None:
+            _user_auth_cache.clear()
+        else:
+            _user_auth_cache.pop(user_id, None)
 
 def _purge_stale_cache_locked():
     """Remove expired cache entries and enforce size limit."""
@@ -483,14 +511,30 @@ class User(UserMixin):
 
 @login_manager.user_loader
 def load_user(user_id):
+    cached = get_cached_user_credentials(user_id)
+    if cached:
+        return User(
+            id=user_id,
+            username=cached.get("username", ""),
+            password_hash=cached.get("password_hash", ""),
+        )
+
     try:
         user_data = uploader.get_user_by_id(user_id)
         if user_data:
             username = user_data.get('properties', {}).get('Name', {}).get('title', [{}])[0].get('text', {}).get('content', '')
             password_hash = user_data.get('properties', {}).get('Password-Hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+            cache_user_credentials(user_id, username, password_hash)
             return User(id=user_id, username=username, password_hash=password_hash)
     except Exception as e:
-        print(f"Error loading user: {e}")
+        if cached:
+            app.logger.warning("Failed to refresh user %s from Notion, using cached credentials: %s", user_id, e)
+            return User(
+                id=user_id,
+                username=cached.get("username", ""),
+                password_hash=cached.get("password_hash", ""),
+            )
+        app.logger.error("Error loading user %s: %s", user_id, e)
     return None
 
 @app.route('/')
@@ -546,6 +590,7 @@ def login():
 
             # Check password
             if user.check_password(password):
+                cache_user_credentials(user_id, username, password_hash)
                 login_user(user)
                 # Explicitly set folder=/ so the URL shows the root folder
                 return redirect(url_for('home', folder='/'))
@@ -643,6 +688,8 @@ def change_password():
         try:
             # Update user password in Notion
             uploader.update_user_password(current_user.id, new_password_hash)
+            current_user.password_hash = new_password_hash
+            cache_user_credentials(current_user.id, current_user.username, new_password_hash)
             return redirect(url_for('home'))
         except Exception as e:
             return f"Error changing password: {str(e)}", 500
@@ -677,6 +724,7 @@ def change_username():
             # Update username in Notion
             uploader.update_user_username(current_user.id, new_username)
             current_user.username = new_username
+            cache_user_credentials(current_user.id, new_username, current_user.password_hash)
             return redirect(url_for('home'))
         except Exception as e:
             return f"Error changing username: {str(e)}", 500
