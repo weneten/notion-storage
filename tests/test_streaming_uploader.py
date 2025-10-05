@@ -1,3 +1,5 @@
+import base64
+import importlib
 import os
 import sys
 import threading
@@ -22,7 +24,6 @@ sys.modules["uploader.s3_downloader"] = s3_dummy
 sys.modules["s3_downloader"] = s3_dummy
 
 import pytest
-
 from uploader.streaming_uploader import NotionStreamingUploader
 
 
@@ -227,3 +228,41 @@ def test_streaming_uploader_waits_for_available_workers(monkeypatch):
     assert len(processed_parts) == total_parts
     assert max_active <= 3
     assert active == 0
+
+
+def test_load_user_returns_cached_user_on_notion_error(monkeypatch):
+    if "app" in sys.modules:
+        app_module = sys.modules["app"]
+    else:
+        class _NoopTimer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(threading, "Timer", lambda *args, **kwargs: _NoopTimer(*args, **kwargs))
+        app_module = importlib.import_module("app")
+
+    cache_user_credentials = app_module.cache_user_credentials
+    clear_user_credentials = app_module.clear_user_credentials
+
+    user_id = "user-123"
+    username = "alice"
+    password_hash = base64.b64encode(b"secret").decode("utf-8")
+
+    cache_user_credentials(user_id, username, password_hash)
+
+    def raiser(*args, **kwargs):
+        raise RuntimeError("transient error")
+
+    monkeypatch.setattr(app_module.uploader, "get_user_by_id", raiser)
+
+    try:
+        user = app_module.load_user(user_id)
+        assert user is not None
+        assert user.id == user_id
+        assert user.username == username
+        assert user.password_hash == password_hash
+    finally:
+        clear_user_credentials(user_id)
