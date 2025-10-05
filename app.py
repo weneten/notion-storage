@@ -512,20 +512,8 @@ class User(UserMixin):
 @login_manager.user_loader
 def load_user(user_id):
     cached = get_cached_user_credentials(user_id)
-    if cached:
-        return User(
-            id=user_id,
-            username=cached.get("username", ""),
-            password_hash=cached.get("password_hash", ""),
-        )
-
     try:
         user_data = uploader.get_user_by_id(user_id)
-        if user_data:
-            username = user_data.get('properties', {}).get('Name', {}).get('title', [{}])[0].get('text', {}).get('content', '')
-            password_hash = user_data.get('properties', {}).get('Password-Hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
-            cache_user_credentials(user_id, username, password_hash)
-            return User(id=user_id, username=username, password_hash=password_hash)
     except Exception as e:
         if cached:
             app.logger.warning("Failed to refresh user %s from Notion, using cached credentials: %s", user_id, e)
@@ -535,7 +523,17 @@ def load_user(user_id):
                 password_hash=cached.get("password_hash", ""),
             )
         app.logger.error("Error loading user %s: %s", user_id, e)
-    return None
+        return None
+
+    if not user_data:
+        if cached:
+            clear_user_credentials(user_id)
+        return None
+
+    username = user_data.get('properties', {}).get('Name', {}).get('title', [{}])[0].get('text', {}).get('content', '')
+    password_hash = user_data.get('properties', {}).get('Password-Hash', {}).get('rich_text', [{}])[0].get('text', {}).get('content', '')
+    cache_user_credentials(user_id, username, password_hash)
+    return User(id=user_id, username=username, password_hash=password_hash)
 
 @app.route('/')
 @login_required
