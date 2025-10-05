@@ -20,6 +20,7 @@ s3_dummy.download_file = _noop
 s3_dummy.download_file_from_url = _noop
 s3_dummy.stream_file_from_url = _noop
 s3_dummy.stream_file_range_from_url = _noop
+s3_dummy.cleanup_stale_streams = _noop
 sys.modules["uploader.s3_downloader"] = s3_dummy
 sys.modules["s3_downloader"] = s3_dummy
 
@@ -264,5 +265,107 @@ def test_load_user_returns_cached_user_on_notion_error(monkeypatch):
         assert user.id == user_id
         assert user.username == username
         assert user.password_hash == password_hash
+    finally:
+        clear_user_credentials(user_id)
+
+
+def test_load_user_refreshes_cached_credentials(monkeypatch):
+    if "app" in sys.modules:
+        app_module = sys.modules["app"]
+    else:
+        class _NoopTimer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(threading, "Timer", lambda *args, **kwargs: _NoopTimer(*args, **kwargs))
+        app_module = importlib.import_module("app")
+
+    cache_user_credentials = app_module.cache_user_credentials
+    clear_user_credentials = app_module.clear_user_credentials
+    get_cached_user_credentials = app_module.get_cached_user_credentials
+
+    user_id = "user-456"
+    cached_username = "old-alice"
+    cached_hash = base64.b64encode(b"old-secret").decode("utf-8")
+    cache_user_credentials(user_id, cached_username, cached_hash)
+
+    refreshed_username = "new-alice"
+    refreshed_hash = base64.b64encode(b"new-secret").decode("utf-8")
+    user_data = {
+        "properties": {
+            "Name": {
+                "title": [
+                    {
+                        "text": {
+                            "content": refreshed_username,
+                        }
+                    }
+                ]
+            },
+            "Password-Hash": {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": refreshed_hash,
+                        }
+                    }
+                ]
+            },
+        }
+    }
+
+    calls = []
+
+    def fake_get_user_by_id(requested_user_id):
+        calls.append(requested_user_id)
+        return user_data
+
+    monkeypatch.setattr(app_module.uploader, "get_user_by_id", fake_get_user_by_id)
+
+    try:
+        user = app_module.load_user(user_id)
+        assert calls == [user_id]
+        assert user is not None
+        assert user.username == refreshed_username
+        assert user.password_hash == refreshed_hash
+        cached = get_cached_user_credentials(user_id)
+        assert cached["username"] == refreshed_username
+        assert cached["password_hash"] == refreshed_hash
+    finally:
+        clear_user_credentials(user_id)
+
+
+def test_load_user_respects_deletion(monkeypatch):
+    if "app" in sys.modules:
+        app_module = sys.modules["app"]
+    else:
+        class _NoopTimer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return None
+
+        monkeypatch.setattr(threading, "Timer", lambda *args, **kwargs: _NoopTimer(*args, **kwargs))
+        app_module = importlib.import_module("app")
+
+    cache_user_credentials = app_module.cache_user_credentials
+    clear_user_credentials = app_module.clear_user_credentials
+    get_cached_user_credentials = app_module.get_cached_user_credentials
+
+    user_id = "user-789"
+    username = "bob"
+    password_hash = base64.b64encode(b"password").decode("utf-8")
+    cache_user_credentials(user_id, username, password_hash)
+
+    monkeypatch.setattr(app_module.uploader, "get_user_by_id", lambda uid: None)
+
+    try:
+        user = app_module.load_user(user_id)
+        assert user is None
+        assert get_cached_user_credentials(user_id) is None
     finally:
         clear_user_credentials(user_id)
