@@ -82,6 +82,12 @@ def cleanup_old_sessions():
                         removed_session = manager.active_uploads.pop(upload_id, None)
                         manager.session_locks.pop(upload_id, None)
                         if removed_session:
+                            timer = removed_session.get('_orphan_cleanup_timer')
+                            if timer:
+                                try:
+                                    timer.cancel()
+                                except Exception:
+                                    pass
                             expired_sessions.append({
                                 'upload_id': upload_id,
                                 'status': removed_session.get('status'),
@@ -116,7 +122,15 @@ def cleanup_old_sessions():
     cleanup_stale_streams()
     gc.collect()
     # Schedule next check
-    threading.Timer(60, cleanup_old_sessions).start()
+    try:
+        next_timer = threading.Timer(60, cleanup_old_sessions)
+        try:
+            next_timer.daemon = True
+        except Exception:
+            pass
+        next_timer.start()
+    except Exception as timer_error:
+        print(f"Error scheduling session cleanup timer: {timer_error}")
     
 # Load environment variables from .env file
 load_dotenv()
@@ -503,6 +517,12 @@ uploader = NotionFileUploader(
     socketio=socketio,
     global_file_index_db_id=GLOBAL_FILE_INDEX_DB_ID
 )
+
+if not hasattr(uploader, 'get_user_by_id'):
+    def _missing_get_user_by_id(*args, **kwargs):
+        raise NotImplementedError("get_user_by_id is not implemented on the configured uploader")
+
+    setattr(uploader, 'get_user_by_id', _missing_get_user_by_id)
 
 # Initialize streaming upload manager
 streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, socketio=socketio, notion_uploader=uploader)
