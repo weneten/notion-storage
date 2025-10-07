@@ -8,6 +8,7 @@
 window.pendingUploads = window.pendingUploads || new Set();
 
 const PENDING_UPLOAD_POLL_INTERVAL_MS = 2000;
+const UPLOAD_HEARTBEAT_INTERVAL_MS = 20000;
 
 function ensurePendingUploadState() {
     if (!window.__pendingUploadState) {
@@ -493,6 +494,7 @@ class StreamingFileUploader {
         this.activeUploads = new Map();
         this.defaultChunkSize = 64 * 1024; // 64KB read chunks for streaming (much smaller than before)
         this.failedUpload = null;
+        this.heartbeatIntervalMs = UPLOAD_HEARTBEAT_INTERVAL_MS;
     }
 
     /**
@@ -571,71 +573,82 @@ class StreamingFileUploader {
         const controller = new AbortController();
 
         // Store upload info for potential cancellation
-        this.activeUploads.set(uploadId, {
+        const uploadInfo = {
             file: file,
             controller: controller,
             startTime: Date.now(),
             bytesUploaded: 0
+        };
+        uploadInfo.stopHeartbeat = this._startUploadHeartbeat(uploadId);
+        this.activeUploads.set(uploadId, uploadInfo);
+
+        // Use XMLHttpRequest for better progress tracking and streaming
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            let finalized = false;
+
+            const finalize = (callback) => {
+                if (finalized) {
+                    return;
+                }
+                finalized = true;
+                try {
+                    this._cleanupActiveUpload(uploadId);
+                } finally {
+                    callback();
+                }
+            };
+
+            // Set up progress tracking
+            xhr.upload.onprogress = (event) => {
+                if (event.lengthComputable) {
+                    const progress = (event.loaded / event.total) * 100;
+                    const info = this.activeUploads.get(uploadId);
+                    if (info) {
+                        info.bytesUploaded = event.loaded;
+                    }
+                    progressCallback(progress, event.loaded);
+                }
+            };
+
+            // Handle completion
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try {
+                        const result = JSON.parse(xhr.responseText);
+                        finalize(() => resolve(result));
+                    } catch (e) {
+                        finalize(() => reject(new Error('Invalid response format')));
+                    }
+                } else {
+                    finalize(() => reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`)));
+                }
+            };
+
+            // Handle errors
+            xhr.onerror = () => {
+                finalize(() => reject(new Error('Upload failed: Network error')));
+            };
+
+            // Handle abort
+            xhr.onabort = () => {
+                finalize(() => reject(new Error('Upload was cancelled')));
+            };
+
+            // Open connection
+            xhr.open('POST', `/api/upload/stream/${uploadId}`, true);
+
+            // Set headers
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+            xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+            xhr.setRequestHeader('X-File-Size', file.size.toString());
+
+            // Send the file directly
+            xhr.send(file);
         });
+    }
 
-        try {
-            // Use XMLHttpRequest for better progress tracking and streaming
-            return new Promise((resolve, reject) => {
-                const xhr = new XMLHttpRequest();
-
-                // Set up progress tracking
-                xhr.upload.onprogress = (event) => {
-                    if (event.lengthComputable) {
-                        const progress = (event.loaded / event.total) * 100;
-                        const info = this.activeUploads.get(uploadId);
-                        if (info) {
-                            info.bytesUploaded = event.loaded;
-                        }
-                        progressCallback(progress, event.loaded);
-                    }
-                };
-
-                // Handle completion
-                xhr.onload = () => {
-                    if (xhr.status >= 200 && xhr.status < 300) {
-                        try {
-                            const result = JSON.parse(xhr.responseText);
-                            resolve(result);
-                        } catch (e) {
-                            reject(new Error('Invalid response format'));
-                        }
-                    } else {
-                        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
-                    }
-                };
-
-                // Handle errors
-                xhr.onerror = () => {
-                    reject(new Error('Upload failed: Network error'));
-                };
-
-                // Handle abort
-                xhr.onabort = () => {
-                    reject(new Error('Upload was cancelled'));
-                };
-
-                // Open connection
-                xhr.open('POST', `/api/upload/stream/${uploadId}`, true);
-
-                // Set headers
-                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-                xhr.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
-                xhr.setRequestHeader('X-File-Size', file.size.toString());
-
-                // Send the file directly
-                xhr.send(file);
-            });
-
-        } finally {
-            // Cleanup
-            this.activeUploads.delete(uploadId);
-        }
-    }/**
+    /**
      * Create a ReadableStream from a File object
      * This streams the file in small chunks without loading everything into memory
      */
@@ -693,12 +706,14 @@ class StreamingFileUploader {
         }
         const { file, bytesUploaded } = info;
         const controller = new AbortController();
-        this.activeUploads.set(uploadId, {
+        const uploadInfo = {
             file,
             controller,
             startTime: Date.now(),
             bytesUploaded
-        });
+        };
+        uploadInfo.stopHeartbeat = this._startUploadHeartbeat(uploadId);
+        this.activeUploads.set(uploadId, uploadInfo);
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             xhr.upload.onprogress = (event) => {
@@ -727,7 +742,7 @@ class StreamingFileUploader {
             const slice = file.slice(bytesUploaded);
             xhr.send(slice);
         }).finally(() => {
-            this.activeUploads.delete(uploadId);
+            this._cleanupActiveUpload(uploadId);
             delete this.failedUpload;
         });
     }
@@ -738,14 +753,85 @@ class StreamingFileUploader {
     abortUpload(uploadId) {
         const uploadInfo = this.activeUploads.get(uploadId);
         if (uploadInfo) {
-            uploadInfo.controller.abort();
-            this.activeUploads.delete(uploadId);
+            try {
+                uploadInfo.controller.abort();
+            } catch (err) {
+                console.warn('Abort controller failed to cancel upload:', err);
+            }
+            this._cleanupActiveUpload(uploadId);
 
             // Notify server about cancellation
             fetch(`/api/upload/abort/${uploadId}`, {
                 method: 'POST'
             }).catch(err => console.warn('Failed to notify server about upload cancellation:', err));
         }
+    }
+
+    _startUploadHeartbeat(uploadId) {
+        const intervalMs = this.heartbeatIntervalMs;
+        if (!intervalMs || intervalMs <= 0) {
+            return () => {};
+        }
+
+        const globalObj = typeof window !== 'undefined' ? window : globalThis;
+        const fetchFn = (globalObj && typeof globalObj.fetch === 'function') ? globalObj.fetch.bind(globalObj) : (typeof fetch === 'function' ? fetch : null);
+        const scheduleInterval = (globalObj && typeof globalObj.setInterval === 'function') ? globalObj.setInterval.bind(globalObj) : (typeof setInterval === 'function' ? setInterval : null);
+        const clearIntervalFn = (globalObj && typeof globalObj.clearInterval === 'function') ? globalObj.clearInterval.bind(globalObj) : (typeof clearInterval === 'function' ? clearInterval : null);
+
+        if (!fetchFn || !scheduleInterval || !clearIntervalFn) {
+            return () => {};
+        }
+
+        let stopped = false;
+
+        const sendHeartbeat = async () => {
+            if (stopped) {
+                return;
+            }
+            try {
+                await fetchFn(`/api/upload/heartbeat/${encodeURIComponent(uploadId)}`, {
+                    method: 'POST',
+                    keepalive: true,
+                    headers: { 'Accept': 'application/json' }
+                });
+            } catch (error) {
+                console.warn('Upload heartbeat failed:', error);
+            }
+        };
+
+        // Immediately ping the server so long transfers register activity
+        sendHeartbeat();
+        const timerId = scheduleInterval(sendHeartbeat, intervalMs);
+
+        return () => {
+            if (stopped) {
+                return;
+            }
+            stopped = true;
+            if (timerId !== undefined && timerId !== null) {
+                try {
+                    clearIntervalFn(timerId);
+                } catch (err) {
+                    console.warn('Failed to clear upload heartbeat timer:', err);
+                }
+            }
+        };
+    }
+
+    _cleanupActiveUpload(uploadId) {
+        const info = this.activeUploads.get(uploadId);
+        if (!info) {
+            return;
+        }
+        if (info.stopHeartbeat) {
+            try {
+                info.stopHeartbeat();
+            } catch (err) {
+                console.warn('Failed to stop upload heartbeat:', err);
+            }
+            delete info.stopHeartbeat;
+        }
+        this.activeUploads.delete(uploadId);
     }
 
     /**
