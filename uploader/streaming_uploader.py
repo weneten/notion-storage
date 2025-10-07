@@ -1449,6 +1449,8 @@ class StreamingUploadManager:
         self.upload_lock = threading.Lock()          # Master lock for upload operations
         self.session_locks: Dict[str, threading.Lock] = {}  # Per-session locks
         self.id_tracking_lock = threading.Lock()     # Lock for ID tracking operations
+        self._timer_factory = threading.Timer        # Allows tests to inject deterministic timers
+        self._orphan_cleanup_delay_seconds = 300     # Five minute grace period before deleting orphaned parts
         
         print("🔒 THREAD SAFETY: StreamingUploadManager initialized with enhanced synchronization")
     
@@ -1515,6 +1517,10 @@ class StreamingUploadManager:
             except Exception as e:
                 print(f"🔒 THREAD SAFETY: Processing failed for {upload_id}: {e}")
                 upload_session['status'] = 'failed'
+                try:
+                    self._schedule_orphan_cleanup(upload_id)
+                except Exception as cleanup_error:
+                    print(f"Warning: Failed to schedule orphan cleanup for {upload_id}: {cleanup_error}")
                 raise
             finally:
                 # Clean up completed/failed uploads
@@ -1529,7 +1535,7 @@ class StreamingUploadManager:
                         if session_status == 'completed' and upload_id in self.session_locks:
                             del self.session_locks[upload_id]
                             print(f"🔒 THREAD SAFETY: Cleaned up session lock for {upload_id}")
-    
+
     def get_upload_status(self, upload_id: str) -> Optional[Dict[str, Any]]:
         """
         Get the status of an upload session
@@ -1551,7 +1557,105 @@ class StreamingUploadManager:
 
         resume_from = status.get('bytes_uploaded', 0)
         return self.process_upload_stream(upload_id, stream_generator, resume_from=resume_from)
-    
+
+    def _schedule_orphan_cleanup(self, upload_id: str, delay_seconds: Optional[int] = None) -> None:
+        """Schedule deletion of orphaned parts for failed or aborted uploads."""
+
+        delay = self._orphan_cleanup_delay_seconds if delay_seconds is None else delay_seconds
+
+        with self.upload_lock:
+            session = self.active_uploads.get(upload_id)
+            if not session:
+                return
+
+            status = session.get('status')
+            uploaded_parts: List[str] = session.get('uploaded_parts', []) or []
+
+            if status not in {'failed', 'aborted'}:
+                return
+
+            if not uploaded_parts:
+                return
+
+            existing_timer = session.get('_orphan_cleanup_timer')
+            if existing_timer:
+                try:
+                    existing_timer.cancel()
+                except Exception:
+                    pass
+
+        notion_uploader = getattr(self.uploader, 'notion_uploader', None)
+        if notion_uploader is None:
+            return
+
+        def _cleanup_orphans() -> None:
+            try:
+                with self.upload_lock:
+                    current_session = self.active_uploads.get(upload_id)
+                    if not current_session:
+                        return
+
+                    current_status = current_session.get('status')
+                    parts_to_delete = list(current_session.get('uploaded_parts', []) or [])
+                    current_session.pop('_orphan_cleanup_timer', None)
+
+                if current_status not in {'failed', 'aborted'}:
+                    return
+
+                if not parts_to_delete:
+                    return
+
+                failed_parts: List[str] = []
+
+                for part_id in parts_to_delete:
+                    try:
+                        notion_uploader.delete_file_from_user_database(part_id)
+                        if getattr(notion_uploader, 'global_file_index_db_id', None):
+                            notion_uploader.delete_file_from_index(part_id)
+                        print(f"Deleted orphan part: {part_id}")
+                    except Exception as delete_error:
+                        print(f"Error deleting orphan part {part_id}: {delete_error}")
+                        failed_parts.append(part_id)
+
+                with self.upload_lock:
+                    session_after_delete = self.active_uploads.get(upload_id)
+                    if not session_after_delete:
+                        return
+
+                    if failed_parts:
+                        remaining = session_after_delete.get('uploaded_parts', []) or []
+                        remaining.extend(failed_parts)
+                        # Deduplicate while preserving order from ``remaining`` then ``failed_parts``
+                        seen: Set[str] = set()
+                        deduped: List[str] = []
+                        for part in remaining:
+                            if part not in seen:
+                                deduped.append(part)
+                                seen.add(part)
+                        session_after_delete['uploaded_parts'] = deduped
+                    else:
+                        remaining = session_after_delete.get('uploaded_parts', []) or []
+                        session_after_delete['uploaded_parts'] = [
+                            part for part in remaining if part not in parts_to_delete
+                        ]
+                        session_after_delete['orphan_cleanup_completed_at'] = time.time()
+            except Exception as unexpected_error:
+                print(f"Unexpected error during orphan cleanup for {upload_id}: {unexpected_error}")
+
+        timer = self._timer_factory(delay, _cleanup_orphans)
+        try:
+            timer.daemon = True
+        except Exception:
+            pass
+
+        with self.upload_lock:
+            session = self.active_uploads.get(upload_id)
+            if not session or session.get('status') not in {'failed', 'aborted'}:
+                return
+            session['_orphan_cleanup_timer'] = timer
+
+        timer.start()
+
     def cleanup_old_sessions(self, max_age_seconds: int = 3600) -> None:
         """
         Clean up old upload sessions
