@@ -2,6 +2,7 @@ import base64
 import importlib
 import os
 import sys
+import random
 import threading
 import time
 import types
@@ -49,11 +50,24 @@ class FakeNotionUploader:
         folder_path: str | None = None,
         is_manifest: bool = False,
     ) -> Dict[str, Any]:
-        remaining = self.fail_plan.get(filename, 0)
-        if remaining:
-            if remaining == -1:
+        plan = self.fail_plan.get(filename, 0)
+        if isinstance(plan, list):
+            if plan:
+                action = plan.pop(0)
+                if not plan:
+                    self.fail_plan[filename] = []
+                if isinstance(action, Exception):
+                    raise action
+                if callable(action):
+                    result = action()
+                    if isinstance(result, Exception):
+                        raise result
+                    raise RuntimeError(result)
+                raise RuntimeError(action)
+        elif plan:
+            if plan == -1:
                 raise RuntimeError("forced failure")
-            self.fail_plan[filename] = remaining - 1
+            self.fail_plan[filename] = plan - 1
             raise RuntimeError("transient failure")
 
         page_id = f"page-{len(self.pages) + 1}-{filename}"
@@ -164,6 +178,49 @@ def test_process_stream_aborts_on_persistent_database_errors(uploader):
     ids = list(fake.pages.keys())
     assert all(".file.json" not in page_id for page_id in ids)
     assert all("bigfile.part1" not in page_id for page_id in ids)
+
+
+def test_process_stream_handles_rate_limit_retries(uploader, monkeypatch):
+    uploader_instance, fake = uploader
+
+    class FakeHTTPError(RuntimeError):
+        def __init__(self, status_code: int, retry_after: str | None = None):
+            super().__init__(f"HTTP {status_code}")
+            headers = {}
+            if retry_after is not None:
+                headers["Retry-After"] = retry_after
+            self.response = types.SimpleNamespace(status_code=status_code, headers=headers)
+
+    fake.fail_plan["bigfile.part1"] = [
+        FakeHTTPError(429, "1.5"),
+        FakeHTTPError(503, "0.75"),
+    ]
+
+    sleep_calls: list[float] = []
+
+    def fake_sleep(duration: float) -> None:
+        sleep_calls.append(duration)
+
+    monkeypatch.setattr(time, "sleep", fake_sleep)
+    monkeypatch.setattr(random, "uniform", lambda a, b: a, raising=False)
+
+    session = uploader_instance.create_upload_session("bigfile", 8, "db1")
+
+    def stream_gen():
+        yield b"aaaa"
+        yield b"bbbb"
+
+    result = uploader_instance.process_stream(session, stream_gen())
+
+    assert result["status"] == "finalizing"
+    assert result["split"] is True
+    assert len(result["parts"]) == 2
+    assert fake.fail_plan["bigfile.part1"] == []
+    assert any(
+        ".file.json" in page_id for page_id in fake.pages.keys()
+    ), "Manifest entry should be created after successful upload"
+    assert sleep_calls, "Expected rate-limit handling to invoke sleep"
+    assert sleep_calls[0] >= 1.5
 
 
 def test_streaming_uploader_waits_for_available_workers(monkeypatch):
