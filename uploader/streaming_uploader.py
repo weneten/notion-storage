@@ -687,7 +687,9 @@ class NotionStreamingUploader:
             return backoff + jitter
 
         attempt = 0
-        while True:
+        created_page_id: Optional[str] = None
+        creation_db_entry: Optional[Dict[str, Any]] = None
+        while created_page_id is None:
             attempt += 1
             failure_reason: Optional[Exception] = None
             is_throttled = False
@@ -722,27 +724,8 @@ class NotionStreamingUploader:
                     )
                     last_error = failure_reason
                 else:
-                    try:
-                        refreshed_entry = self.notion_uploader.get_user_by_id(page_id)
-                        if refreshed_entry:
-                            db_entry = refreshed_entry
-                    except Exception as exc:
-                        failure_reason = exc
-                        last_error = exc
-                        print(
-                            f"WARNING: Failed to refresh part {part_filename} metadata (attempt {attempt}): {exc}"
-                        )
-                    else:
-                        if self._validate_file_attachment(db_entry, notion_file_upload_id):
-                            last_error = None
-                            break
-                        failure_reason = Exception(
-                            f"Validation failed for part {part_filename} (attempt {attempt})"
-                        )
-                        last_error = failure_reason
-                        print(
-                            f"WARNING: Validation failed for part {part_filename} (attempt {attempt}), retrying..."
-                        )
+                    created_page_id = page_id
+                    creation_db_entry = db_entry
 
             if failure_reason is None:
                 continue
@@ -751,11 +734,17 @@ class NotionStreamingUploader:
             attempt_limit = throttle_attempt_limit if throttle_encountered else base_attempt_limit
 
             if not is_throttled and attempt >= base_attempt_limit:
+                print(
+                    f"WARNING: Giving up on attaching part {part_filename} after {base_attempt_limit} attempts"
+                )
                 raise Exception(
                     f"Failed to attach part {part_filename} after {base_attempt_limit} attempts"
                 ) from last_error
 
             if attempt >= attempt_limit:
+                print(
+                    f"WARNING: Giving up on attaching part {part_filename} after {attempt_limit} attempts"
+                )
                 raise Exception(
                     f"Failed to attach part {part_filename} after {attempt_limit} attempts"
                 ) from last_error
@@ -763,10 +752,60 @@ class NotionStreamingUploader:
             sleep_duration = _compute_sleep(attempt, retry_after)
             time.sleep(sleep_duration)
 
+        db_entry = creation_db_entry
+
         if db_entry is None:
+            print(
+                f"WARNING: Giving up on storing part {part_filename} metadata after retries"
+            )
             raise Exception(
                 f"Failed to store part {part_filename} metadata after retries"
             )
+
+        if self._validate_file_attachment(db_entry, notion_file_upload_id):
+            last_error = None
+        else:
+            poll_attempt = 0
+            poll_attempt_limit = 20
+            poll_max_backoff_seconds = 30.0
+            validated_entry: Optional[Dict[str, Any]] = None
+
+            while poll_attempt < poll_attempt_limit:
+                poll_attempt += 1
+                try:
+                    refreshed_entry = self.notion_uploader.get_user_by_id(created_page_id)
+                    if refreshed_entry:
+                        db_entry = refreshed_entry
+                except Exception as exc:
+                    last_error = exc
+                    print(
+                        f"WARNING: Failed to refresh part {part_filename} metadata (poll attempt {poll_attempt}): {exc}"
+                    )
+                else:
+                    if self._validate_file_attachment(db_entry, notion_file_upload_id):
+                        validated_entry = db_entry
+                        last_error = None
+                        break
+                    last_error = Exception(
+                        f"Validation failed for part {part_filename} (poll attempt {poll_attempt})"
+                    )
+                    print(
+                        f"WARNING: Validation failed for part {part_filename} (poll attempt {poll_attempt}), retrying..."
+                    )
+
+                sleep_duration = min(2 ** (poll_attempt - 1), poll_max_backoff_seconds)
+                sleep_duration += random.uniform(0, sleep_duration * 0.25)
+                time.sleep(sleep_duration)
+
+            if validated_entry is None:
+                print(
+                    f"WARNING: Giving up on validating part {part_filename} after {poll_attempt_limit} poll attempts"
+                )
+                raise Exception(
+                    f"Failed to validate attachment for part {part_filename} after polling"
+                ) from last_error
+
+            db_entry = validated_entry
 
         if self.notion_uploader.global_file_index_db_id:
             self.notion_uploader.add_file_to_index(
