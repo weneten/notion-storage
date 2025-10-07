@@ -46,6 +46,8 @@ const context = {{
     console: console,
     setTimeout: setTimeout,
     clearTimeout: clearTimeout,
+    setInterval: setInterval,
+    clearInterval: clearInterval,
 }};
 
 context.window = context;

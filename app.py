@@ -2524,6 +2524,34 @@ def resume_stream_file_upload(upload_id):
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/upload/heartbeat/<upload_id>', methods=['POST'])
+@login_required
+def upload_heartbeat(upload_id):
+    """Record a heartbeat for a long-running upload to prevent idle timeouts."""
+    try:
+        with app.upload_session_lock:
+            upload_session = streaming_upload_manager.get_upload_status(upload_id)
+            if not upload_session:
+                return jsonify({'error': 'Upload session not found'}), 404
+
+            now = time.time()
+            upload_session['last_activity'] = now
+            heartbeat_count = upload_session.get('heartbeat_count', 0) + 1
+            upload_session['heartbeat_count'] = heartbeat_count
+
+            response_payload = {
+                'status': 'ok',
+                'upload_id': upload_id,
+                'heartbeat_count': heartbeat_count,
+                'upload_status': upload_session.get('status'),
+                'timestamp': now
+            }
+
+        return jsonify(response_payload)
+    except Exception as e:
+        print(f"Error recording heartbeat for upload {upload_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/upload/status/<upload_id>', methods=['GET'])
 @login_required
 def get_upload_status(upload_id):
