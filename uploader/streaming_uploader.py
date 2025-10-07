@@ -733,7 +733,7 @@ class NotionStreamingUploader:
             throttle_encountered = throttle_encountered or is_throttled
             attempt_limit = throttle_attempt_limit if throttle_encountered else base_attempt_limit
 
-            if not is_throttled and attempt >= base_attempt_limit:
+            if not throttle_encountered and attempt >= base_attempt_limit:
                 print(
                     f"WARNING: Giving up on attaching part {part_filename} after {base_attempt_limit} attempts"
                 )
