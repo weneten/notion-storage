@@ -52,12 +52,15 @@ def cleanup_old_sessions():
     """Clean up old upload sessions every minute"""
     try:
         current_time = time.time()
+        manager = globals().get('streaming_upload_manager')
+        expired_sessions: List[Dict[str, Any]] = []
+        streaming_sessions = 0
 
-        if 'streaming_upload_manager' in globals():
+        if manager is not None:
             try:
-                with streaming_upload_manager.upload_lock:
+                with manager.upload_lock:
                     expired_uploads = []
-                    for upload_id, session in streaming_upload_manager.active_uploads.items():
+                    for upload_id, session in list(manager.active_uploads.items()):
                         status = session.get('status')
                         last_activity = session.get('last_activity', session.get('created_at', 0))
                         if status == 'completed':
@@ -73,25 +76,39 @@ def cleanup_old_sessions():
                             timeout = 900  # 15 minutes for active sessions
 
                         if current_time - last_activity > timeout:
-                            expired_uploads.append((upload_id, status))
+                            expired_uploads.append((upload_id, session))
 
-                    for upload_id, status in expired_uploads:
-                        session = streaming_upload_manager.active_uploads.pop(upload_id, None)
-                        streaming_upload_manager.session_locks.pop(upload_id, None)
-                        if session:
-                            for part_id in session.get('uploaded_parts', []):
-                                try:
-                                    streaming_upload_manager.uploader.notion_uploader.delete_file_from_user_database(part_id)
-                                    if streaming_upload_manager.uploader.notion_uploader.global_file_index_db_id:
-                                        streaming_upload_manager.uploader.notion_uploader.delete_file_from_index(part_id)
-                                    print(f"Deleted orphan part: {part_id}")
-                                except Exception as e:
-                                    print(f"Error deleting orphan part {part_id}: {e}")
-                        print(f"Cleaned up {status or 'stalled'} upload session: {upload_id}")
+                    for upload_id, session in expired_uploads:
+                        removed_session = manager.active_uploads.pop(upload_id, None)
+                        manager.session_locks.pop(upload_id, None)
+                        if removed_session:
+                            expired_sessions.append({
+                                'upload_id': upload_id,
+                                'status': removed_session.get('status'),
+                                'uploaded_parts': list(removed_session.get('uploaded_parts', []))
+                            })
+                    streaming_sessions = len(manager.active_uploads)
             except Exception as e:
                 print(f"Error cleaning streaming uploads: {e}")
 
-        streaming_sessions = len(streaming_upload_manager.active_uploads) if 'streaming_upload_manager' in globals() else 0
+        notion_uploader = None
+        if manager is not None:
+            notion_uploader = getattr(manager.uploader, 'notion_uploader', None)
+
+        for session in expired_sessions:
+            status_label = session.get('status') or 'stalled'
+            for part_id in session.get('uploaded_parts', []):
+                if not notion_uploader:
+                    break
+                try:
+                    notion_uploader.delete_file_from_user_database(part_id)
+                    if getattr(notion_uploader, 'global_file_index_db_id', None):
+                        notion_uploader.delete_file_from_index(part_id)
+                    print(f"Deleted orphan part: {part_id}")
+                except Exception as e:
+                    print(f"Error deleting orphan part {part_id}: {e}")
+            print(f"Cleaned up {status_label} upload session: {session.get('upload_id')}")
+
         print(f"SESSION_CLEANUP: Active streaming sessions: {streaming_sessions}")
 
     except Exception as e:
