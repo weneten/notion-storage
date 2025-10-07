@@ -11,6 +11,9 @@ import time
 import hashlib
 import uuid
 import secrets
+import random
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
 from typing import Optional, Callable, Dict, Any, List, Set
 import concurrent.futures
 import queue
@@ -632,11 +635,64 @@ class NotionStreamingUploader:
         upload loop can continue accepting data without waiting for database
         operations to complete.
         """
-        max_attempts = 5
+        base_attempt_limit = 5
+        throttle_attempt_limit = 15
+        max_backoff_seconds = 60.0
         last_error: Optional[Exception] = None
         db_entry: Optional[Dict[str, Any]] = None
+        throttle_encountered = False
 
-        for attempt in range(1, max_attempts + 1):
+        def _parse_retry_after(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return max(0.0, float(value))
+            except (TypeError, ValueError):
+                try:
+                    retry_dt = parsedate_to_datetime(str(value))
+                    if retry_dt is None:
+                        return None
+                    if retry_dt.tzinfo is None:
+                        retry_dt = retry_dt.replace(tzinfo=timezone.utc)
+                    delta = (retry_dt - datetime.now(timezone.utc)).total_seconds()
+                    return max(0.0, delta)
+                except Exception:
+                    return None
+
+        def _get_rate_limit_info(exc: Exception) -> tuple[bool, Optional[float]]:
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", getattr(exc, "status_code", None))
+            headers = getattr(response, "headers", None)
+            retry_after = None
+            if headers and hasattr(headers, "items"):
+                for key, value in headers.items():
+                    if str(key).lower() == "retry-after":
+                        retry_after = _parse_retry_after(value)
+                        break
+            elif isinstance(headers, dict):
+                for key, value in headers.items():
+                    if str(key).lower() == "retry-after":
+                        retry_after = _parse_retry_after(value)
+                        break
+            if retry_after is None:
+                retry_after = _parse_retry_after(getattr(exc, "retry_after", None))
+            is_rate_limited = status_code in {429, 503}
+            return is_rate_limited, retry_after
+
+        def _compute_sleep(attempt_number: int, suggested_wait: Optional[float]) -> float:
+            backoff = min(2 ** (attempt_number - 1), max_backoff_seconds)
+            if suggested_wait is not None:
+                backoff = max(backoff, suggested_wait)
+            jitter = random.uniform(0, backoff * 0.5)
+            return backoff + jitter
+
+        attempt = 0
+        while True:
+            attempt += 1
+            failure_reason: Optional[Exception] = None
+            is_throttled = False
+            retry_after: Optional[float] = None
+
             try:
                 db_entry = self.notion_uploader.add_file_to_user_database(
                     database_id=user_database_id,
@@ -652,43 +708,60 @@ class NotionStreamingUploader:
                     folder_path='/'
                 )
             except Exception as exc:
+                failure_reason = exc
                 last_error = exc
+                is_throttled, retry_after = _get_rate_limit_info(exc)
                 print(
-                    f"WARNING: Failed to add part {part_filename} to database (attempt {attempt}/{max_attempts}): {exc}"
+                    f"WARNING: Failed to add part {part_filename} to database (attempt {attempt}): {exc}"
                 )
             else:
                 page_id = db_entry.get('id') if isinstance(db_entry, dict) else None
                 if not page_id:
-                    last_error = Exception(
-                        f"Missing page id for part {part_filename} (attempt {attempt}/{max_attempts})"
+                    failure_reason = Exception(
+                        f"Missing page id for part {part_filename} (attempt {attempt})"
                     )
+                    last_error = failure_reason
                 else:
                     try:
                         refreshed_entry = self.notion_uploader.get_user_by_id(page_id)
                         if refreshed_entry:
                             db_entry = refreshed_entry
                     except Exception as exc:
+                        failure_reason = exc
                         last_error = exc
                         print(
-                            f"WARNING: Failed to refresh part {part_filename} metadata (attempt {attempt}/{max_attempts}): {exc}"
+                            f"WARNING: Failed to refresh part {part_filename} metadata (attempt {attempt}): {exc}"
                         )
                     else:
                         if self._validate_file_attachment(db_entry, notion_file_upload_id):
                             last_error = None
                             break
-                        last_error = Exception(
-                            f"Validation failed for part {part_filename} (attempt {attempt}/{max_attempts})"
+                        failure_reason = Exception(
+                            f"Validation failed for part {part_filename} (attempt {attempt})"
                         )
+                        last_error = failure_reason
                         print(
-                            f"WARNING: Validation failed for part {part_filename} (attempt {attempt}/{max_attempts}), retrying..."
+                            f"WARNING: Validation failed for part {part_filename} (attempt {attempt}), retrying..."
                         )
 
-            if attempt == max_attempts:
+            if failure_reason is None:
+                continue
+
+            throttle_encountered = throttle_encountered or is_throttled
+            attempt_limit = throttle_attempt_limit if throttle_encountered else base_attempt_limit
+
+            if not is_throttled and attempt >= base_attempt_limit:
                 raise Exception(
-                    f"Failed to attach part {part_filename} after {max_attempts} attempts"
+                    f"Failed to attach part {part_filename} after {base_attempt_limit} attempts"
                 ) from last_error
 
-            time.sleep(0.5 * attempt)
+            if attempt >= attempt_limit:
+                raise Exception(
+                    f"Failed to attach part {part_filename} after {attempt_limit} attempts"
+                ) from last_error
+
+            sleep_duration = _compute_sleep(attempt, retry_after)
+            time.sleep(sleep_duration)
 
         if db_entry is None:
             raise Exception(
