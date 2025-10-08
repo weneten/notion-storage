@@ -13,6 +13,8 @@ import uuid
 import time
 import random
 import mimetypes
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from .s3_downloader import (
     download_file_from_url,
     stream_file_from_url,
@@ -1352,7 +1354,7 @@ class NotionFileUploader:
             'max_delay': 120.0,
             'exponential_base': 2.0,
             'jitter_percent': 25,
-            'retryable_status_codes': [502, 503, 504],
+            'retryable_status_codes': [429, 502, 503, 504],
             'retryable_exceptions': [
                 requests.exceptions.Timeout,
                 requests.exceptions.ConnectionError,
@@ -1447,7 +1449,21 @@ class NotionFileUploader:
                 if response.status_code in retry_config['retryable_status_codes']:
                     if attempt < retry_config['max_retries'] - 1:
                         delay = self._calculate_retry_delay(attempt, retry_config)
-                        print(f"Part {part_number} got {response.status_code}, retrying in {delay:.2f}s (attempt {attempt + 1}/{retry_config['max_retries']})")
+                        if response.status_code == 429:
+                            header_delay = self._extract_retry_after_delay(response)
+                            if header_delay is not None:
+                                delay = min(max(header_delay, 0.0), retry_config['max_delay'])
+                                print(
+                                    f"Part {part_number} hit rate limit (429). Respecting Retry-After header: retrying in {delay:.2f}s "
+                                    f"(attempt {attempt + 1}/{retry_config['max_retries']})"
+                                )
+                            else:
+                                print(
+                                    f"Part {part_number} hit rate limit (429) without Retry-After header, retrying in {delay:.2f}s "
+                                    f"(attempt {attempt + 1}/{retry_config['max_retries']})"
+                                )
+                        else:
+                            print(f"Part {part_number} got {response.status_code}, retrying in {delay:.2f}s (attempt {attempt + 1}/{retry_config['max_retries']})")
                         time.sleep(delay)
                         continue
                     else:
@@ -1537,12 +1553,43 @@ class NotionFileUploader:
         """Calculate exponential backoff delay with jitter"""
         base_delay = retry_config['initial_delay'] * (retry_config['exponential_base'] ** attempt)
         max_delay = min(base_delay, retry_config['max_delay'])
-        
+
         # Add jitter to prevent thundering herd
         jitter_range = max_delay * (retry_config['jitter_percent'] / 100)
         jitter = random.uniform(-jitter_range, jitter_range)
-        
+
         return max(0.1, max_delay + jitter)  # Minimum 0.1 second delay
+
+    def _extract_retry_after_delay(self, response) -> Optional[float]:
+        """Extract Retry-After header value in seconds if present"""
+        headers = getattr(response, 'headers', None)
+        if not headers:
+            return None
+
+        retry_after = headers.get('Retry-After')
+        if not retry_after:
+            return None
+
+        retry_after = retry_after.strip()
+        if retry_after.isdigit():
+            try:
+                return float(retry_after)
+            except ValueError:
+                return None
+
+        try:
+            retry_after_dt = parsedate_to_datetime(retry_after)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+        if retry_after_dt is None:
+            return None
+
+        if retry_after_dt.tzinfo is None:
+            retry_after_dt = retry_after_dt.replace(tzinfo=timezone.utc)
+
+        now = datetime.now(timezone.utc)
+        return max(0.0, (retry_after_dt - now).total_seconds())
 
     def complete_multipart_upload(self, file_upload_id: str, parts: List[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
