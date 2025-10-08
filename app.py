@@ -60,9 +60,17 @@ def cleanup_old_sessions():
             try:
                 with manager.upload_lock:
                     expired_uploads = []
+                    terminal_statuses = {'completed', 'failed', 'aborted', 'success'}
+                    protected_statuses = {'processing', 'finalizing'}
+
                     for upload_id, session in list(manager.active_uploads.items()):
                         status = session.get('status')
                         last_activity = session.get('last_activity', session.get('created_at', 0))
+
+                        timeout = 900  # Default 15 minutes for active sessions
+                        delete_parts = (status in terminal_statuses) or (status not in protected_statuses)
+                        part_cleanup_grace = None
+
                         if status == 'completed':
                             last_activity = session.get('completed_at', last_activity)
                             timeout = 60  # 1 minute retention for completed uploads
@@ -72,13 +80,32 @@ def cleanup_old_sessions():
                         elif status == 'aborted':
                             last_activity = session.get('aborted_at', last_activity)
                             timeout = 60
+                        elif status in protected_statuses:
+                            activity_grace = session.get('cleanup_grace_period_seconds', 6 * 3600)
+                            part_cleanup_grace = session.get(
+                                'part_cleanup_grace_period_seconds',
+                                max(activity_grace, 12 * 3600)
+                            )
+                            timeout = max(timeout, part_cleanup_grace)
                         else:
-                            timeout = 900  # 15 minutes for active sessions
+                            custom_grace = session.get('cleanup_grace_period_seconds')
+                            if isinstance(custom_grace, (int, float)) and custom_grace > 0:
+                                timeout = max(timeout, custom_grace)
+                            part_cleanup_grace = session.get('part_cleanup_grace_period_seconds')
 
-                        if current_time - last_activity > timeout:
-                            expired_uploads.append((upload_id, session))
+                        expired = current_time - last_activity > timeout
+                        if not expired:
+                            continue
 
-                    for upload_id, session in expired_uploads:
+                        if not delete_parts:
+                            custom_allow = bool(session.get('allow_part_cleanup'))
+                            if part_cleanup_grace is not None:
+                                delete_parts = current_time - last_activity > part_cleanup_grace
+                            delete_parts = delete_parts or custom_allow
+
+                        expired_uploads.append((upload_id, session, delete_parts))
+
+                    for upload_id, session, delete_parts in expired_uploads:
                         removed_session = manager.active_uploads.pop(upload_id, None)
                         manager.session_locks.pop(upload_id, None)
                         if removed_session:
@@ -91,7 +118,8 @@ def cleanup_old_sessions():
                             expired_sessions.append({
                                 'upload_id': upload_id,
                                 'status': removed_session.get('status'),
-                                'uploaded_parts': list(removed_session.get('uploaded_parts', []))
+                                'uploaded_parts': list(removed_session.get('uploaded_parts', [])),
+                                'delete_parts': delete_parts
                             })
                     streaming_sessions = len(manager.active_uploads)
             except Exception as e:
@@ -103,16 +131,22 @@ def cleanup_old_sessions():
 
         for session in expired_sessions:
             status_label = session.get('status') or 'stalled'
-            for part_id in session.get('uploaded_parts', []):
-                if not notion_uploader:
-                    break
-                try:
-                    notion_uploader.delete_file_from_user_database(part_id)
-                    if getattr(notion_uploader, 'global_file_index_db_id', None):
-                        notion_uploader.delete_file_from_index(part_id)
-                    print(f"Deleted orphan part: {part_id}")
-                except Exception as e:
-                    print(f"Error deleting orphan part {part_id}: {e}")
+            if session.get('delete_parts', True):
+                for part_id in session.get('uploaded_parts', []):
+                    if not notion_uploader:
+                        break
+                    try:
+                        notion_uploader.delete_file_from_user_database(part_id)
+                        if getattr(notion_uploader, 'global_file_index_db_id', None):
+                            notion_uploader.delete_file_from_index(part_id)
+                        print(f"Deleted orphan part: {part_id}")
+                    except Exception as e:
+                        print(f"Error deleting orphan part {part_id}: {e}")
+            else:
+                print(
+                    f"Skipping orphan cleanup for {session.get('upload_id')} "
+                    f"(status: {status_label}) due to active grace period"
+                )
             print(f"Cleaned up {status_label} upload session: {session.get('upload_id')}")
 
         print(f"SESSION_CLEANUP: Active streaming sessions: {streaming_sessions}")

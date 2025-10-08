@@ -288,6 +288,71 @@ def test_streaming_uploader_waits_for_available_workers(monkeypatch):
     assert active == 0
 
 
+def test_part_completion_refreshes_last_activity(uploader, monkeypatch):
+    uploader_instance, fake = uploader
+
+    streaming_module = importlib.import_module("uploader.streaming_uploader")
+
+    class FakeClock:
+        def __init__(self):
+            self._now = 0.0
+            self._lock = threading.Lock()
+
+        def time(self) -> float:
+            with self._lock:
+                return self._now
+
+        def sleep(self, seconds: float) -> None:
+            with self._lock:
+                self._now += seconds
+
+        def tick(self, seconds: float) -> float:
+            with self._lock:
+                self._now += seconds
+                return self._now
+
+    fake_clock = FakeClock()
+    monkeypatch.setattr(streaming_module.time, "time", fake_clock.time)
+    monkeypatch.setattr(streaming_module.time, "sleep", fake_clock.sleep)
+
+    def slow_worker(self, part_session, chunk_queue, part_size, start_event=None):
+        if start_event is not None:
+            start_event.set()
+        data = b""
+        while True:
+            chunk = chunk_queue.get()
+            if chunk is None:
+                break
+            data += chunk
+        assert len(data) == part_size
+        fake_clock.tick(900)
+        return {
+            "file_upload_id": f"upload-{part_session['filename']}",
+            "file_url": f"https://example.com/{part_session['filename']}",
+        }
+
+    monkeypatch.setattr(
+        NotionStreamingUploader,
+        "_upload_part_worker",
+        slow_worker,
+        raising=False,
+    )
+
+    session = uploader_instance.create_upload_session("bigfile", 8, "db1")
+    initial_activity = session["last_activity"]
+    fake_clock.tick(60)
+
+    def stream_gen():
+        yield b"aaaa"
+        yield b"bbbb"
+
+    result = uploader_instance.process_stream(session, stream_gen())
+
+    assert result["status"] == "finalizing"
+    assert session["last_activity"] >= initial_activity + 1800
+    assert fake_clock.time() - session["last_activity"] < 1
+
+
 def test_load_user_returns_cached_user_on_notion_error(monkeypatch):
     if "app" in sys.modules:
         app_module = sys.modules["app"]

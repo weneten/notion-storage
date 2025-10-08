@@ -932,6 +932,7 @@ class NotionStreamingUploader:
 
                     def make_callback(idx, part_filename, part_size, part_salted_hash, part_salt):
                         def _callback(fut: concurrent.futures.Future) -> None:
+                            completion_time = time.time()
                             try:
                                 upload_result = fut.result()
                                 db_entry = self._store_part_in_database(
@@ -955,10 +956,13 @@ class NotionStreamingUploader:
                                         "file_hash": part_salted_hash,
                                         "size": part_size,
                                     })
+                                    upload_session['last_activity'] = completion_time
                             except Exception as e:
                                 print(f"ERROR: Failed to store part {idx} metadata: {e}")
                                 with callback_errors_lock:
                                     callback_errors.append(e)
+                                with parts_lock:
+                                    upload_session['last_activity'] = completion_time
                             finally:
                                 with callback_state_lock:
                                     callback_state["completed"] += 1
