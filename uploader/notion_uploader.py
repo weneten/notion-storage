@@ -1379,6 +1379,31 @@ class NotionFileUploader:
         
         # Log memory snapshot for high part numbers
             
+        # Prepare the multipart/form-data request.
+        #
+        # Using a ``BytesIO`` wrapper prevents ``requests`` from attempting to
+        # reuse an already-consumed stream when a retry occurs.  We also keep
+        # the metadata field separate from the binary file payload to match
+        # standard multipart form expectations from the Notion API.
+
+        # Notion treats the uploaded chunk as binary data regardless of the
+        # original source type, so default to ``application/octet-stream``
+        # unless the caller explicitly provides something else.
+        if content_type and content_type.lower() != 'text/plain':
+            part_content_type = content_type
+        else:
+            part_content_type = 'application/octet-stream'
+
+        def build_multipart_payload() -> Dict[str, Any]:
+            """Create a fresh multipart payload for each attempt."""
+            return {
+                'file': ('file.txt', io.BytesIO(chunk_data), part_content_type),
+            }
+
+        data = {
+            'part_number': str(part_number)
+        }
+        
         last_exception = None
 
         for attempt in range(retry_config['max_retries']):
