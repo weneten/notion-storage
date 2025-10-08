@@ -1405,24 +1405,44 @@ class NotionFileUploader:
         }
         
         last_exception = None
-        
+
         for attempt in range(retry_config['max_retries']):
             try:
+                # Prepare the multipart/form-data request with a fresh
+                # BytesIO wrapper on every attempt.  When ``requests``
+                # submits multipart data it may consume the provided
+                # file-like object.  Reusing the same object across
+                # retries can therefore result in an empty body being
+                # resent, which Notion rejects with
+                # ``Invalid multipart/form-data`` errors.  Wrapping the
+                # bytes each time guarantees the request body is intact
+                # for every retry regardless of how the previous attempt
+                # ended.
+                file_obj = io.BytesIO(chunk_data)
+                files = {
+                    'file': ('file.txt', file_obj, 'text/plain'),
+                    'part_number': (None, str(part_number))
+                }
+
                 # Log request start
-                
+
                 # Multi-tier timeout strategy: (connect_timeout, read_timeout)
                 timeout_config = (30, 300)  # 30s connect, 5min read
-                
-                response = requests.post(
-                    upload_url,
-                    headers=headers,
-                    files=build_multipart_payload(),
-                    data=data,
-                    timeout=timeout_config
-                )
-                
+
+                try:
+                    response = requests.post(
+                        upload_url,
+                        headers=headers,
+                        files=files,
+                        timeout=timeout_config
+                    )
+                finally:
+                    # ``requests`` may keep the BytesIO object open; close it
+                    # explicitly so that retries do not accumulate buffers.
+                    file_obj.close()
+
                 # Log successful request
-                
+
                 # Check for retryable status codes
                 if response.status_code in retry_config['retryable_status_codes']:
                     if attempt < retry_config['max_retries'] - 1:
@@ -1434,9 +1454,28 @@ class NotionFileUploader:
                         raise Exception(f"Part {part_number} failed with {response.status_code} after {retry_config['max_retries']} attempts: {response.text}")
                 
                 if response.status_code != 200:
-                    print(f"ERROR uploading part {part_number}: {response.text}")
-                    raise Exception(f"Failed to upload part {part_number}: {response.text}")
-                    
+                    error_text = response.text
+                    print(f"ERROR uploading part {part_number}: {error_text}")
+
+                    # Notion occasionally responds with a transient 400
+                    # stating that the multipart body is invalid when the
+                    # upstream request was truncated.  Treat this specific
+                    # error as retryable so we can resend the bytes.
+                    if (
+                        response.status_code == 400
+                        and 'invalid `multipart/form-data` request' in error_text.lower()
+                        and attempt < retry_config['max_retries'] - 1
+                    ):
+                        delay = self._calculate_retry_delay(attempt, retry_config)
+                        print(
+                            f"Part {part_number} received transient 400, retrying in {delay:.2f}s "
+                            f"(attempt {attempt + 1}/{retry_config['max_retries']})"
+                        )
+                        time.sleep(delay)
+                        continue
+
+                    raise Exception(f"Failed to upload part {part_number}: {error_text}")
+
                 # Parse response
                 try:
                     response_data = response.json()
