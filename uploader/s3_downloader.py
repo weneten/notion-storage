@@ -195,25 +195,52 @@ class _PresignedStream:
         self.close()
 
     def __iter__(self):
+        base_range_start = None
+        base_range_end = None
+        total_emitted = 0
+        if self.headers and "Range" in self.headers:
+            range_spec = self.headers["Range"].split("=", 1)[1]
+            start_str, end_str = range_spec.split("-", 1)
+            base_range_start = int(start_str) if start_str else 0
+            base_range_end = int(end_str) if end_str else None
+
         for attempt in range(_NUM_DOWNLOAD_ATTEMPTS):
-            self._resp = _SESSION.get(self.url, headers=self.headers, stream=True)
+            request_headers = dict(self.headers) if self.headers else {}
+            skip = 0
+            target_bytes = None
+
+            if base_range_start is not None:
+                start = base_range_start + total_emitted
+                end = base_range_end
+                if end is not None and start > end:
+                    return
+                request_headers["Range"] = (
+                    f"bytes={start}-{end}" if end is not None else f"bytes={start}-"
+                )
+                if end is not None:
+                    target_bytes = end - start + 1
+            elif total_emitted:
+                request_headers["Range"] = f"bytes={total_emitted}-"
+
+            self._resp = _SESSION.get(
+                self.url, headers=request_headers or None, stream=True
+            )
             try:
                 if self._resp.status_code not in (200, 206):
                     self._resp.raise_for_status()
 
-                skip = 0
-                target_bytes = None
-                if self.headers and "Range" in self.headers:
-                    range_spec = self.headers["Range"].split("=", 1)[1]
-                    start_str, end_str = range_spec.split("-")
-                    start = int(start_str)
-                    end = int(end_str)
-                    target_bytes = end - start + 1
-                    if self._resp.status_code == 200:
-                        self.close()
-                        raise requests.HTTPError(
-                            "Requested byte range not honored", response=self._resp
-                        )
+                if base_range_start is not None and self._resp.status_code != 206:
+                    self.close()
+                    raise requests.HTTPError(
+                        "Requested byte range not honored", response=self._resp
+                    )
+
+                if (
+                    base_range_start is None
+                    and total_emitted
+                    and self._resp.status_code == 200
+                ):
+                    skip = total_emitted
 
                 bytes_read = 0
                 for chunk in self._resp.iter_content(chunk_size=self.chunk_size):
@@ -230,13 +257,21 @@ class _PresignedStream:
                         to_yield = min(len(chunk), target_bytes - bytes_read)
                         if to_yield <= 0:
                             break
-                        yield chunk[:to_yield]
+                        data = chunk[:to_yield]
+                        yield data
                         bytes_read += to_yield
+                        total_emitted += to_yield
                         if bytes_read >= target_bytes:
                             break
                     else:
                         if chunk:
                             yield chunk
+                            bytes_read += len(chunk)
+                            total_emitted += len(chunk)
+                if target_bytes is not None and bytes_read < target_bytes:
+                    raise requests.exceptions.ConnectionError(
+                        "Stream ended before fulfilling requested range"
+                    )
                 return
             except Exception as e:
                 if attempt == _NUM_DOWNLOAD_ATTEMPTS - 1 or isinstance(e, requests.HTTPError):
