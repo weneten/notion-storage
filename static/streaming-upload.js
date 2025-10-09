@@ -9,6 +9,7 @@ window.pendingUploads = window.pendingUploads || new Set();
 
 const PENDING_UPLOAD_POLL_INTERVAL_MS = 2000;
 const UPLOAD_HEARTBEAT_INTERVAL_MS = 20000;
+const FILE_SYNC_INTERVAL_MS = 30000;
 
 function ensurePendingUploadState() {
     if (!window.__pendingUploadState) {
@@ -1047,6 +1048,7 @@ async function resumeFailedUpload() {
         try {
             await waitForPendingUploads();
             showStatus('Uploads finalized and ready to view.', 'success');
+            await checkForUpdates();
             const progressContainer = document.getElementById('progressBars');
             if (progressContainer) {
                 progressContainer.innerHTML = '';
@@ -1162,7 +1164,7 @@ document.addEventListener('DOMContentLoaded', function () {
         shareSaveBtn.addEventListener('click', saveShareSettings);
         shareSaveBtn.dataset.listenerAdded = 'true';
     }
-    setInterval(checkForUpdates, 5000);
+    setInterval(checkForUpdates, FILE_SYNC_INTERVAL_MS);
 });
 
 // Function to refresh file list - WITH DIAGNOSTIC LOGGING
