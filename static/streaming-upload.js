@@ -993,6 +993,7 @@ const uploadFile = async () => {
     try {
         await waitForPendingUploads();
         showStatus('Uploads finalized and ready to view.', 'success');
+        await checkForUpdates();
         if (progressContainer) {
             progressContainer.innerHTML = '';
         }
