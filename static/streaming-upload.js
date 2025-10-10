@@ -1818,7 +1818,12 @@ async function openMoveDialog(fileIds = [], folderIds = []) {
 // =============================================
 // Share link settings modal
 // =============================================
-let shareTarget = { fileId: null, saltedHash: '' };
+let shareTarget = {
+    fileId: null,
+    saltedHash: '',
+    originalExpiresAtIso: '',
+    originalExpiresAtLocal: ''
+};
 
 function toDateTimeLocalValue(isoString) {
     if (!isoString) return '';
@@ -1835,8 +1840,62 @@ function toDateTimeLocalValue(isoString) {
     return isoString.length >= 16 ? isoString.slice(0, 16) : '';
 }
 
+function fromDateTimeLocalValue(localValue) {
+    if (!localValue) return '';
+
+    const match = localValue.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (!match) {
+        return '';
+    }
+
+    const [, datePart, hourStr, minuteStr, secondStr = '0'] = match;
+    const [yearStr, monthStr, dayStr] = datePart.split('-');
+
+    const year = Number(yearStr);
+    const month = Number(monthStr);
+    const day = Number(dayStr);
+    const hour = Number(hourStr);
+    const minute = Number(minuteStr);
+    const second = Number(secondStr);
+
+    if ([year, month, day, hour, minute, second].some(Number.isNaN)) {
+        return '';
+    }
+
+    const localDate = new Date(year, month - 1, day, hour, minute, second);
+    if (Number.isNaN(localDate.getTime())) {
+        return '';
+    }
+
+    const pad = (value) => String(value).padStart(2, '0');
+    const offsetMinutes = -localDate.getTimezoneOffset();
+    const offsetSign = offsetMinutes >= 0 ? '+' : '-';
+    const absOffset = Math.abs(offsetMinutes);
+    const offsetHours = pad(Math.floor(absOffset / 60));
+    const offsetMins = pad(absOffset % 60);
+
+    const isoDatePart = [
+        localDate.getFullYear(),
+        pad(localDate.getMonth() + 1),
+        pad(localDate.getDate())
+    ].join('-');
+
+    const isoTimePart = [
+        pad(localDate.getHours()),
+        pad(localDate.getMinutes()),
+        pad(localDate.getSeconds())
+    ].join(':');
+
+    return `${isoDatePart}T${isoTimePart}${offsetSign}${offsetHours}:${offsetMins}`;
+}
+
 async function openShareDialog(fileId) {
-    shareTarget = { fileId, saltedHash: '' };
+    shareTarget = {
+        fileId,
+        saltedHash: '',
+        originalExpiresAtIso: '',
+        originalExpiresAtLocal: ''
+    };
     try {
         const folderParam = encodeURIComponent(window.currentFolder || '/');
         const resp = await fetch(`/api/files?folder=${folderParam}`);
@@ -1844,6 +1903,8 @@ async function openShareDialog(fileId) {
         const file = (data.files || []).find(f => f.id === fileId);
         if (file) {
             shareTarget.saltedHash = file.salted_hash || '';
+            shareTarget.originalExpiresAtIso = file.expires_at || '';
+            shareTarget.originalExpiresAtLocal = toDateTimeLocalValue(file.expires_at);
             const toggle = document.getElementById('sharePublicToggle');
             const password = document.getElementById('sharePassword');
             const expires = document.getElementById('shareExpires');
@@ -1853,7 +1914,7 @@ async function openShareDialog(fileId) {
                 password.placeholder = file.password_protected ? '(existing)' : '';
             }
             if (expires) {
-                expires.value = toDateTimeLocalValue(file.expires_at);
+                expires.value = shareTarget.originalExpiresAtLocal;
             }
         }
     } catch (error) {
@@ -1867,12 +1928,27 @@ async function saveShareSettings() {
     const isPublic = document.getElementById('sharePublicToggle').checked;
     const passwordField = document.getElementById('sharePassword');
     const password = passwordField.value;
-    const expires = document.getElementById('shareExpires').value;
+    const expiresField = document.getElementById('shareExpires');
+    const expiresValue = expiresField ? expiresField.value : '';
+    let expiresAt = null;
+
+    if (expiresValue) {
+        if (
+            shareTarget.originalExpiresAtLocal &&
+            shareTarget.originalExpiresAtIso &&
+            expiresValue === shareTarget.originalExpiresAtLocal
+        ) {
+            expiresAt = shareTarget.originalExpiresAtIso;
+        } else {
+            const converted = fromDateTimeLocalValue(expiresValue);
+            expiresAt = converted || expiresValue;
+        }
+    }
     try {
         const body = {
             file_id: shareTarget.fileId,
             is_public: isPublic,
-            expires_at: expires || null,
+            expires_at: expiresAt,
             salted_sha512_hash: shareTarget.saltedHash
         };
         if (password !== '' || passwordField.placeholder === '(existing)') {
