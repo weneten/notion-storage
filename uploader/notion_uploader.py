@@ -222,6 +222,32 @@ class ChunkProcessor:
                 raise
 
 class NotionFileUploader:
+    @staticmethod
+    def _normalize_datetime_string(value: str) -> str:
+        if not value:
+            return ''
+
+        normalized = value.strip()
+        if normalized.endswith('Z'):
+            normalized = normalized[:-1] + '+00:00'
+
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except ValueError:
+            return normalized
+
+        return dt.isoformat(timespec='seconds')
+
+    @staticmethod
+    def _build_date_property(value: Optional[str]) -> Dict[str, Any]:
+        if value:
+            return {"date": {"start": value}}
+        return {"date": None}
+
+    @staticmethod
+    def _build_rich_text_property(value: Optional[str]) -> Dict[str, Any]:
+        return {"rich_text": [{"text": {"content": value}}] if value else []}
+
     def delete_file_from_user_database(self, file_page_id: str) -> Dict[str, Any]:
         """Alias for delete_file_from_db for compatibility with streaming uploader."""
         return self.delete_file_from_db(file_page_id)
@@ -2288,7 +2314,7 @@ class NotionFileUploader:
         # Ensure the is_folder property exists for this database
         self.ensure_database_property(database_id, "is_folder", "checkbox")
         self.ensure_database_property(database_id, "password_hash", "rich_text")
-        self.ensure_database_property(database_id, "expires_at", "rich_text")
+        self.ensure_database_property(database_id, "expires_at", "date")
 
         # CRITICAL FIX 1: Enhanced ID Validation and Logging
         print(f"🔍 ADD_FILE_TO_DB: Starting with file_upload_id: {file_upload_id}")
@@ -2385,10 +2411,10 @@ class NotionFileUploader:
             properties["password_hash"] = {
                 "rich_text": [{"text": {"content": password_hash}}] if password_hash else []
             }
+        normalized_expires_at = None
         if expires_at is not None:
-            properties["expires_at"] = {
-                "rich_text": [{"text": {"content": expires_at}}] if expires_at else []
-            }
+            normalized_expires_at = self._normalize_datetime_string(expires_at)
+            properties["expires_at"] = self._build_date_property(normalized_expires_at)
         # Add is_manifest property if this is a manifest entry
         if is_manifest:
             properties["is_manifest"] = {"checkbox": True}
@@ -2413,6 +2439,17 @@ class NotionFileUploader:
             raise Exception(error_msg)
 
         response = requests.post(url, json=payload, headers=headers)
+
+        if response.status_code == 400 and normalized_expires_at is not None:
+            error_text = response.text or ""
+            if "rich_text" in error_text and "expires_at" in error_text:
+                fallback_properties = dict(properties)
+                fallback_properties["expires_at"] = self._build_rich_text_property(normalized_expires_at)
+                fallback_payload = {
+                    "parent": payload["parent"],
+                    "properties": fallback_properties,
+                }
+                response = requests.post(url, json=fallback_payload, headers=headers)
 
         if response.status_code != 200:
             error_msg = f"Failed to add file to user database: {response.text}"
@@ -2499,7 +2536,7 @@ class NotionFileUploader:
                 file_page = self.get_user_by_id(file_page_id)
                 file_props = file_page.get('properties', {})
                 password_prop = file_props.get('password_hash', {'rich_text': []})
-                expires_prop = file_props.get('expires_at', {'rich_text': []})
+                expires_prop = file_props.get('expires_at', {'date': None})
                 index_entry['properties']['password_hash'] = password_prop
                 index_entry['properties']['expires_at'] = expires_prop
             except Exception as e:
@@ -2622,10 +2659,10 @@ class NotionFileUploader:
             properties["password_hash"] = {
                 "rich_text": [{"text": {"content": password_hash}}] if password_hash else []
             }
+        normalized_expires_at = None
         if expires_at is not None:
-            properties["expires_at"] = {
-                "rich_text": [{"text": {"content": expires_at}}] if expires_at else []
-            }
+            normalized_expires_at = self._normalize_datetime_string(expires_at)
+            properties["expires_at"] = self._build_date_property(normalized_expires_at)
 
         if not properties:
             return {}
@@ -2634,6 +2671,13 @@ class NotionFileUploader:
         headers = {**self.headers, "Content-Type": "application/json"}
 
         response = requests.patch(url, json=payload, headers=headers)
+        if response.status_code == 400 and normalized_expires_at is not None:
+            error_text = response.text or ""
+            if "rich_text" in error_text and "expires_at" in error_text:
+                fallback_properties = dict(properties)
+                fallback_properties["expires_at"] = self._build_rich_text_property(normalized_expires_at)
+                fallback_payload = {"properties": fallback_properties}
+                response = requests.patch(url, json=fallback_payload, headers=headers)
         if response.status_code != 200:
             raise Exception(f"Failed to update file security settings: {response.text}")
 
@@ -2648,7 +2692,7 @@ class NotionFileUploader:
 
         # Ensure security properties exist
         self.ensure_database_property(database_id, "password_hash", "rich_text")
-        self.ensure_database_property(database_id, "expires_at", "rich_text")
+        self.ensure_database_property(database_id, "expires_at", "date")
 
         properties = {
             "filename": {
@@ -2740,7 +2784,7 @@ class NotionFileUploader:
 
         # Ensure security properties exist on the Global File Index
         self.ensure_database_property(global_index_db_id, "Password Hash", "rich_text")
-        self.ensure_database_property(global_index_db_id, "Expires At", "rich_text")
+        self.ensure_database_property(global_index_db_id, "Expires At", "date")
 
         url = f"{self.base_url}/pages"
 
@@ -2766,10 +2810,10 @@ class NotionFileUploader:
             properties["Password Hash"] = {
                 "rich_text": [{"text": {"content": password_hash}}]
             }
+        normalized_expires_at = None
         if expires_at is not None:
-            properties["Expires At"] = {
-                "rich_text": [{"text": {"content": expires_at}}]
-            }
+            normalized_expires_at = self._normalize_datetime_string(expires_at)
+            properties["Expires At"] = self._build_date_property(normalized_expires_at)
 
         payload = {
             "parent": {"database_id": global_index_db_id},
@@ -2780,6 +2824,16 @@ class NotionFileUploader:
 
         try:
             response = requests.post(url, json=payload, headers=headers)
+            if response.status_code == 400 and normalized_expires_at is not None:
+                error_text = response.text or ""
+                if "rich_text" in error_text and "Expires At" in error_text:
+                    fallback_properties = dict(properties)
+                    fallback_properties["Expires At"] = self._build_rich_text_property(normalized_expires_at)
+                    fallback_payload = {
+                        "parent": payload["parent"],
+                        "properties": fallback_properties,
+                    }
+                    response = requests.post(url, json=fallback_payload, headers=headers)
             if response.status_code != 200:
                 raise Exception(f"Failed to add file to Global File Index: {response.text}")
             print(f"✅ Added file to Global Index for {original_filename}")

@@ -47,6 +47,53 @@ def _get_prop_text(prop: Dict[str, Any], key: str = 'rich_text', default: Any = 
     values = prop.get(key, [])
     return values[0].get('text', {}).get('content', default) if values else default
 
+
+def _get_prop_datetime(prop: Dict[str, Any], default: str = '') -> str:
+    """Extract a Notion date property, falling back to legacy rich_text."""
+
+    if not isinstance(prop, dict):
+        return default
+
+    date_value = prop.get('date')
+    if isinstance(date_value, dict):
+        start = date_value.get('start')
+        if start is None:
+            return default
+        return start
+
+    return _get_prop_text(prop, default=default)
+
+
+def _normalize_datetime_input(value: str) -> str:
+    """Normalise an ISO-8601 datetime string for storage."""
+
+    if not value:
+        return ''
+
+    normalized = value.strip()
+    if normalized.endswith('Z'):
+        normalized = normalized[:-1] + '+00:00'
+
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except ValueError:
+        return normalized
+
+    return dt.isoformat(timespec='seconds')
+
+
+def _parse_notion_datetime(value: str) -> datetime:
+    """Parse a datetime value returned by Notion into a timezone-aware datetime."""
+
+    normalized = value.strip()
+    if normalized.endswith('Z'):
+        normalized = normalized[:-1] + '+00:00'
+
+    dt = datetime.fromisoformat(normalized)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
     """Clean up old upload sessions every minute"""
@@ -264,14 +311,13 @@ def _enforce_expirations(user_database_id: str, data: Dict[str, Any]) -> None:
         try:
             props = entry.get('properties', {})
             is_public = props.get('is_public', {}).get('checkbox', False)
-            expires_at = _get_prop_text(props.get('expires_at', {}))
+            expires_at = _get_prop_datetime(props.get('expires_at', {}))
             if not (is_public and expires_at):
                 continue
-            expiry_dt = datetime.fromisoformat(expires_at)
-            if expiry_dt.tzinfo is None:
-                expiry_dt = expiry_dt.replace(tzinfo=timezone.utc)
-            else:
-                expiry_dt = expiry_dt.astimezone(timezone.utc)
+            try:
+                expiry_dt = _parse_notion_datetime(expires_at)
+            except ValueError:
+                continue
             if expiry_dt >= now:
                 continue
             file_id = entry.get('id')
@@ -280,7 +326,7 @@ def _enforce_expirations(user_database_id: str, data: Dict[str, Any]) -> None:
             uploader.update_file_public_status(file_id, False, salted_hash)
             uploader.update_file_security_settings(file_id, expires_at='', salted_sha512_hash=salted_hash)
             props['is_public'] = {'checkbox': False}
-            props['expires_at'] = {'rich_text': []}
+            props['expires_at'] = {'date': None}
         except Exception:
             continue
 
@@ -447,7 +493,7 @@ def build_entries(results: List[Dict[str, Any]], current_folder: str) -> List[Di
             is_folder = properties.get('is_folder', {}).get('checkbox', False)
             is_visible = properties.get('is_visible', {}).get('checkbox', True)
             password_hash = _get_prop_text(properties.get('password_hash', {}))
-            expires_at = _get_prop_text(properties.get('expires_at', {}))
+            expires_at = _get_prop_datetime(properties.get('expires_at', {}))
             password_protected = bool(password_hash)
             if name and is_visible and folder_path == current_folder:
                 if is_folder:
@@ -996,15 +1042,15 @@ def download_by_hash(salted_sha512_hash):
         file_props = file_details.get('properties', {})
         display_name = _get_prop_text(file_props.get('filename', {}), 'title', original_filename)
         password_hash = _get_prop_text(file_props.get('password_hash', {}))
-        expires_at = _get_prop_text(file_props.get('expires_at', {}))
+        expires_at = _get_prop_datetime(file_props.get('expires_at', {}))
 
         if expires_at:
             try:
-                expiry_dt = datetime.fromisoformat(expires_at)
-                now = datetime.now(expiry_dt.tzinfo or timezone.utc)
+                expiry_dt = _parse_notion_datetime(expires_at)
+                now = datetime.now(timezone.utc)
                 if expiry_dt < now:
                     return "Link expired", 403
-            except Exception:
+            except ValueError:
                 pass
 
         if password_hash:
@@ -1178,15 +1224,15 @@ def stream_by_hash(salted_sha512_hash):
         file_props = file_details.get('properties', {})
         display_name = _get_prop_text(file_props.get('filename', {}), 'title', original_filename)
         password_hash = _get_prop_text(file_props.get('password_hash', {}))
-        expires_at = _get_prop_text(file_props.get('expires_at', {}))
+        expires_at = _get_prop_datetime(file_props.get('expires_at', {}))
 
         if expires_at:
             try:
-                expiry_dt = datetime.fromisoformat(expires_at)
-                now = datetime.now(expiry_dt.tzinfo or timezone.utc)
+                expiry_dt = _parse_notion_datetime(expires_at)
+                now = datetime.now(timezone.utc)
                 if expiry_dt < now:
                     return "Link expired", 403
-            except Exception:
+            except ValueError:
                 pass
 
         if password_hash:
@@ -1556,7 +1602,7 @@ def get_files_api():
             folder_path = _get_prop_text(file_props.get('folder_path', {}), default='/')
             salt = _get_prop_text(file_props.get('salt', {}), default='')
             password_hash = _get_prop_text(file_props.get('password_hash', {}))
-            expires_at = _get_prop_text(file_props.get('expires_at', {}))
+            expires_at = _get_prop_datetime(file_props.get('expires_at', {}))
 
             password_protected = bool(password_hash)
 
@@ -1652,7 +1698,7 @@ def get_entries_api():
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
                 password_hash = _get_prop_text(properties.get('password_hash', {}))
-                expires_at = _get_prop_text(properties.get('expires_at', {}))
+                expires_at = _get_prop_datetime(properties.get('expires_at', {}))
                 password_protected = bool(password_hash)
 
                 if name and is_visible and folder_path == current_folder:
@@ -1742,7 +1788,7 @@ def search_files_api():
                 is_folder = properties.get('is_folder', {}).get('checkbox', False)
                 is_visible = properties.get('is_visible', {}).get('checkbox', True)
                 password_hash = _get_prop_text(properties.get('password_hash', {}))
-                expires_at = _get_prop_text(properties.get('expires_at', {}))
+                expires_at = _get_prop_datetime(properties.get('expires_at', {}))
                 password_protected = bool(password_hash)
 
                 if not is_visible:
@@ -1948,9 +1994,16 @@ def update_link_settings():
         file_id = data.get('file_id')
         is_public = data.get('is_public')
         password = data.get('password')
-        expires_at = data.get('expires_at')
-        if expires_at is None:
+        raw_expires_at = data.get('expires_at')
+        if raw_expires_at is None:
             expires_at = ''
+        else:
+            expires_at = _normalize_datetime_input(raw_expires_at)
+            if expires_at:
+                try:
+                    _parse_notion_datetime(expires_at)
+                except ValueError:
+                    return jsonify({'error': 'Invalid expires_at format'}), 400
         salted_sha512_hash = data.get('salted_sha512_hash')
 
         if not file_id or is_public is None:
@@ -1963,7 +2016,7 @@ def update_link_settings():
         # Ensure properties exist in the user's database
         uploader.ensure_database_property(user_database_id, 'is_public', 'checkbox')
         uploader.ensure_database_property(user_database_id, 'password_hash', 'rich_text')
-        uploader.ensure_database_property(user_database_id, 'expires_at', 'rich_text')
+        uploader.ensure_database_property(user_database_id, 'expires_at', 'date')
 
         password_hash = None
         if password is not None:
