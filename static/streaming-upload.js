@@ -1820,6 +1820,21 @@ async function openMoveDialog(fileIds = [], folderIds = []) {
 // =============================================
 let shareTarget = { fileId: null, saltedHash: '' };
 
+function toDateTimeLocalValue(isoString) {
+    if (!isoString) return '';
+    try {
+        const date = new Date(isoString);
+        if (!Number.isNaN(date.getTime())) {
+            const offset = date.getTimezoneOffset();
+            const local = new Date(date.getTime() - offset * 60000);
+            return local.toISOString().slice(0, 16);
+        }
+    } catch (err) {
+        console.warn('Failed to parse expires_at value', err);
+    }
+    return isoString.length >= 16 ? isoString.slice(0, 16) : '';
+}
+
 async function openShareDialog(fileId) {
     shareTarget = { fileId, saltedHash: '' };
     try {
@@ -1838,7 +1853,7 @@ async function openShareDialog(fileId) {
                 password.placeholder = file.password_protected ? '(existing)' : '';
             }
             if (expires) {
-                expires.value = file.expires_at ? file.expires_at.slice(0,16) : '';
+                expires.value = toDateTimeLocalValue(file.expires_at);
             }
         }
     } catch (error) {
