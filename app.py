@@ -7,6 +7,7 @@ from uploader.streaming_uploader import StreamingUploadManager
 from uploader.s3_downloader import cleanup_stale_streams
 from dotenv import load_dotenv
 import os
+import sys
 import tempfile
 import secrets
 import hashlib
@@ -221,14 +222,54 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
 CORS(app)  # Enable CORS for all routes
 socketio = SocketIO(
-    app, 
-    cors_allowed_origins="*", 
+    app,
+    cors_allowed_origins="*",
     binary=True,
     async_mode='eventlet',
     max_http_buffer_size=5 * 1024 * 1024,  # Reduce to 5MB buffer
     ping_timeout=60,
     ping_interval=25
 )
+
+
+def _detect_worker_count() -> str:
+    """Best-effort detection of the configured worker count."""
+
+    # Check common environment variables used to configure Gunicorn workers
+    for env_var in ("WEB_CONCURRENCY", "GUNICORN_WORKERS", "WORKERS"):
+        value = os.environ.get(env_var)
+        if value:
+            return value.strip()
+
+    # Attempt to parse worker information from Gunicorn command args
+    cmd_sources = [os.environ.get("GUNICORN_CMD_ARGS"), " ".join(sys.argv[1:])]
+    for cmd in cmd_sources:
+        if not cmd:
+            continue
+        match = re.search(r"--workers(?:=|\s+)(\d+)", cmd)
+        if match:
+            return match.group(1)
+
+    return "1"
+
+
+def _log_startup_worker_count() -> None:
+    raw_value = _detect_worker_count()
+    try:
+        worker_count = int(raw_value)
+    except (TypeError, ValueError):
+        worker_count = None
+
+    if worker_count is not None:
+        noun = "worker" if worker_count == 1 else "workers"
+        message = f"Server started with {worker_count} {noun}."
+    else:
+        message = f"Server started with workers value '{raw_value}'."
+
+    app.logger.info(message)
+
+
+_log_startup_worker_count()
 
 # Initialize global upload state containers with thread synchronization
 # CRITICAL FIX 3: Thread Synchronization - Global locks for upload session management
