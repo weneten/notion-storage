@@ -903,12 +903,7 @@ class NotionStreamingUploader:
                     threshold_mib = 0
                 print(f"INFO: File size > {threshold_mib:.0f} MiB, splitting and uploading in parts...")
 
-                total_parts = (file_size + self.SPLIT_THRESHOLD - 1) // self.SPLIT_THRESHOLD
-                last_part_size = file_size - self.SPLIT_THRESHOLD * (total_parts - 1)
-                part_sizes = [self.SPLIT_THRESHOLD] * (total_parts - 1)
-                if last_part_size:
-                    part_sizes.append(last_part_size)
-
+                declared_file_size = file_size
                 stream_iter = iter(stream_generator)
                 leftover = b""
                 # Track part metadata directly on the upload session so that
@@ -916,6 +911,7 @@ class NotionStreamingUploader:
                 upload_session['parts_metadata'] = []
                 parts_metadata = upload_session['parts_metadata']
                 total_uploaded = 0
+                part_index = 0
 
                 # Upload parts in background threads so incoming data can keep
                 # flowing without waiting for Notion or database operations to
@@ -968,7 +964,65 @@ class NotionStreamingUploader:
                                     callback_state["completed"] += 1
                         return _callback
 
-                    for idx, part_size in enumerate(part_sizes, start=1):
+                    while True:
+                        remaining_estimate = max(declared_file_size - total_uploaded, 0)
+                        # Default to configured threshold, but clamp to the
+                        # remaining declared bytes if that value is positive.
+                        target_part_size = self.SPLIT_THRESHOLD
+                        if remaining_estimate > 0:
+                            target_part_size = min(self.SPLIT_THRESHOLD, remaining_estimate)
+
+                        part_chunks: List[bytes] = []
+                        part_hasher = hashlib.sha512()
+                        bytes_collected = 0
+                        stream_ended = False
+
+                        while bytes_collected < target_part_size:
+                            data: bytes
+                            if leftover:
+                                data = leftover
+                                leftover = b""
+                            else:
+                                try:
+                                    data = next(stream_iter)
+                                except StopIteration:
+                                    data = b""
+                                    stream_ended = True
+
+                            if not data:
+                                break
+
+                            remaining = target_part_size - bytes_collected
+                            if remaining <= 0:
+                                chunk = data
+                            else:
+                                chunk = data[:remaining]
+                            if remaining > 0 and len(data) > remaining:
+                                leftover = data[remaining:]
+
+                            if not chunk:
+                                continue
+
+                            part_chunks.append(chunk)
+                            bytes_collected += len(chunk)
+                            part_hasher.update(chunk)
+                            if upload_session['hasher'] is not None:
+                                upload_session['hasher'].update(chunk)
+
+                            if remaining <= 0:
+                                # We already collected enough bytes for this part.
+                                break
+
+                        if bytes_collected == 0:
+                            break
+
+                        part_index += 1
+                        part_size = bytes_collected
+                        part_filename = f"{filename}.part{part_index}"
+                        part_session = self.create_upload_session(part_filename, part_size, user_database_id)
+                        part_session['file_size'] = part_size
+                        part_stream_hash = part_hasher.hexdigest()
+
                         inflight_futures = {f for f in inflight_futures if not f.done()}
                         while len(inflight_futures) >= executor_max_workers:
                             _, not_done = concurrent.futures.wait(
@@ -976,10 +1030,6 @@ class NotionStreamingUploader:
                                 return_when=concurrent.futures.FIRST_COMPLETED,
                             )
                             inflight_futures = set(not_done)
-
-                        part_filename = f"{filename}.part{idx}"
-                        part_session = self.create_upload_session(part_filename, part_size, user_database_id)
-                        part_stream = self._PartStream(stream_iter, part_size, leftover, upload_session['hasher'])
 
                         chunk_queue: queue.Queue = queue.Queue(maxsize=4)
                         worker_started = threading.Event()
@@ -991,38 +1041,40 @@ class NotionStreamingUploader:
                             worker_started,
                         )
 
+                        inflight_futures = {f for f in inflight_futures if not f.done()}
                         inflight_futures.add(future)
                         part_futures.append(future)
 
                         while not worker_started.wait(timeout=0.1):
                             if future.done():
-                                # Propagate errors if the worker failed before signaling readiness.
                                 future.result()
                                 break
 
-                        for chunk in part_stream:
+                        for chunk in part_chunks:
                             chunk_queue.put(chunk)
 
                         chunk_queue.put(None)
-                        leftover = part_stream.get_leftover()
-                        part_hash = part_stream.get_part_hash()
-                        bytes_sent = part_stream.get_bytes_sent()
+                        part_chunks.clear()
 
-                        if bytes_sent < part_size:
-                            future.cancel()
-                            raise ValueError(
-                                f"Incomplete upload: expected {part_size} bytes for part {idx}, received {bytes_sent}"
-                            )
+                        bytes_sent = part_size
 
                         total_uploaded += bytes_sent
 
                         part_salt = generate_salt()
-                        part_salted_hash = calculate_salted_hash(part_hash, part_salt)
+                        part_salted_hash = calculate_salted_hash(part_stream_hash, part_salt)
+
+                        idx = part_index
 
                         future.add_done_callback(
                             make_callback(idx, part_filename, part_size, part_salted_hash, part_salt)
                         )
                         upload_session['last_activity'] = time.time()
+
+                        if stream_ended and not leftover:
+                            break
+
+                    if not part_futures:
+                        raise ValueError("No data received for upload")
 
                     concurrent.futures.wait(part_futures)
 
@@ -1044,15 +1096,19 @@ class NotionStreamingUploader:
 
                     parts_metadata.sort(key=lambda x: x["part_number"])
 
-                    if len(parts_metadata) != len(part_sizes):
+                    if len(parts_metadata) != part_index:
                         raise RuntimeError(
                             "Upload completed but part metadata is incomplete"
                         )
 
-                    if total_uploaded != file_size:
-                        raise ValueError(
-                            f"Incomplete upload: expected {file_size} bytes, received {total_uploaded}"
+                    if total_uploaded != declared_file_size:
+                        print(
+                            f"WARNING: Adjusting declared file size from {declared_file_size} to actual {total_uploaded}"
                         )
+                        file_size = total_uploaded
+                        upload_session['file_size'] = total_uploaded
+
+                    upload_session['bytes_uploaded'] = total_uploaded
 
                 import json
                 metadata_json = json.dumps({
