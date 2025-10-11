@@ -2525,6 +2525,16 @@ def stream_file_upload(upload_id):
                         chunk = request.stream.read(chunk_size)
                         if not chunk:
                             print(f"📡 Stream completed, total read: {total_read / 1024 / 1024:.1f}MB")
+                            if expected_size and total_read < expected_size:
+                                missing = expected_size - total_read
+                                print(
+                                    "⚠️ Stream ended before expected size: "
+                                    f"expected {expected_size / 1024 / 1024:.1f}MB, "
+                                    f"received {total_read / 1024 / 1024:.1f}MB "
+                                    f"(missing {missing / 1024 / 1024:.1f}MB). "
+                                    "This usually means the client or a proxy "
+                                    "closed the connection early or enforced an upload limit."
+                                )
                             break
 
                         upload_session['last_activity'] = time.time()
