@@ -4,6 +4,7 @@ from flask_socketio import SocketIO
 from flask_cors import CORS
 from uploader import NotionFileUploader, ChunkProcessor, download_s3_file_from_url
 from uploader.streaming_uploader import StreamingUploadManager
+from uploader.yt_dlp_importer import YtDlpImporter
 from uploader.s3_downloader import cleanup_stale_streams
 from dotenv import load_dotenv
 import os
@@ -465,61 +466,7 @@ def _normalize_yt_dlp_inputs(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _execute_yt_dlp_job(job_id: str) -> None:
-    job_snapshot = yt_dlp_job_registry.get_internal(job_id)
-    if not job_snapshot:
-        return
-
-    yt_dlp_job_registry.update(job_id, status='running', started_at=_utcnow_isoformat())
-    normalized_arguments = job_snapshot.get('normalized_arguments')
-
-    if not normalized_arguments:
-        yt_dlp_job_registry.update(job_id, status='failed', error='No command arguments were generated for yt-dlp')
-        return
-
-    executable = normalized_arguments[0]
-    if shutil.which(executable) is None:
-        yt_dlp_job_registry.update(job_id, status='failed', error=f"Executable '{executable}' is not available on the server")
-        return
-
-    try:
-        process = subprocess.Popen(
-            normalized_arguments,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-        )
-    except Exception as exc:
-        yt_dlp_job_registry.update(job_id, status='failed', error=str(exc))
-        return
-
-    yt_dlp_job_registry.set_process(job_id, process)
-
-    try:
-        if process.stdout is not None:
-            for raw_line in process.stdout:
-                line = raw_line.rstrip('\n')
-                yt_dlp_job_registry.append_log(job_id, line)
-                progress_update = _parse_yt_dlp_progress(line)
-                if progress_update:
-                    yt_dlp_job_registry.update_progress(job_id, progress_update)
-        exit_code = process.wait()
-    finally:
-        yt_dlp_job_registry.clear_process(job_id)
-
-    final_snapshot = yt_dlp_job_registry.get_internal(job_id)
-    if not final_snapshot:
-        return
-
-    if final_snapshot.get('status') == 'cancelled':
-        return
-
-    if exit_code == 0:
-        yt_dlp_job_registry.update(job_id, status='completed', completed_at=_utcnow_isoformat(), error=None)
-        yt_dlp_job_registry.update_progress(job_id, {'percentage': 100.0})
-    else:
-        yt_dlp_job_registry.update(job_id, status='failed', error=f'yt-dlp exited with code {exit_code}', completed_at=_utcnow_isoformat())
+    yt_dlp_importer.execute(job_id, _parse_yt_dlp_progress)
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -1073,6 +1020,12 @@ if not hasattr(uploader, 'get_user_by_id'):
 
 # Initialize streaming upload manager
 streaming_upload_manager = StreamingUploadManager(api_token=NOTION_API_TOKEN, socketio=socketio, notion_uploader=uploader)
+
+yt_dlp_importer = YtDlpImporter(
+    upload_manager=streaming_upload_manager,
+    job_registry=yt_dlp_job_registry,
+    ensure_folder_structure=ensure_folder_structure,
+)
 
 # Helper to retrieve download metadata
 def fetch_download_metadata(page_id: str, filename: str) -> Dict[str, Any]:
@@ -3208,23 +3161,40 @@ def create_yt_dlp_job():
     job_id = payload.get('job_id') or str(uuid.uuid4())
     now_iso = _utcnow_isoformat()
 
+    requested_by = getattr(current_user, 'id', None)
+    user_database_id = payload.get('user_database_id')
+    if not user_database_id and requested_by:
+        try:
+            user_database_id = uploader.get_user_database_id(requested_by)
+        except Exception:
+            user_database_id = None
+
+    folder_path = (payload.get('folder_path') or '/').strip() or '/'
+
     job_record = {
         'id': job_id,
         'status': 'queued',
         'created_at': now_iso,
         'updated_at': now_iso,
-        'requested_by': getattr(current_user, 'id', None),
+        'requested_by': requested_by,
         'url': normalized['url'],
         'raw_command': payload.get('command'),
         'options': payload.get('options') if isinstance(payload.get('options'), list) else None,
         'normalized_command': normalized['normalized_command'],
         'normalized_arguments': normalized['normalized_arguments'],
+        'user_database_id': user_database_id,
+        'folder_path': folder_path,
         'progress': {
             'percentage': 0.0,
             'downloaded_bytes': 0,
             'total_bytes': None,
             'speed_bytes': None,
             'eta_seconds': None,
+            'upload_percentage': 0.0,
+            'current_file_index': 0,
+            'files_completed': 0,
+            'total_files': 0,
+            'stage': 'queued',
         },
         'logs': [],
         'error': None,
