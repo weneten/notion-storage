@@ -2,9 +2,67 @@ import concurrent.futures
 import io
 import os
 import sys
+import types
 from types import SimpleNamespace
 
 import pytest
+
+
+class _DummyClient:
+    def download_file(self, *args, **kwargs):
+        return None
+
+
+dummy_boto3 = types.ModuleType('boto3')
+dummy_boto3.client = lambda *args, **kwargs: _DummyClient()
+
+dummy_transfer_module = types.ModuleType('boto3.s3.transfer')
+
+
+class TransferConfig:  # noqa: D401 - minimal stub
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+class S3Transfer:
+    def __init__(self, client=None, config=None):
+        self.client = client or _DummyClient()
+
+    def download_file(self, *args, **kwargs):
+        return self.client.download_file(*args, **kwargs)
+
+
+dummy_transfer_module.TransferConfig = TransferConfig
+dummy_transfer_module.S3Transfer = S3Transfer
+sys.modules['boto3'] = dummy_boto3
+sys.modules['boto3.s3'] = types.ModuleType('boto3.s3')
+sys.modules['boto3.s3.transfer'] = dummy_transfer_module
+
+dummy_botocore = types.ModuleType('botocore')
+dummy_botocore.UNSIGNED = object()
+
+botocore_config = types.ModuleType('botocore.config')
+
+
+class Config:  # noqa: D401 - minimal stub
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+botocore_config.Config = Config
+
+botocore_exceptions = types.ModuleType('botocore.exceptions')
+
+
+class NoCredentialsError(Exception):
+    pass
+
+
+botocore_exceptions.NoCredentialsError = NoCredentialsError
+
+sys.modules['botocore'] = dummy_botocore
+sys.modules['botocore.config'] = botocore_config
+sys.modules['botocore.exceptions'] = botocore_exceptions
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -28,6 +86,39 @@ def clear_job_registry():
     yield
     with flask_app.yt_dlp_job_registry._lock:  # pylint: disable=protected-access
         flask_app.yt_dlp_job_registry._jobs.clear()  # pylint: disable=protected-access
+
+
+@pytest.fixture(autouse=True)
+def stub_importer_dependencies(monkeypatch):
+    class DummyUploadManager:
+        def __init__(self):
+            self.created = []
+
+        def create_upload_session(self, **kwargs):
+            self.created.append(kwargs)
+            return f"upload-{len(self.created)}"
+
+        def process_upload_stream(self, upload_id, stream):  # noqa: D401 - simple stub
+            for _ in stream:
+                pass
+            return {'upload_id': upload_id, 'status': 'completed'}
+
+    dummy_manager = DummyUploadManager()
+    monkeypatch.setattr(flask_app, 'ensure_folder_structure', lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        flask_app.yt_dlp_importer,
+        'ensure_folder_structure',
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        flask_app.yt_dlp_importer,
+        'upload_manager',
+        dummy_manager,
+        raising=False,
+    )
+    monkeypatch.setattr(flask_app.uploader, 'get_user_database_id', lambda user_id: 'test-db')
+    yield
 
 
 @pytest.fixture
@@ -71,7 +162,7 @@ def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately):
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
 
-    resp = client.post('/api/yt-dlp/jobs', json={'url': 'https://example.com/video'})
+    resp = client.post('/api/yt-dlp/jobs', json={'url': 'https://example.com/video', 'user_database_id': 'test-db'})
     assert resp.status_code == 201
     job_data = resp.get_json()['job']
     job_id = job_data['id']
@@ -102,7 +193,7 @@ def test_cancel_job_marks_cancelled(monkeypatch):
 
     monkeypatch.setattr(flask_app, 'yt_dlp_executor', SimpleNamespace(submit=submit))
 
-    resp = client.post('/api/yt-dlp/jobs', json={'url': 'https://example.com/video'})
+    resp = client.post('/api/yt-dlp/jobs', json={'url': 'https://example.com/video', 'user_database_id': 'test-db'})
     assert resp.status_code == 201
     job_id = resp.get_json()['job']['id']
 
