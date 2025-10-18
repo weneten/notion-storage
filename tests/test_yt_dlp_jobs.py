@@ -158,6 +158,19 @@ def test_create_job_requires_url():
     assert 'error' in resp.get_json()
 
 
+def test_build_command_places_output_before_url(tmp_path):
+    importer = importer_module.YtDlpImporter(upload_manager=None, job_registry=None)
+    normalized_command = (
+        "yt-dlp --newline --output %(title)s.%(ext)s --format best https://example.com/video"
+    )
+
+    built = list(importer._build_command(normalized_command, tmp_path.as_posix()))
+
+    assert built[-1] == 'https://example.com/video'
+    assert '--output' in built
+    assert built.index('--output') < len(built) - 1
+
+
 def test_create_job_requires_yt_dlp_binary(monkeypatch):
     client = flask_app.app.test_client()
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: None)
