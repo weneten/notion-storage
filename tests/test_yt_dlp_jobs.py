@@ -230,6 +230,64 @@ def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately):
     assert any(job['id'] == job_id for job in jobs)
 
 
+def test_job_resolves_missing_user_database_id(monkeypatch, run_jobs_immediately):
+    client = flask_app.app.test_client()
+
+    class DummyProcess:
+        def __init__(self):
+            self.stdout = io.StringIO('[download] 100% of 1.0MiB in 00:01\n')
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return None
+
+    class ResolvingUploadManager:
+        def __init__(self):
+            self.created = []
+            self.processed_streams = []
+            self.resolution_calls = []
+
+            def _resolve(user_id):
+                self.resolution_calls.append(user_id)
+                return 'resolved-db'
+
+            self.notion_uploader = SimpleNamespace(get_user_database_id=_resolve)
+
+        def create_upload_session(self, **kwargs):
+            self.created.append(kwargs)
+            return f"upload-{len(self.created)}"
+
+        def process_upload_stream(self, upload_id, stream):
+            data = io.BytesIO()
+            for chunk in stream:
+                data.write(chunk)
+            self.processed_streams.append({'upload_id': upload_id, 'size': data.tell()})
+            return {'upload_id': upload_id, 'status': 'completed'}
+
+    resolving_manager = ResolvingUploadManager()
+    monkeypatch.setattr(flask_app.yt_dlp_importer, 'upload_manager', resolving_manager, raising=False)
+    monkeypatch.setattr(flask_app.uploader, 'get_user_database_id', lambda user_id: None)
+    monkeypatch.setattr(flask_app, 'current_user', SimpleNamespace(id='user-123'))
+    monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
+    monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
+
+    resp = client.post('/api/yt-dlp/jobs', json={'url': 'https://example.com/video'})
+    assert resp.status_code == 201
+
+    job_payload = resp.get_json()['job']
+    job_id = job_payload['id']
+
+    status_resp = client.get(f'/api/yt-dlp/jobs/{job_id}')
+    assert status_resp.status_code == 200
+    status_job = status_resp.get_json()['job']
+
+    assert status_job['status'] == 'completed'
+    assert status_job['user_database_id'] == 'resolved-db'
+    assert status_job['terminal_state'] == 'success'
+    assert resolving_manager.resolution_calls == ['user-123']
+
 def test_cancel_job_marks_cancelled(monkeypatch):
     client = flask_app.app.test_client()
 

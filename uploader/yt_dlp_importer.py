@@ -11,7 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Optional, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
 class YtDlpImporter:
@@ -44,9 +44,15 @@ class YtDlpImporter:
         folder_path = (job_snapshot.get('folder_path') or '/').strip() or '/'
 
         if not user_database_id:
-            self.job_registry.update(job_id, status='failed', error='User database ID is required to upload files')
-            self.job_registry.update_progress(job_id, {'stage': 'failed'})
-            return
+            resolved_database_id = self._resolve_user_database_id(job_snapshot.get('requested_by'))
+            if resolved_database_id:
+                user_database_id = resolved_database_id
+                job_snapshot['user_database_id'] = resolved_database_id
+                self.job_registry.update(job_id, user_database_id=resolved_database_id)
+            else:
+                self.job_registry.update(job_id, status='failed', error='User database ID is required to upload files')
+                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                return
 
         if self.ensure_folder_structure:
             try:
@@ -336,3 +342,42 @@ class YtDlpImporter:
         from datetime import datetime, timezone
 
         return datetime.now(timezone.utc).isoformat()
+
+    def _resolve_user_database_id(self, user_id: Optional[str]) -> Optional[str]:
+        """Best-effort resolution of a user's database ID at execution time."""
+
+        if not user_id:
+            return None
+
+        manager = self.upload_manager
+        if manager is None:
+            return None
+
+        candidates: List[Any] = []
+
+        def _append_candidate(candidate: Any) -> None:
+            if candidate is None:
+                return
+            if any(existing is candidate for existing in candidates):
+                return
+            candidates.append(candidate)
+
+        _append_candidate(getattr(manager, 'notion_uploader', None))
+
+        nested = getattr(manager, 'uploader', None)
+        _append_candidate(nested)
+        if nested is not None:
+            _append_candidate(getattr(nested, 'notion_uploader', None))
+
+        for uploader in candidates:
+            resolver = getattr(uploader, 'get_user_database_id', None)
+            if not callable(resolver):
+                continue
+            try:
+                resolved = resolver(user_id)
+            except Exception:
+                continue
+            if resolved:
+                return resolved
+
+        return None
