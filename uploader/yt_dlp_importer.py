@@ -157,9 +157,20 @@ class YtDlpImporter:
     # Internal helpers -----------------------------------------------------------
     def _build_command(self, normalized_command: str, output_dir: str) -> Iterable[str]:
         parts = shlex.split(normalized_command)
+        if not parts:
+            return []
+
+        # ``_normalize_yt_dlp_inputs`` always appends the target URL as the final
+        # argument.  Preserve that behaviour explicitly so we can safely add our
+        # own ``--output`` argument *before* the URL.  Putting the URL before the
+        # option caused yt-dlp to treat the destination path as a second URL in
+        # some environments, which meant downloads never started.
+        url_token = parts[-1]
+        option_tokens = parts[:-1]
+
         cleaned_parts = []
         skip_next = False
-        for idx, token in enumerate(parts):
+        for token in option_tokens:
             if skip_next:
                 skip_next = False
                 continue
@@ -171,6 +182,7 @@ class YtDlpImporter:
         cleaned_parts.extend([
             '--output',
             os.path.join(output_dir, '%(autonumber+000)3d_%(title)s.%(ext)s'),
+            url_token,
         ])
         return cleaned_parts
 
