@@ -999,8 +999,8 @@ const uploadFile = async () => {
 // Remote import workflow helpers
 // ---------------------------------------------------------------------------
 
-const REMOTE_IMPORT_ENDPOINT = '/api/upload/import';
-const REMOTE_IMPORT_STATUS_ENDPOINT = jobId => `/api/upload/import/${encodeURIComponent(jobId)}`;
+const REMOTE_IMPORT_ENDPOINT = '/api/yt-dlp/jobs';
+const REMOTE_IMPORT_STATUS_ENDPOINT = jobId => `/api/yt-dlp/jobs/${encodeURIComponent(jobId)}`;
 const REMOTE_IMPORT_POLL_INTERVAL_MS = 3000;
 
 const remoteImportState = {
@@ -1009,7 +1009,12 @@ const remoteImportState = {
     lastStatus: null,
     lastMessage: null,
     lastProgressText: null,
-    isSubmitting: false
+    lastFilesCompleted: 0,
+    lastStage: null,
+    isSubmitting: false,
+    useSocket: false,
+    socketConnected: false,
+    socketSubscribedJobId: null
 };
 
 function getRemoteImportElements() {
@@ -1133,23 +1138,72 @@ function stopRemoteImportTracking() {
     remoteImportState.lastStatus = null;
     remoteImportState.lastMessage = null;
     remoteImportState.lastProgressText = null;
+    remoteImportState.lastFilesCompleted = 0;
+    remoteImportState.lastStage = null;
+    remoteImportState.useSocket = false;
+    remoteImportState.socketSubscribedJobId = null;
 }
 
-function processRemoteImportUpdate(data) {
-    if (!data) {
+function processRemoteImportUpdate(payload) {
+    if (!payload) {
         return;
     }
 
-    const status = (data.status || '').toString().toLowerCase();
-    const message = data.message || data.detail || data.status_message || '';
-    let progressValue = null;
+    const job = payload.job || payload;
+    if (!job) {
+        return;
+    }
 
-    if (typeof data.progress === 'number') {
-        progressValue = data.progress;
-    } else if (typeof data.percent === 'number') {
-        progressValue = data.percent;
-    } else if (typeof data.percentage === 'number') {
-        progressValue = data.percentage;
+    if (remoteImportState.jobId && job.id && job.id !== remoteImportState.jobId) {
+        return;
+    }
+
+    const progress = job.progress || {};
+    const status = (job.status || '').toString().toLowerCase();
+    const stage = (progress.stage || '').toString().toLowerCase();
+    const terminalState = (job.terminal_state || '').toString().toLowerCase();
+
+    const messageSources = [
+        payload.message,
+        payload.detail,
+        payload.status_message,
+        job.message,
+        job.detail,
+        job.status_message,
+        progress.status_message,
+    ];
+    let combinedMessage = messageSources.find(msg => typeof msg === 'string' && msg.trim().length > 0);
+
+    if (!combinedMessage) {
+        if (stage) {
+            combinedMessage = `Remote import ${stage}`;
+        } else if (status) {
+            combinedMessage = `Remote import ${status}`;
+        } else {
+            combinedMessage = 'Remote import update';
+        }
+    }
+
+    const currentFile = progress.current_file;
+    if (currentFile) {
+        if (stage === 'uploading') {
+            combinedMessage = `Uploading ${currentFile}`;
+        } else if (stage === 'deleting') {
+            combinedMessage = `Finalizing ${currentFile}`;
+        }
+    }
+
+    let progressValue = null;
+    if (typeof progress.percentage === 'number') {
+        progressValue = progress.percentage;
+    } else if (typeof progress.progress === 'number') {
+        progressValue = progress.progress;
+    } else if (typeof payload.progress === 'number') {
+        progressValue = payload.progress;
+    } else if (typeof payload.percent === 'number') {
+        progressValue = payload.percent;
+    } else if (typeof payload.percentage === 'number') {
+        progressValue = payload.percentage;
     }
 
     let progressText = null;
@@ -1162,9 +1216,31 @@ function processRemoteImportUpdate(data) {
         progressText = ` (${percent}% complete)`;
     }
 
-    const combinedMessage = message || (status ? `Remote import ${status}` : 'Remote import update');
-    const terminalSuccess = ['success', 'completed', 'complete', 'done', 'finished'].includes(status);
-    const terminalFailure = ['failed', 'error', 'cancelled', 'canceled', 'rejected'].includes(status);
+    const statusTokens = [status, stage, terminalState].filter(Boolean);
+    const terminalSuccessTokens = new Set(['success', 'completed', 'complete', 'done', 'finished']);
+    const terminalFailureTokens = new Set(['failed', 'failure', 'error', 'cancelled', 'canceled', 'rejected']);
+    const terminalSuccess = statusTokens.some(token => terminalSuccessTokens.has(token));
+    const terminalFailure = statusTokens.some(token => terminalFailureTokens.has(token));
+
+    const filesCompleted = typeof progress.files_completed === 'number' ? progress.files_completed : null;
+    if (filesCompleted !== null) {
+        if (filesCompleted > (remoteImportState.lastFilesCompleted || 0)) {
+            remoteImportState.lastFilesCompleted = filesCompleted;
+            if (typeof loadFiles === 'function') {
+                try {
+                    loadFiles();
+                } catch (err) {
+                    console.warn('loadFiles failed:', err);
+                }
+            }
+        } else if (filesCompleted > remoteImportState.lastFilesCompleted) {
+            remoteImportState.lastFilesCompleted = filesCompleted;
+        }
+    }
+
+    if (stage && stage !== remoteImportState.lastStage) {
+        remoteImportState.lastStage = stage;
+    }
 
     if (terminalSuccess) {
         showStatus(progressText ? `${combinedMessage}${progressText}` : combinedMessage, 'success');
@@ -1181,13 +1257,17 @@ function processRemoteImportUpdate(data) {
     }
 
     if (terminalFailure) {
-        const failureMessage = combinedMessage || 'Remote import failed.';
-        showStatus(failureMessage, 'error');
+        const failureMessage = progressText ? `${combinedMessage}${progressText}` : combinedMessage;
+        showStatus(failureMessage || 'Remote import failed.', 'error');
         stopRemoteImportTracking();
         return;
     }
 
-    if (status !== remoteImportState.lastStatus || combinedMessage !== remoteImportState.lastMessage || progressText !== remoteImportState.lastProgressText) {
+    if (
+        status !== remoteImportState.lastStatus ||
+        combinedMessage !== remoteImportState.lastMessage ||
+        progressText !== remoteImportState.lastProgressText
+    ) {
         showStatus(progressText ? `${combinedMessage}${progressText}` : combinedMessage, 'info');
         remoteImportState.lastStatus = status;
         remoteImportState.lastMessage = combinedMessage;
@@ -1197,6 +1277,9 @@ function processRemoteImportUpdate(data) {
 
 async function pollRemoteImportStatus(jobId) {
     try {
+        if (remoteImportState.useSocket && remoteImportState.socketConnected) {
+            return;
+        }
         const response = await fetch(REMOTE_IMPORT_STATUS_ENDPOINT(jobId), { credentials: 'include' });
         if (response.status === 404) {
             console.warn('Remote import status endpoint returned 404; will retry shortly.');
@@ -1207,7 +1290,7 @@ async function pollRemoteImportStatus(jobId) {
             throw new Error(errorText || `Status request failed with ${response.status}`);
         }
         const data = await response.json();
-        processRemoteImportUpdate(data);
+        processRemoteImportUpdate(data && (data.job || data));
     } catch (error) {
         console.error('Error polling remote import status:', error);
         showStatus(`Unable to retrieve import status: ${error.message}`, 'error');
@@ -1218,15 +1301,73 @@ async function pollRemoteImportStatus(jobId) {
 function startRemoteImportTracking(jobId, initialPayload) {
     stopRemoteImportTracking();
     remoteImportState.jobId = jobId;
+    remoteImportState.lastFilesCompleted = 0;
+    remoteImportState.lastStage = null;
+    remoteImportState.useSocket = remoteImportState.socketConnected;
+    remoteImportState.socketSubscribedJobId = remoteImportState.useSocket ? jobId : null;
 
     if (initialPayload) {
-        processRemoteImportUpdate(initialPayload);
+        processRemoteImportUpdate(initialPayload && (initialPayload.job || initialPayload));
     }
 
-    pollRemoteImportStatus(jobId);
-    remoteImportState.timerId = setInterval(() => {
+    if (!remoteImportState.useSocket) {
         pollRemoteImportStatus(jobId);
-    }, REMOTE_IMPORT_POLL_INTERVAL_MS);
+        remoteImportState.timerId = setInterval(() => {
+            pollRemoteImportStatus(jobId);
+        }, REMOTE_IMPORT_POLL_INTERVAL_MS);
+    }
+}
+
+function handleRemoteImportSocketUpdate(eventPayload) {
+    if (!eventPayload) {
+        return;
+    }
+    const job = eventPayload.job || eventPayload;
+    if (!job || !remoteImportState.jobId) {
+        return;
+    }
+    if (job.id && job.id !== remoteImportState.jobId) {
+        return;
+    }
+
+    if (job.id && remoteImportState.jobId === job.id) {
+        remoteImportState.useSocket = true;
+        remoteImportState.socketSubscribedJobId = job.id;
+    }
+
+    processRemoteImportUpdate(job);
+}
+
+function onRemoteImportSocketConnect() {
+    remoteImportState.socketConnected = true;
+    if (!remoteImportState.jobId) {
+        return;
+    }
+
+    if (remoteImportState.timerId) {
+        clearInterval(remoteImportState.timerId);
+        remoteImportState.timerId = null;
+    }
+
+    remoteImportState.useSocket = true;
+    remoteImportState.socketSubscribedJobId = remoteImportState.jobId;
+}
+
+function onRemoteImportSocketDisconnect() {
+    remoteImportState.socketConnected = false;
+    remoteImportState.socketSubscribedJobId = null;
+
+    if (!remoteImportState.jobId) {
+        return;
+    }
+
+    if (!remoteImportState.timerId) {
+        remoteImportState.useSocket = false;
+        pollRemoteImportStatus(remoteImportState.jobId);
+        remoteImportState.timerId = setInterval(() => {
+            pollRemoteImportStatus(remoteImportState.jobId);
+        }, REMOTE_IMPORT_POLL_INTERVAL_MS);
+    }
 }
 
 async function handleRemoteImportSubmit(event) {
@@ -1259,15 +1400,15 @@ async function handleRemoteImportSubmit(event) {
     }
 
     const payload = {
-        source_url: sourceUrl
+        url: sourceUrl
     };
 
     const resolvedDestination = destinationFolder || (window.currentFolder && window.currentFolder.trim()) || '/';
     if (resolvedDestination) {
-        payload.destination_folder = resolvedDestination;
+        payload.folder_path = resolvedDestination;
     }
     if (advancedCommand) {
-        payload.advanced_command = advancedCommand;
+        payload.command = advancedCommand;
     }
 
     remoteImportState.isSubmitting = true;
@@ -1293,16 +1434,18 @@ async function handleRemoteImportSubmit(event) {
             return;
         }
 
-        const jobId = data && (data.job_id || data.jobId || data.id);
+        const jobPayload = data && (data.job || data);
+        const jobId = jobPayload && (jobPayload.job_id || jobPayload.jobId || jobPayload.id || jobPayload.identifier);
         if (!jobId) {
             showStatus('Import started but no job identifier was returned.', 'error');
             return;
         }
 
-        showStatus(data && data.message ? data.message : 'Import request accepted. Monitoring progress...', 'info');
+        const confirmationMessage = (data && data.message) || (jobPayload && jobPayload.message) || 'Import request accepted. Monitoring progress...';
+        showStatus(confirmationMessage, 'info');
         closeRemoteImportModal();
         resetRemoteImportForm();
-        startRemoteImportTracking(jobId, data);
+        startRemoteImportTracking(jobId, jobPayload);
     } catch (error) {
         console.error('Remote import submission failed:', error);
         showStatus(`Failed to start remote import: ${error.message}`, 'error');
@@ -1354,5 +1497,8 @@ window.__remoteImport = {
     startRemoteImportTracking,
     stopRemoteImportTracking,
     pollRemoteImportStatus,
-    initializeRemoteImportWorkflow
+    initializeRemoteImportWorkflow,
+    handleRemoteImportSocketUpdate,
+    onSocketConnect: onRemoteImportSocketConnect,
+    onSocketDisconnect: onRemoteImportSocketDisconnect
 };

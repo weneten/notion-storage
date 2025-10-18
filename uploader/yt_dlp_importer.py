@@ -37,6 +37,7 @@ class YtDlpImporter:
 
         if self.upload_manager is None:
             self.job_registry.update(job_id, status='failed', error='Streaming upload manager is not configured')
+            self.job_registry.update_progress(job_id, {'stage': 'failed'})
             return
 
         user_database_id = job_snapshot.get('user_database_id')
@@ -44,6 +45,7 @@ class YtDlpImporter:
 
         if not user_database_id:
             self.job_registry.update(job_id, status='failed', error='User database ID is required to upload files')
+            self.job_registry.update_progress(job_id, {'stage': 'failed'})
             return
 
         if self.ensure_folder_structure:
@@ -51,11 +53,13 @@ class YtDlpImporter:
                 self.ensure_folder_structure(user_database_id, folder_path)
             except Exception as exc:  # pragma: no cover - defensive logging
                 self.job_registry.update(job_id, status='failed', error=str(exc))
+                self.job_registry.update_progress(job_id, {'stage': 'failed'})
                 return
 
         normalized_command = job_snapshot.get('normalized_command')
         if not normalized_command:
             self.job_registry.update(job_id, status='failed', error='No command arguments were generated for yt-dlp')
+            self.job_registry.update_progress(job_id, {'stage': 'failed'})
             return
 
         with tempfile.TemporaryDirectory(prefix=f"yt-dlp-{job_id}-") as output_dir:
@@ -64,6 +68,7 @@ class YtDlpImporter:
             executable = command_args[0]
             if shutil.which(executable) is None:
                 self.job_registry.update(job_id, status='failed', error=f"Executable '{executable}' is not available on the server")
+                self.job_registry.update_progress(job_id, {'stage': 'failed'})
                 return
 
             try:
@@ -77,10 +82,12 @@ class YtDlpImporter:
                 )
             except Exception as exc:
                 self.job_registry.update(job_id, status='failed', error=str(exc))
+                self.job_registry.update_progress(job_id, {'stage': 'failed'})
                 return
 
             self.job_registry.set_process(job_id, process)
             self.job_registry.update(job_id, status='running', started_at=self._utcnow())
+            self.job_registry.update_progress(job_id, {'stage': 'downloading'})
 
             stop_event = threading.Event()
             process_done_event = threading.Event()
@@ -126,6 +133,7 @@ class YtDlpImporter:
 
             if upload_error.get('error'):
                 self.job_registry.update(job_id, status='failed', error=str(upload_error['error']), completed_at=self._utcnow())
+                self.job_registry.update_progress(job_id, {'stage': 'failed'})
                 return
 
             final_snapshot = self.job_registry.get_internal(job_id)
@@ -139,11 +147,12 @@ class YtDlpImporter:
                     {
                         'percentage': 100.0,
                         'upload_percentage': 100.0,
-                        'stage': 'completed',
+                        'stage': 'done',
                     },
                 )
             else:
                 self.job_registry.update(job_id, status='failed', error=f'yt-dlp exited with code {exit_code}', completed_at=self._utcnow())
+                self.job_registry.update_progress(job_id, {'stage': 'failed'})
 
     # Internal helpers -----------------------------------------------------------
     def _build_command(self, normalized_command: str, output_dir: str) -> Iterable[str]:
@@ -298,6 +307,14 @@ class YtDlpImporter:
             )
         finally:
             try:
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'deleting',
+                        'current_file': file_name,
+                        'current_file_index': index,
+                    },
+                )
                 file_path.unlink()
             except FileNotFoundError:
                 pass

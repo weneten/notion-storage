@@ -168,13 +168,17 @@ def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately):
     job_id = job_data['id']
 
     assert job_data['status'] == 'completed'
+    assert job_data['terminal_state'] == 'success'
     assert job_data['progress']['percentage'] == 100.0
+    assert job_data['progress']['stage'] == 'done'
 
     status_resp = client.get(f'/api/yt-dlp/jobs/{job_id}')
     assert status_resp.status_code == 200
     status_job = status_resp.get_json()['job']
     assert status_job['status'] == 'completed'
+    assert status_job['terminal_state'] == 'success'
     assert status_job['progress']['percentage'] == 100.0
+    assert status_job['progress']['stage'] == 'done'
     assert status_job['progress']['downloaded_bytes'] >= 10 * 1024 * 1024
 
     list_resp = client.get('/api/yt-dlp/jobs')
@@ -201,4 +205,6 @@ def test_cancel_job_marks_cancelled(monkeypatch):
     assert cancel_resp.status_code == 200
     cancelled_job = cancel_resp.get_json()['job']
     assert cancelled_job['status'] == 'cancelled'
+    assert cancelled_job['terminal_state'] == 'cancelled'
     assert cancelled_job['error']
+    assert cancelled_job['progress']['stage'] == 'cancelled'
