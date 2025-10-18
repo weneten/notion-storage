@@ -3273,6 +3273,24 @@ def create_yt_dlp_job():
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 
+    normalized_arguments = normalized.get('normalized_arguments') or []
+    if not normalized_arguments:
+        return jsonify({'error': 'No command arguments were generated for yt-dlp'}), 500
+
+    executable = normalized_arguments[0]
+    if shutil.which(executable) is None:
+        return (
+            jsonify(
+                {
+                    'error': (
+                        f"Executable '{executable}' is not available on the server. "
+                        'Install yt-dlp or adjust PATH before importing from a remote URL.'
+                    )
+                }
+            ),
+            503,
+        )
+
     job_id = payload.get('job_id') or str(uuid.uuid4())
     now_iso = _utcnow_isoformat()
 

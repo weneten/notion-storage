@@ -130,6 +130,12 @@ def stub_importer_dependencies(monkeypatch):
     yield dummy_manager
 
 
+@pytest.fixture(autouse=True)
+def stub_yt_dlp_binary(monkeypatch):
+    monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
+    yield
+
+
 @pytest.fixture
 def run_jobs_immediately(monkeypatch):
     def submit(func, job_id):
@@ -150,6 +156,21 @@ def test_create_job_requires_url():
     resp = client.post('/api/yt-dlp/jobs', json={})
     assert resp.status_code == 400
     assert 'error' in resp.get_json()
+
+
+def test_create_job_requires_yt_dlp_binary(monkeypatch):
+    client = flask_app.app.test_client()
+    monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: None)
+
+    resp = client.post(
+        '/api/yt-dlp/jobs',
+        json={'url': 'https://example.com/video', 'user_database_id': 'test-db'},
+    )
+
+    assert resp.status_code == 503
+    payload = resp.get_json()
+    assert payload['error'].startswith("Executable 'yt-dlp'")
+    assert flask_app.yt_dlp_job_registry.list() == []
 
 
 def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately):
