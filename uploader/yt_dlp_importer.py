@@ -176,12 +176,13 @@ class YtDlpImporter:
         observed_sizes: Dict[Path, int] = {}
         processed: Set[Path] = set()
 
-        while not stop_event.is_set() or not process_done_event.is_set():
+        while True:
             try:
                 entries = list(output_dir.iterdir())
             except FileNotFoundError:
                 break
 
+            pending_rescan = False
             for entry in entries:
                 if entry in processed:
                     continue
@@ -197,12 +198,16 @@ class YtDlpImporter:
                 previous = observed_sizes.get(entry)
                 if previous is None or previous != size:
                     observed_sizes[entry] = size
+                    pending_rescan = True
                     continue
 
                 processed.add(entry)
                 files_queue.put(entry)
 
             if process_done_event.is_set() and not entries:
+                break
+
+            if stop_event.is_set() and process_done_event.is_set() and not pending_rescan:
                 break
 
             time.sleep(0.5)
