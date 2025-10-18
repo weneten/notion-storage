@@ -67,6 +67,7 @@ sys.modules['botocore.exceptions'] = botocore_exceptions
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import app as flask_app
+import uploader.yt_dlp_importer as importer_module
 
 
 @pytest.fixture(autouse=True)
@@ -93,14 +94,22 @@ def stub_importer_dependencies(monkeypatch):
     class DummyUploadManager:
         def __init__(self):
             self.created = []
+            self.processed_streams = []
 
         def create_upload_session(self, **kwargs):
             self.created.append(kwargs)
             return f"upload-{len(self.created)}"
 
         def process_upload_stream(self, upload_id, stream):  # noqa: D401 - simple stub
-            for _ in stream:
-                pass
+            collected = io.BytesIO()
+            for chunk in stream:
+                collected.write(chunk)
+            self.processed_streams.append(
+                {
+                    'upload_id': upload_id,
+                    'size': collected.tell(),
+                }
+            )
             return {'upload_id': upload_id, 'status': 'completed'}
 
     dummy_manager = DummyUploadManager()
@@ -118,7 +127,7 @@ def stub_importer_dependencies(monkeypatch):
         raising=False,
     )
     monkeypatch.setattr(flask_app.uploader, 'get_user_database_id', lambda user_id: 'test-db')
-    yield
+    yield dummy_manager
 
 
 @pytest.fixture
@@ -208,3 +217,92 @@ def test_cancel_job_marks_cancelled(monkeypatch):
     assert cancelled_job['terminal_state'] == 'cancelled'
     assert cancelled_job['error']
     assert cancelled_job['progress']['stage'] == 'cancelled'
+
+
+def test_yt_dlp_sequential_file_processing(
+    monkeypatch,
+    tmp_path,
+    run_jobs_immediately,
+    stub_importer_dependencies,
+):
+    dummy_manager = stub_importer_dependencies
+
+    download_dir = tmp_path / 'downloads'
+    download_dir.mkdir()
+    contents = [b'alpha', b'beta-data']
+    file_paths = []
+    for index, data in enumerate(contents, start=1):
+        path = download_dir / f'{index:02d}_test.txt'
+        path.write_bytes(data)
+        file_paths.append(path)
+
+    def fake_tempdir(*args, **kwargs):
+        class _TempDir:
+            def __enter__(self_inner):
+                return str(download_dir)
+
+            def __exit__(self_inner, exc_type, exc, tb):  # noqa: D401 - simple passthrough
+                return False
+
+        return _TempDir()
+
+    monkeypatch.setattr(importer_module.tempfile, 'TemporaryDirectory', fake_tempdir)
+
+    deleted_files = []
+    original_unlink = importer_module.Path.unlink
+
+    def tracking_unlink(self, *args, **kwargs):
+        deleted_files.append(self.name)
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(importer_module.Path, 'unlink', tracking_unlink)
+
+    def fake_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
+        for path in file_paths:
+            files_queue.put(path)
+        process_done_event.wait()
+
+    monkeypatch.setattr(
+        flask_app.yt_dlp_importer,
+        '_monitor_downloads',
+        types.MethodType(fake_monitor, flask_app.yt_dlp_importer),
+        raising=False,
+    )
+
+    class DummyProcess:
+        def __init__(self):
+            self.stdout = io.StringIO(
+                "[download]  10.0% of 1.0MiB at 1.0MiB/s ETA 00:09\n"
+                "[download] 100% of 1.0MiB in 00:01\n"
+            )
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
+    monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
+
+    client = flask_app.app.test_client()
+    response = client.post(
+        '/api/yt-dlp/jobs',
+        json={'url': 'https://example.com/video', 'user_database_id': 'test-db'},
+    )
+    assert response.status_code == 201
+    job_payload = response.get_json()['job']
+
+    assert job_payload['status'] == 'completed'
+    assert job_payload['progress']['stage'] == 'done'
+    assert job_payload['progress'].get('files_completed') == len(file_paths)
+    assert [entry['filename'] for entry in dummy_manager.created] == [p.name for p in file_paths]
+    assert [entry['size'] for entry in dummy_manager.processed_streams] == [len(data) for data in contents]
+    assert deleted_files == [p.name for p in file_paths]
+
+    status_response = client.get(f"/api/yt-dlp/jobs/{job_payload['id']}")
+    assert status_response.status_code == 200
+    fetched_job = status_response.get_json()['job']
+    assert fetched_job['status'] == 'completed'
+    assert fetched_job['progress']['stage'] == 'done'
+    assert fetched_job['progress'].get('files_completed') == len(file_paths)
