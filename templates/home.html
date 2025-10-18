@@ -264,7 +264,31 @@
 <script>
     // Initialize socket connection
     const socket = io();
+    window.__appSocket = socket;
     window.currentFolder = "{{ current_folder }}";
+
+    socket.on('connect', () => {
+        if (window.__remoteImport && typeof window.__remoteImport.onSocketConnect === 'function') {
+            window.__remoteImport.onSocketConnect();
+        }
+    });
+
+    socket.on('disconnect', () => {
+        if (window.__remoteImport && typeof window.__remoteImport.onSocketDisconnect === 'function') {
+            window.__remoteImport.onSocketDisconnect();
+        }
+    });
+
+    socket.on('yt_dlp_job_update', (payload) => {
+        if (window.__remoteImport && typeof window.__remoteImport.handleRemoteImportSocketUpdate === 'function') {
+            window.__remoteImport.handleRemoteImportSocketUpdate(payload);
+        }
+    });
+
+    if (socket.connected && window.__remoteImport && typeof window.__remoteImport.onSocketConnect === 'function') {
+        window.__remoteImport.onSocketConnect();
+    }
+
     // Set up event handlers when DOM is fully loaded
     document.addEventListener('DOMContentLoaded', function () {
         // Initialize streaming uploader

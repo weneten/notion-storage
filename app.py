@@ -207,9 +207,15 @@ def _parse_yt_dlp_progress(line: str) -> Optional[Dict[str, Any]]:
 class YtDlpJobRegistry:
     """Manage yt-dlp background jobs in a thread-safe manner."""
 
-    def __init__(self):
+    def __init__(self, socketio: Optional[SocketIO] = None):
         self._lock = threading.RLock()
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._socketio = socketio
+
+    def set_socketio(self, socketio: Optional[SocketIO]) -> None:
+        """Attach a Socket.IO instance for job update broadcasting."""
+
+        self._socketio = socketio
 
     def _job_public_view(self, job: Dict[str, Any]) -> Dict[str, Any]:
         public_job = dict(job)
@@ -218,10 +224,40 @@ class YtDlpJobRegistry:
         public_job.pop('normalized_arguments', None)
         return public_job
 
+    def _derive_terminal_state(self, status: Optional[str]) -> Optional[str]:
+        if not status:
+            return None
+
+        normalized = status.lower()
+        if normalized in {'completed', 'success', 'succeeded'}:
+            return 'success'
+        if normalized in {'failed', 'failure', 'error'}:
+            return 'failure'
+        if normalized in {'cancelled', 'canceled'}:
+            return 'cancelled'
+        return None
+
+    def _emit_job_event(self, event: str, job_snapshot: Dict[str, Any]) -> None:
+        if not self._socketio:
+            return
+        try:
+            payload = {
+                'event': event,
+                'job_id': job_snapshot.get('id'),
+                'job': job_snapshot,
+            }
+            self._socketio.emit('yt_dlp_job_update', payload)
+        except Exception:
+            # Emitting progress updates should never block the job execution path.
+            pass
+
     def create(self, job: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             self._jobs[job['id']] = job
-            return self._job_public_view(job)
+            public_job = self._job_public_view(job)
+
+        self._emit_job_event('created', public_job)
+        return public_job
 
     def list(self) -> List[Dict[str, Any]]:
         with self._lock:
@@ -244,8 +280,13 @@ class YtDlpJobRegistry:
             if not job:
                 return None
             job.update(updates)
+            if 'status' in updates:
+                job['terminal_state'] = self._derive_terminal_state(updates.get('status'))
             job['updated_at'] = _utcnow_isoformat()
-            return self._job_public_view(job)
+            public_job = self._job_public_view(job)
+
+        self._emit_job_event('updated', public_job)
+        return public_job
 
     def update_progress(self, job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -255,7 +296,10 @@ class YtDlpJobRegistry:
             progress = job.setdefault('progress', {})
             progress.update({k: v for k, v in updates.items() if v is not None})
             job['updated_at'] = _utcnow_isoformat()
-            return self._job_public_view(job)
+            public_job = self._job_public_view(job)
+
+        self._emit_job_event('progress', public_job)
+        return public_job
 
     def append_log(self, job_id: str, line: str) -> None:
         timestamp = _utcnow_isoformat()
@@ -311,8 +355,13 @@ class YtDlpJobRegistry:
             job.setdefault('logs', []).append({'timestamp': job['completed_at'], 'message': 'Job cancelled by user'})
             progress = job.setdefault('progress', {})
             progress.setdefault('percentage', 0)
+            progress['stage'] = 'cancelled'
             job['error'] = 'Job cancelled by user'
-            return self._job_public_view(job)
+            job['terminal_state'] = 'cancelled'
+            public_job = self._job_public_view(job)
+
+        self._emit_job_event('cancelled', public_job)
+        return public_job
 
 
 yt_dlp_job_registry = YtDlpJobRegistry()
@@ -603,6 +652,8 @@ socketio = SocketIO(
     ping_timeout=60,
     ping_interval=25
 )
+
+yt_dlp_job_registry.set_socketio(socketio)
 
 
 def _detect_worker_count() -> str:
@@ -3198,6 +3249,7 @@ def create_yt_dlp_job():
         },
         'logs': [],
         'error': None,
+        'terminal_state': None,
     }
 
     yt_dlp_job_registry.create(job_record)
