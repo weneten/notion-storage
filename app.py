@@ -25,6 +25,9 @@ import random
 import string
 import json
 import re
+import shlex
+import subprocess
+import shutil
 from flask_socketio import emit
 from collections import defaultdict
 import gc
@@ -94,6 +97,429 @@ def _parse_notion_datetime(value: str) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _utcnow_isoformat() -> str:
+    """Return the current UTC time in ISO-8601 format with a trailing Z."""
+
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def _parse_size_to_bytes(value: str, unit: str) -> Optional[int]:
+    """Convert a textual size from yt-dlp output into bytes."""
+
+    if not value or not unit:
+        return None
+
+    try:
+        numeric = float(value)
+    except ValueError:
+        return None
+
+    unit = unit.strip()
+    base_units = {
+        'B': 1,
+        'KB': 1000,
+        'MB': 1000 ** 2,
+        'GB': 1000 ** 3,
+        'TB': 1000 ** 4,
+        'PB': 1000 ** 5,
+        'KiB': 1024,
+        'MiB': 1024 ** 2,
+        'GiB': 1024 ** 3,
+        'TiB': 1024 ** 4,
+        'PiB': 1024 ** 5,
+    }
+
+    unit = unit.replace('/s', '')
+    multiplier = base_units.get(unit)
+    if multiplier is None:
+        return None
+
+    return int(numeric * multiplier)
+
+
+def _parse_eta_to_seconds(eta: str) -> Optional[int]:
+    """Convert an ETA string such as 01:23 or 1:02:03 to seconds."""
+
+    if not eta or eta in {'--:--', 'N/A'}:
+        return None
+
+    components = eta.strip().split(':')
+    try:
+        parts = [int(part) for part in components]
+    except ValueError:
+        return None
+
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return seconds
+
+
+_YT_DLP_PROGRESS_PERCENT = re.compile(r'\[download\]\s+(?P<percent>\d+(?:\.\d+)?)%')
+_YT_DLP_PROGRESS_TOTAL = re.compile(r'of\s+(?P<value>\d+(?:\.\d+)?)(?P<unit>[KMGTP]?i?B)')
+_YT_DLP_PROGRESS_SPEED = re.compile(r'at\s+(?P<value>\d+(?:\.\d+)?)(?P<unit>[KMGTP]?i?B/s)')
+_YT_DLP_PROGRESS_ETA = re.compile(r'ETA\s+(?P<eta>[0-9:]+)')
+
+
+def _parse_yt_dlp_progress(line: str) -> Optional[Dict[str, Any]]:
+    """Parse a single progress line from yt-dlp output."""
+
+    if not line.startswith('[download]'):
+        return None
+
+    progress: Dict[str, Any] = {'raw': line}
+    percent_match = _YT_DLP_PROGRESS_PERCENT.search(line)
+    if percent_match:
+        try:
+            progress['percentage'] = float(percent_match.group('percent'))
+        except ValueError:
+            pass
+
+    total_match = _YT_DLP_PROGRESS_TOTAL.search(line)
+    if total_match:
+        total_bytes = _parse_size_to_bytes(total_match.group('value'), total_match.group('unit'))
+        if total_bytes is not None:
+            progress['total_bytes'] = total_bytes
+
+    speed_match = _YT_DLP_PROGRESS_SPEED.search(line)
+    if speed_match:
+        speed_bytes = _parse_size_to_bytes(speed_match.group('value'), speed_match.group('unit'))
+        if speed_bytes is not None:
+            progress['speed_bytes'] = speed_bytes
+
+    eta_match = _YT_DLP_PROGRESS_ETA.search(line)
+    if eta_match:
+        eta_seconds = _parse_eta_to_seconds(eta_match.group('eta'))
+        if eta_seconds is not None:
+            progress['eta_seconds'] = eta_seconds
+
+    total_bytes = progress.get('total_bytes')
+    percentage = progress.get('percentage')
+    if total_bytes is not None and percentage is not None:
+        progress['downloaded_bytes'] = int(total_bytes * (percentage / 100.0))
+
+    return progress
+
+
+class YtDlpJobRegistry:
+    """Manage yt-dlp background jobs in a thread-safe manner."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._jobs: Dict[str, Dict[str, Any]] = {}
+
+    def _job_public_view(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        public_job = dict(job)
+        public_job.pop('_future', None)
+        public_job.pop('_process', None)
+        public_job.pop('normalized_arguments', None)
+        return public_job
+
+    def create(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            self._jobs[job['id']] = job
+            return self._job_public_view(job)
+
+    def list(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [self._job_public_view(job) for job in self._jobs.values()]
+
+    def get(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            return self._job_public_view(job)
+
+    def get_internal(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return self._jobs.get(job_id)
+
+    def update(self, job_id: str, **updates: Any) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            job.update(updates)
+            job['updated_at'] = _utcnow_isoformat()
+            return self._job_public_view(job)
+
+    def update_progress(self, job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            progress = job.setdefault('progress', {})
+            progress.update({k: v for k, v in updates.items() if v is not None})
+            job['updated_at'] = _utcnow_isoformat()
+            return self._job_public_view(job)
+
+    def append_log(self, job_id: str, line: str) -> None:
+        timestamp = _utcnow_isoformat()
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return
+            entries = job.setdefault('logs', [])
+            entries.append({'timestamp': timestamp, 'message': line})
+            # Prevent unbounded growth by keeping the last 200 entries.
+            if len(entries) > 200:
+                del entries[:-200]
+            job['updated_at'] = timestamp
+
+    def set_future(self, job_id: str, future: concurrent.futures.Future) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job['_future'] = future
+
+    def set_process(self, job_id: str, process: subprocess.Popen) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job['_process'] = process
+
+    def clear_process(self, job_id: str) -> None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job:
+                job.pop('_process', None)
+
+    def cancel(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+
+            process: Optional[subprocess.Popen] = job.get('_process')
+            if process and process.poll() is None:
+                try:
+                    process.terminate()
+                except Exception:
+                    pass
+
+            future: Optional[concurrent.futures.Future] = job.get('_future')
+            if future and not future.done():
+                future.cancel()
+
+            job['status'] = 'cancelled'
+            job['completed_at'] = _utcnow_isoformat()
+            job['updated_at'] = job['completed_at']
+            job.setdefault('logs', []).append({'timestamp': job['completed_at'], 'message': 'Job cancelled by user'})
+            progress = job.setdefault('progress', {})
+            progress.setdefault('percentage', 0)
+            job['error'] = 'Job cancelled by user'
+            return self._job_public_view(job)
+
+
+yt_dlp_job_registry = YtDlpJobRegistry()
+yt_dlp_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+
+_YT_DLP_ALLOWED_FLAG_OPTIONS = {
+    '--extract-audio',
+    '--no-playlist',
+    '--yes-playlist',
+    '--restrict-filenames',
+    '--write-sub',
+    '--write-auto-sub',
+    '--embed-subs',
+    '--embed-thumbnail',
+    '--no-warnings',
+    '--ignore-errors',
+    '--continue',
+    '--force-overwrites',
+    '--no-overwrites',
+    '--write-info-json',
+    '--write-thumbnail',
+    '--write-description',
+}
+
+_YT_DLP_ALLOWED_VALUE_OPTIONS = {
+    '-f',
+    '--format',
+    '--audio-format',
+    '--audio-quality',
+    '--playlist-items',
+    '--paths',
+    '-P',
+    '--output',
+    '-o',
+    '--proxy',
+    '--sub-lang',
+    '--sub-format',
+    '--postprocessor-args',
+    '--downloader',
+    '--concurrent-fragments',
+    '--fragment-retries',
+}
+
+
+def _normalize_yt_dlp_inputs(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate and normalise user input for yt-dlp jobs."""
+
+    url = payload.get('url')
+    raw_command = payload.get('command')
+    options = payload.get('options')
+    normalized_options: List[str] = []
+    normalized_url: Optional[str] = None
+
+    if options and not isinstance(options, list):
+        raise ValueError('options must be a list of strings')
+
+    if raw_command:
+        if not isinstance(raw_command, str):
+            raise ValueError('command must be a string')
+        tokens = shlex.split(raw_command)
+        if tokens and tokens[0] == 'yt-dlp':
+            tokens = tokens[1:]
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            if token.startswith('-'):
+                if token in _YT_DLP_ALLOWED_FLAG_OPTIONS:
+                    normalized_options.append(token)
+                elif token in _YT_DLP_ALLOWED_VALUE_OPTIONS:
+                    if idx + 1 >= len(tokens):
+                        raise ValueError(f'Missing value for option {token}')
+                    value = tokens[idx + 1]
+                    normalized_options.extend([token, value])
+                    idx += 1
+                else:
+                    raise ValueError(f'Option {token} is not allowed')
+            else:
+                if normalized_url is not None:
+                    raise ValueError('Only a single URL may be provided')
+                normalized_url = token
+            idx += 1
+
+    if options:
+        for entry in options:
+            if not isinstance(entry, str):
+                raise ValueError('options entries must be strings')
+            parts = shlex.split(entry)
+            if len(parts) == 1:
+                part = parts[0]
+                if part in _YT_DLP_ALLOWED_FLAG_OPTIONS:
+                    normalized_options.append(part)
+                elif part in {'--output', '-o'}:
+                    raise ValueError('Use key=value notation for options that expect a value')
+                else:
+                    raise ValueError(f'Option {part} is not allowed')
+            elif len(parts) == 2:
+                flag, value = parts
+                if flag not in _YT_DLP_ALLOWED_VALUE_OPTIONS:
+                    raise ValueError(f'Option {flag} is not allowed')
+                normalized_options.extend([flag, value])
+            else:
+                raise ValueError('options entries must contain at most one flag and one value')
+
+    if url:
+        if not isinstance(url, str):
+            raise ValueError('url must be a string')
+        normalized_url = url.strip()
+
+    if not normalized_url:
+        raise ValueError('A URL must be supplied either via url or command')
+
+    if not re.match(r'^https?://', normalized_url):
+        raise ValueError('Only http(s) URLs are supported')
+
+    has_output = False
+    normalised_options_clean: List[str] = []
+    idx = 0
+    while idx < len(normalized_options):
+        token = normalized_options[idx]
+        if token in {'--output', '-o'}:
+            has_output = True
+            if idx + 1 >= len(normalized_options):
+                raise ValueError('Missing value for output option')
+            value = normalized_options[idx + 1]
+            if '%(title)' not in value and '%(id)' not in value:
+                value = os.path.join(value, '%(title)s.%(ext)s') if value.endswith(os.sep) else '%(title)s.%(ext)s'
+            normalised_options_clean.extend(['--output', value])
+            idx += 2
+            continue
+        normalised_options_clean.append(token)
+        idx += 1
+
+    if not has_output:
+        normalised_options_clean.extend(['--output', '%(title)s.%(ext)s'])
+
+    enforced = ['--newline']
+    for option in enforced:
+        if option not in normalised_options_clean:
+            normalised_options_clean.append(option)
+
+    normalised_options_clean.append(normalized_url)
+
+    normalized_arguments = ['yt-dlp'] + normalised_options_clean
+    normalized_command = ' '.join(shlex.quote(part) for part in normalized_arguments)
+
+    return {
+        'url': normalized_url,
+        'normalized_arguments': normalized_arguments,
+        'normalized_command': normalized_command,
+    }
+
+
+def _execute_yt_dlp_job(job_id: str) -> None:
+    job_snapshot = yt_dlp_job_registry.get_internal(job_id)
+    if not job_snapshot:
+        return
+
+    yt_dlp_job_registry.update(job_id, status='running', started_at=_utcnow_isoformat())
+    normalized_arguments = job_snapshot.get('normalized_arguments')
+
+    if not normalized_arguments:
+        yt_dlp_job_registry.update(job_id, status='failed', error='No command arguments were generated for yt-dlp')
+        return
+
+    executable = normalized_arguments[0]
+    if shutil.which(executable) is None:
+        yt_dlp_job_registry.update(job_id, status='failed', error=f"Executable '{executable}' is not available on the server")
+        return
+
+    try:
+        process = subprocess.Popen(
+            normalized_arguments,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+    except Exception as exc:
+        yt_dlp_job_registry.update(job_id, status='failed', error=str(exc))
+        return
+
+    yt_dlp_job_registry.set_process(job_id, process)
+
+    try:
+        if process.stdout is not None:
+            for raw_line in process.stdout:
+                line = raw_line.rstrip('\n')
+                yt_dlp_job_registry.append_log(job_id, line)
+                progress_update = _parse_yt_dlp_progress(line)
+                if progress_update:
+                    yt_dlp_job_registry.update_progress(job_id, progress_update)
+        exit_code = process.wait()
+    finally:
+        yt_dlp_job_registry.clear_process(job_id)
+
+    final_snapshot = yt_dlp_job_registry.get_internal(job_id)
+    if not final_snapshot:
+        return
+
+    if final_snapshot.get('status') == 'cancelled':
+        return
+
+    if exit_code == 0:
+        yt_dlp_job_registry.update(job_id, status='completed', completed_at=_utcnow_isoformat(), error=None)
+        yt_dlp_job_registry.update_progress(job_id, {'percentage': 100.0})
+    else:
+        yt_dlp_job_registry.update(job_id, status='failed', error=f'yt-dlp exited with code {exit_code}', completed_at=_utcnow_isoformat())
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():
@@ -2727,14 +3153,14 @@ def get_upload_status(upload_id):
         upload_session = streaming_upload_manager.get_upload_status(upload_id)
         if not upload_session:
             return jsonify({'error': 'Upload session not found'}), 404
-        
+
         # Import circuit breaker for status monitoring
         try:
             from uploader.circuit_breaker import upload_circuit_breaker, notion_api_circuit_breaker
         except ImportError:
             upload_circuit_breaker = None
             notion_api_circuit_breaker = None
-        
+
         # Basic status response
         status_response = {
             'upload_id': upload_id,
@@ -2747,7 +3173,7 @@ def get_upload_status(upload_id):
             'file_id': upload_session.get('notion_file_id'),
             'file_hash': upload_session.get('file_hash')
         }
-        
+
         # Add circuit breaker status if available
         if upload_circuit_breaker:
             cb_stats = upload_circuit_breaker.get_stats()
@@ -2755,12 +3181,85 @@ def get_upload_status(upload_id):
                 'state': cb_stats['state'],
                 'success_rate': cb_stats['success_rate_percent']
             }
-        
+
         return jsonify(status_response)
-        
+
     except Exception as e:
         print(f"Error getting upload status: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/yt-dlp/jobs', methods=['GET'])
+@login_required
+def list_yt_dlp_jobs():
+    return jsonify({'jobs': yt_dlp_job_registry.list()})
+
+
+@app.route('/api/yt-dlp/jobs', methods=['POST'])
+@login_required
+def create_yt_dlp_job():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        normalized = _normalize_yt_dlp_inputs(payload)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    job_id = payload.get('job_id') or str(uuid.uuid4())
+    now_iso = _utcnow_isoformat()
+
+    job_record = {
+        'id': job_id,
+        'status': 'queued',
+        'created_at': now_iso,
+        'updated_at': now_iso,
+        'requested_by': getattr(current_user, 'id', None),
+        'url': normalized['url'],
+        'raw_command': payload.get('command'),
+        'options': payload.get('options') if isinstance(payload.get('options'), list) else None,
+        'normalized_command': normalized['normalized_command'],
+        'normalized_arguments': normalized['normalized_arguments'],
+        'progress': {
+            'percentage': 0.0,
+            'downloaded_bytes': 0,
+            'total_bytes': None,
+            'speed_bytes': None,
+            'eta_seconds': None,
+        },
+        'logs': [],
+        'error': None,
+    }
+
+    yt_dlp_job_registry.create(job_record)
+    future = yt_dlp_executor.submit(_execute_yt_dlp_job, job_id)
+    yt_dlp_job_registry.set_future(job_id, future)
+
+    return jsonify({'job': yt_dlp_job_registry.get(job_id)}), 201
+
+
+@app.route('/api/yt-dlp/jobs/<job_id>', methods=['GET'])
+@login_required
+def get_yt_dlp_job(job_id):
+    job = yt_dlp_job_registry.get(job_id)
+    if not job:
+        return jsonify({'error': 'Job not found'}), 404
+    return jsonify({'job': job})
+
+
+@app.route('/api/yt-dlp/jobs/<job_id>', methods=['DELETE'])
+@login_required
+def cancel_yt_dlp_job(job_id):
+    internal_job = yt_dlp_job_registry.get_internal(job_id)
+    if not internal_job:
+        return jsonify({'error': 'Job not found'}), 404
+
+    if internal_job.get('status') in {'completed', 'failed', 'cancelled'}:
+        return jsonify({'job': yt_dlp_job_registry.get(job_id)})
+
+    job = yt_dlp_job_registry.cancel(job_id)
+    if not job:
+        return jsonify({'error': 'Unable to cancel job'}), 500
+    return jsonify({'job': job})
 
 
 @app.route('/api/system/health', methods=['GET'])
