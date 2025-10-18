@@ -37,6 +37,105 @@ from urllib.parse import quote
 from werkzeug.utils import secure_filename
 from datetime import datetime, timezone
 
+load_dotenv()
+
+
+def _get_int_env(var_name: str, default: int, minimum: int = 1) -> int:
+    """Parse an integer environment variable, falling back to a default."""
+
+    raw_value = os.getenv(var_name)
+    if raw_value is None:
+        return default
+
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError):
+        print(f"Ignoring invalid value for {var_name!r}: {raw_value!r}")
+        return default
+
+    if parsed < minimum:
+        print(
+            f"Ignoring value for {var_name!r}: {raw_value!r} is below the minimum of {minimum}"
+        )
+        return default
+
+    return parsed
+
+
+def _get_option_set_from_env(var_name: str, default: List[str]) -> set[str]:
+    """Return a normalised set of yt-dlp options from the environment."""
+
+    raw_value = os.getenv(var_name)
+    if not raw_value:
+        return set(default)
+
+    tokens = set()
+    for token in re.split(r"[\s,]+", raw_value.strip()):
+        if not token:
+            continue
+        normalized = token.strip()
+        if not normalized.startswith('-'):
+            print(
+                f"Skipping unsafe yt-dlp option {normalized!r} from {var_name!r}: "
+                "options must begin with '-'"
+            )
+            continue
+        tokens.add(normalized)
+
+    tokens.update(option for option in default if option.startswith('--output') or option in {'--output', '-o'})
+    if '--output' not in tokens:
+        tokens.add('--output')
+    if '-o' not in tokens:
+        tokens.add('-o')
+    return tokens
+
+
+_DEFAULT_YT_DLP_ALLOWED_FLAG_OPTIONS = [
+    '--extract-audio',
+    '--no-playlist',
+    '--yes-playlist',
+    '--restrict-filenames',
+    '--write-sub',
+    '--write-auto-sub',
+    '--embed-subs',
+    '--embed-thumbnail',
+    '--no-warnings',
+    '--ignore-errors',
+    '--continue',
+    '--force-overwrites',
+    '--no-overwrites',
+    '--write-info-json',
+    '--write-thumbnail',
+    '--write-description',
+]
+
+_DEFAULT_YT_DLP_ALLOWED_VALUE_OPTIONS = [
+    '-f',
+    '--format',
+    '--audio-format',
+    '--audio-quality',
+    '--playlist-items',
+    '--paths',
+    '-P',
+    '--output',
+    '-o',
+    '--proxy',
+    '--sub-lang',
+    '--sub-format',
+    '--postprocessor-args',
+    '--downloader',
+    '--concurrent-fragments',
+    '--fragment-retries',
+]
+
+_YT_DLP_ALLOWED_FLAG_OPTIONS = _get_option_set_from_env(
+    'YT_DLP_ALLOWED_FLAGS', _DEFAULT_YT_DLP_ALLOWED_FLAG_OPTIONS
+)
+_YT_DLP_ALLOWED_VALUE_OPTIONS = _get_option_set_from_env(
+    'YT_DLP_ALLOWED_VALUE_OPTIONS', _DEFAULT_YT_DLP_ALLOWED_VALUE_OPTIONS
+)
+_YT_DLP_MAX_CONCURRENT_JOBS = _get_int_env('YT_DLP_MAX_CONCURRENT_JOBS', 2)
+
 def set_content_disposition(response, disposition, filename):
     fallback_name = secure_filename(filename) or "download"
     encoded_name = quote(filename)
@@ -365,45 +464,9 @@ class YtDlpJobRegistry:
 
 
 yt_dlp_job_registry = YtDlpJobRegistry()
-yt_dlp_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
-_YT_DLP_ALLOWED_FLAG_OPTIONS = {
-    '--extract-audio',
-    '--no-playlist',
-    '--yes-playlist',
-    '--restrict-filenames',
-    '--write-sub',
-    '--write-auto-sub',
-    '--embed-subs',
-    '--embed-thumbnail',
-    '--no-warnings',
-    '--ignore-errors',
-    '--continue',
-    '--force-overwrites',
-    '--no-overwrites',
-    '--write-info-json',
-    '--write-thumbnail',
-    '--write-description',
-}
-
-_YT_DLP_ALLOWED_VALUE_OPTIONS = {
-    '-f',
-    '--format',
-    '--audio-format',
-    '--audio-quality',
-    '--playlist-items',
-    '--paths',
-    '-P',
-    '--output',
-    '-o',
-    '--proxy',
-    '--sub-lang',
-    '--sub-format',
-    '--postprocessor-args',
-    '--downloader',
-    '--concurrent-fragments',
-    '--fragment-retries',
-}
+yt_dlp_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_YT_DLP_MAX_CONCURRENT_JOBS
+)
 
 
 def _normalize_yt_dlp_inputs(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -636,13 +699,14 @@ def cleanup_old_sessions():
     except Exception as timer_error:
         print(f"Error scheduling session cleanup timer: {timer_error}")
     
-# Load environment variables from .env file
-load_dotenv()
-
 app = Flask(__name__)
 # Use a safe default for development if SECRET_KEY is not provided
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
 CORS(app)  # Enable CORS for all routes
+
+app.config['YT_DLP_MAX_CONCURRENT_JOBS'] = _YT_DLP_MAX_CONCURRENT_JOBS
+app.config['YT_DLP_ALLOWED_FLAG_OPTIONS'] = sorted(_YT_DLP_ALLOWED_FLAG_OPTIONS)
+app.config['YT_DLP_ALLOWED_VALUE_OPTIONS'] = sorted(_YT_DLP_ALLOWED_VALUE_OPTIONS)
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
