@@ -135,7 +135,8 @@ class YtDlpImporter:
             # Signal uploader that discovery is complete
             files_queue.put(None)
             upload_thread.join()
-            self._job_counters.pop(job_id, None)
+            counters = self._job_counters.pop(job_id, {})
+            files_discovered = counters.get('total_files', 0)
 
             if upload_error.get('error'):
                 self.job_registry.update(job_id, status='failed', error=str(upload_error['error']), completed_at=self._utcnow())
@@ -147,6 +148,24 @@ class YtDlpImporter:
                 return
 
             if exit_code == 0:
+                if files_discovered == 0:
+                    failure_message = 'yt-dlp completed without downloading any files.'
+                    self.job_registry.update(
+                        job_id,
+                        status='failed',
+                        error=failure_message,
+                        completed_at=self._utcnow(),
+                    )
+                    self.job_registry.update_progress(
+                        job_id,
+                        {
+                            'stage': 'failed',
+                            'status_message': failure_message,
+                            'files_completed': 0,
+                            'total_files': 0,
+                        },
+                    )
+                    return
                 self.job_registry.update(job_id, status='completed', completed_at=self._utcnow(), error=None)
                 self.job_registry.update_progress(
                     job_id,

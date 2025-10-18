@@ -4,6 +4,7 @@ import os
 import sys
 import types
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
@@ -186,7 +187,7 @@ def test_create_job_requires_yt_dlp_binary(monkeypatch):
     assert flask_app.yt_dlp_job_registry.list() == []
 
 
-def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately):
+def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately, tmp_path):
     client = flask_app.app.test_client()
 
     class DummyProcess:
@@ -202,8 +203,24 @@ def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately):
         def poll(self):
             return None
 
+    dispatched = {'value': False}
+
+    def fake_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
+        if not dispatched['value']:
+            target = Path(output_dir) / 'example.bin'
+            target.write_bytes(b'payload')
+            files_queue.put(target)
+            dispatched['value'] = True
+        process_done_event.wait()
+
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
+    monkeypatch.setattr(
+        flask_app.yt_dlp_importer,
+        '_monitor_downloads',
+        types.MethodType(fake_monitor, flask_app.yt_dlp_importer),
+        raising=False,
+    )
 
     resp = client.post('/api/yt-dlp/jobs', json={'url': 'https://example.com/video', 'user_database_id': 'test-db'})
     assert resp.status_code == 201
@@ -243,6 +260,16 @@ def test_job_resolves_missing_user_database_id(monkeypatch, run_jobs_immediately
         def poll(self):
             return None
 
+    dispatched = {'value': False}
+
+    def fake_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
+        if not dispatched['value']:
+            target = Path(output_dir) / 'resolved.bin'
+            target.write_bytes(b'content')
+            files_queue.put(target)
+            dispatched['value'] = True
+        process_done_event.wait()
+
     class ResolvingUploadManager:
         def __init__(self):
             self.created = []
@@ -272,6 +299,12 @@ def test_job_resolves_missing_user_database_id(monkeypatch, run_jobs_immediately
     monkeypatch.setattr(flask_app, 'current_user', SimpleNamespace(id='user-123'))
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
+    monkeypatch.setattr(
+        flask_app.yt_dlp_importer,
+        '_monitor_downloads',
+        types.MethodType(fake_monitor, flask_app.yt_dlp_importer),
+        raising=False,
+    )
 
     resp = client.post('/api/yt-dlp/jobs', json={'url': 'https://example.com/video'})
     assert resp.status_code == 201
@@ -398,3 +431,42 @@ def test_yt_dlp_sequential_file_processing(
     assert fetched_job['status'] == 'completed'
     assert fetched_job['progress']['stage'] == 'done'
     assert fetched_job['progress'].get('files_completed') == len(file_paths)
+
+
+def test_job_fails_when_no_files_downloaded(monkeypatch, run_jobs_immediately, stub_importer_dependencies):
+    client = flask_app.app.test_client()
+
+    class DummyProcess:
+        def __init__(self):
+            self.stdout = io.StringIO('[download] 100% of 1.0MiB in 00:01\n')
+
+        def wait(self):
+            return 0
+
+        def poll(self):
+            return None
+
+    def idle_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
+        process_done_event.wait()
+
+    monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
+    monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
+    monkeypatch.setattr(
+        flask_app.yt_dlp_importer,
+        '_monitor_downloads',
+        types.MethodType(idle_monitor, flask_app.yt_dlp_importer),
+        raising=False,
+    )
+
+    response = client.post(
+        '/api/yt-dlp/jobs',
+        json={'url': 'https://example.com/video', 'user_database_id': 'test-db'},
+    )
+
+    assert response.status_code == 201
+    job_payload = response.get_json()['job']
+
+    assert job_payload['status'] == 'failed'
+    assert job_payload['terminal_state'] == 'failure'
+    assert job_payload['progress']['stage'] == 'failed'
+    assert 'without downloading any files' in (job_payload.get('error') or '').lower()
