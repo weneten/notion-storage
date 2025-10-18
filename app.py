@@ -62,7 +62,9 @@ def _get_int_env(var_name: str, default: int, minimum: int = 1) -> int:
     return parsed
 
 
-def _get_option_set_from_env(var_name: str, default: List[str]) -> set[str]:
+def _get_option_set_from_env(
+    var_name: str, default: List[str], *, force_output_options: bool = False
+) -> set[str]:
     """Return a normalised set of yt-dlp options from the environment."""
 
     raw_value = os.getenv(var_name)
@@ -82,11 +84,14 @@ def _get_option_set_from_env(var_name: str, default: List[str]) -> set[str]:
             continue
         tokens.add(normalized)
 
-    tokens.update(option for option in default if option.startswith('--output') or option in {'--output', '-o'})
-    if '--output' not in tokens:
-        tokens.add('--output')
-    if '-o' not in tokens:
-        tokens.add('-o')
+    if force_output_options:
+        output_tokens = {
+            option
+            for option in default
+            if option.startswith('--output') or option in {'--output', '-o'}
+        }
+        output_tokens.update({'--output', '-o'})
+        tokens.update(output_tokens)
     return tokens
 
 
@@ -132,7 +137,9 @@ _YT_DLP_ALLOWED_FLAG_OPTIONS = _get_option_set_from_env(
     'YT_DLP_ALLOWED_FLAGS', _DEFAULT_YT_DLP_ALLOWED_FLAG_OPTIONS
 )
 _YT_DLP_ALLOWED_VALUE_OPTIONS = _get_option_set_from_env(
-    'YT_DLP_ALLOWED_VALUE_OPTIONS', _DEFAULT_YT_DLP_ALLOWED_VALUE_OPTIONS
+    'YT_DLP_ALLOWED_VALUE_OPTIONS',
+    _DEFAULT_YT_DLP_ALLOWED_VALUE_OPTIONS,
+    force_output_options=True,
 )
 _YT_DLP_MAX_CONCURRENT_JOBS = _get_int_env('YT_DLP_MAX_CONCURRENT_JOBS', 2)
 
