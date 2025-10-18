@@ -1164,9 +1164,11 @@ function processRemoteImportUpdate(payload) {
     const terminalState = (job.terminal_state || '').toString().toLowerCase();
 
     const messageSources = [
+        payload.error,
         payload.message,
         payload.detail,
         payload.status_message,
+        job.error,
         job.message,
         job.detail,
         job.status_message,
