@@ -160,6 +160,17 @@ def test_create_job_requires_url():
     assert 'error' in resp.get_json()
 
 
+def test_create_job_accepts_url_without_scheme():
+    client = flask_app.app.test_client()
+
+    resp = client.post('/api/yt-dlp/jobs', json={'url': 'example.com/video'})
+
+    assert resp.status_code == 201
+    payload = resp.get_json()['job']
+    assert payload['url'] == 'https://example.com/video'
+    assert payload['normalized_command'].endswith('https://example.com/video')
+
+
 def test_build_command_places_output_before_url(tmp_path):
     importer = importer_module.YtDlpImporter(upload_manager=None, job_registry=None)
     normalized_command = (
