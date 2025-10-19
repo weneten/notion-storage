@@ -115,7 +115,10 @@ class YtDlpImporter:
             command_args = self._build_command(normalized_command, output_dir)
             human_command = ' '.join(shlex.quote(part) for part in command_args)
             logger.info('Executing yt-dlp for job %s: %s', job_id, human_command)
-            self.job_registry.append_log(job_id, f'Executing: {human_command}')
+            self.job_registry.append_log(
+                job_id,
+                'Executing yt-dlp command (arguments hidden for security)',
+            )
 
             executable = command_args[0]
             if shutil.which(executable) is None:
