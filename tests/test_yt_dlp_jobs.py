@@ -205,13 +205,15 @@ def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately, 
 
     dispatched = {'value': False}
 
-    def fake_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
+    def fake_monitor(self, context):
         if not dispatched['value']:
-            target = Path(output_dir) / 'example.bin'
+            target = context.output_dir / 'example.bin'
             target.write_bytes(b'payload')
-            files_queue.put(target)
+            context.files_queue.put(target)
+            context.record_discovery()
             dispatched['value'] = True
-        process_done_event.wait()
+        context.process_done_event.wait()
+        context.files_queue.put(None)
 
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
@@ -262,13 +264,15 @@ def test_job_resolves_missing_user_database_id(monkeypatch, run_jobs_immediately
 
     dispatched = {'value': False}
 
-    def fake_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
+    def fake_monitor(self, context):
         if not dispatched['value']:
-            target = Path(output_dir) / 'resolved.bin'
+            target = context.output_dir / 'resolved.bin'
             target.write_bytes(b'content')
-            files_queue.put(target)
+            context.files_queue.put(target)
+            context.record_discovery()
             dispatched['value'] = True
-        process_done_event.wait()
+        context.process_done_event.wait()
+        context.files_queue.put(None)
 
     class ResolvingUploadManager:
         def __init__(self):
@@ -382,10 +386,12 @@ def test_yt_dlp_sequential_file_processing(
 
     monkeypatch.setattr(importer_module.Path, 'unlink', tracking_unlink)
 
-    def fake_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
+    def fake_monitor(self, context):
         for path in file_paths:
-            files_queue.put(path)
-        process_done_event.wait()
+            context.files_queue.put(path)
+            context.record_discovery()
+        context.process_done_event.wait()
+        context.files_queue.put(None)
 
     monkeypatch.setattr(
         flask_app.yt_dlp_importer,
@@ -446,8 +452,9 @@ def test_job_fails_when_no_files_downloaded(monkeypatch, run_jobs_immediately, s
         def poll(self):
             return None
 
-    def idle_monitor(self, job_id, output_dir, files_queue, stop_event, process_done_event):
-        process_done_event.wait()
+    def idle_monitor(self, context):
+        context.process_done_event.wait()
+        context.files_queue.put(None)
 
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())

@@ -10,8 +10,29 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
+
+
+@dataclass(slots=True)
+class _JobContext:
+    """Track state shared between the downloader and uploader threads."""
+
+    job_id: str
+    output_dir: Path
+    files_queue: "queue.Queue[Optional[Path]]"
+    stop_event: threading.Event
+    process_done_event: threading.Event
+    counters: Dict[str, int] = field(default_factory=lambda: {'files_discovered': 0, 'files_uploaded': 0})
+    upload_error: Optional[Exception] = None
+    discovery_error: Optional[Exception] = None
+
+    def record_discovery(self) -> None:
+        self.counters['files_discovered'] = self.counters.get('files_discovered', 0) + 1
+
+    def record_upload(self, index: int) -> None:
+        self.counters['files_uploaded'] = index
 
 
 class YtDlpImporter:
@@ -26,7 +47,6 @@ class YtDlpImporter:
         self.upload_manager = upload_manager
         self.job_registry = job_registry
         self.ensure_folder_structure = ensure_folder_structure
-        self._job_counters: Dict[str, Dict[str, int]] = {}
 
     # Public API -----------------------------------------------------------------
     def execute(self, job_id: str, parse_progress: Callable[[str], Optional[Dict[str, Any]]]) -> None:
@@ -95,57 +115,54 @@ class YtDlpImporter:
             self.job_registry.update(job_id, status='running', started_at=self._utcnow())
             self.job_registry.update_progress(job_id, {'stage': 'downloading'})
 
-            stop_event = threading.Event()
-            process_done_event = threading.Event()
-            files_queue: "queue.Queue[Path]" = queue.Queue()
-            upload_error: Dict[str, Exception] = {}
+            context = _JobContext(
+                job_id=job_id,
+                output_dir=Path(output_dir),
+                files_queue=queue.Queue(),
+                stop_event=threading.Event(),
+                process_done_event=threading.Event(),
+            )
 
             monitor_thread = threading.Thread(
                 target=self._monitor_downloads,
-                args=(job_id, Path(output_dir), files_queue, stop_event, process_done_event),
+                args=(context,),
                 daemon=True,
             )
             upload_thread = threading.Thread(
                 target=self._process_files,
-                args=(job_id, user_database_id, folder_path, files_queue, stop_event, upload_error),
+                args=(context, user_database_id, folder_path),
                 daemon=True,
             )
 
             monitor_thread.start()
             upload_thread.start()
 
-            exit_code = 1
             try:
-                if process.stdout is not None:
-                    for raw_line in process.stdout:
-                        line = raw_line.rstrip('\n')
-                        self.job_registry.append_log(job_id, line)
-                        progress_update = parse_progress(line)
-                        if progress_update:
-                            progress_update['stage'] = 'downloading'
-                            self.job_registry.update_progress(job_id, progress_update)
-                exit_code = process.wait()
+                exit_code = self._consume_process_output(process, context.job_id, parse_progress)
             finally:
-                process_done_event.set()
-                stop_event.set()
+                context.process_done_event.set()
+                context.stop_event.set()
                 self.job_registry.clear_process(job_id)
 
-            # Ensure monitoring stopped discovering files
             monitor_thread.join()
-            # Signal uploader that discovery is complete
-            files_queue.put(None)
             upload_thread.join()
-            counters = self._job_counters.pop(job_id, {})
-            files_discovered = counters.get('total_files', 0)
 
-            if upload_error.get('error'):
-                self.job_registry.update(job_id, status='failed', error=str(upload_error['error']), completed_at=self._utcnow())
+            if context.discovery_error:
+                failure_message = f'Failed to prepare downloaded files: {context.discovery_error}'
+                self.job_registry.update(job_id, status='failed', error=failure_message, completed_at=self._utcnow())
+                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                return
+
+            if context.upload_error:
+                self.job_registry.update(job_id, status='failed', error=str(context.upload_error), completed_at=self._utcnow())
                 self.job_registry.update_progress(job_id, {'stage': 'failed'})
                 return
 
             final_snapshot = self.job_registry.get_internal(job_id)
             if not final_snapshot or final_snapshot.get('status') == 'cancelled':
                 return
+
+            files_discovered = context.counters.get('files_discovered', 0)
 
             if exit_code == 0:
                 if files_discovered == 0:
@@ -211,79 +228,127 @@ class YtDlpImporter:
         ])
         return cleaned_parts
 
-    def _monitor_downloads(
+    def _consume_process_output(
         self,
+        process: subprocess.Popen,
         job_id: str,
-        output_dir: Path,
-        files_queue: 'queue.Queue[Optional[Path]]',
-        stop_event: threading.Event,
-        process_done_event: threading.Event,
-    ) -> None:
+        parse_progress: Callable[[str], Optional[Dict[str, Any]]],
+    ) -> int:
+        exit_code = 1
+        try:
+            if process.stdout is not None:
+                for raw_line in process.stdout:
+                    line = raw_line.rstrip('\n')
+                    self.job_registry.append_log(job_id, line)
+                    progress_update = parse_progress(line)
+                    if progress_update:
+                        progress_update['stage'] = 'downloading'
+                        self.job_registry.update_progress(job_id, progress_update)
+            exit_code = process.wait()
+        finally:
+            if process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except Exception:
+                    pass
+        return exit_code
+
+    def _monitor_downloads(self, context: _JobContext) -> None:
         observed_sizes: Dict[Path, int] = {}
         processed: Set[Path] = set()
 
-        while not stop_event.is_set() or not process_done_event.is_set():
+        try:
+            while not context.stop_event.is_set() or not context.process_done_event.is_set():
+                try:
+                    entries = list(context.output_dir.iterdir())
+                except FileNotFoundError:
+                    break
+
+                saw_ready_file = False
+                for entry in entries:
+                    if entry in processed:
+                        continue
+                    if not entry.is_file():
+                        continue
+                    if entry.name.endswith('.part'):
+                        continue
+                    part_marker = entry.with_suffix(entry.suffix + '.part')
+                    if part_marker.exists():
+                        continue
+
+                    size = entry.stat().st_size
+                    previous = observed_sizes.get(entry)
+                    if previous is None or previous != size:
+                        observed_sizes[entry] = size
+                        continue
+
+                    processed.add(entry)
+                    context.files_queue.put(entry)
+                    context.record_discovery()
+                    saw_ready_file = True
+
+                if context.process_done_event.is_set():
+                    pending = [
+                        entry
+                        for entry in entries
+                        if entry.is_file()
+                        and not entry.name.endswith('.part')
+                        and entry not in processed
+                    ]
+                    if not pending:
+                        break
+
+                if not saw_ready_file:
+                    time.sleep(0.5)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            context.discovery_error = exc
             try:
-                entries = list(output_dir.iterdir())
-            except FileNotFoundError:
-                break
-
-            for entry in entries:
-                if entry in processed:
-                    continue
-                if not entry.is_file():
-                    continue
-                if entry.suffix == '.part':
-                    continue
-                part_marker = entry.with_suffix(entry.suffix + '.part')
-                if part_marker.exists():
-                    continue
-
-                size = entry.stat().st_size
-                previous = observed_sizes.get(entry)
-                if previous is None or previous != size:
-                    observed_sizes[entry] = size
-                    continue
-
-                processed.add(entry)
-                files_queue.put(entry)
-
-            if process_done_event.is_set() and not entries:
-                break
-
-            time.sleep(0.5)
+                self.job_registry.append_log(context.job_id, f'File discovery error: {exc}')
+            except Exception:
+                pass
+        finally:
+            context.files_queue.put(None)
 
     def _process_files(
         self,
-        job_id: str,
+        context: _JobContext,
         user_database_id: str,
         folder_path: str,
-        files_queue: 'queue.Queue[Optional[Path]]',
-        stop_event: threading.Event,
-        upload_error: Dict[str, Exception],
     ) -> None:
-        counters = self._job_counters.setdefault(job_id, {'total_files': 0})
         index = 0
-        while True:
-            try:
-                entry = files_queue.get(timeout=0.5)
-            except queue.Empty:
-                time.sleep(0.1)
-                continue
+        try:
+            while True:
+                try:
+                    entry = context.files_queue.get(timeout=0.5)
+                except queue.Empty:
+                    if context.stop_event.is_set() and context.process_done_event.is_set():
+                        break
+                    continue
 
-            if entry is None:
-                files_queue.task_done()
-                break
+                if entry is None:
+                    context.files_queue.task_done()
+                    break
 
-            index += 1
-            try:
-                self._upload_file(job_id, entry, user_database_id, folder_path, index)
-                counters['total_files'] = max(counters.get('total_files', 0), index)
-            except Exception as exc:  # pragma: no cover - surfaced to caller
-                upload_error['error'] = exc
-                stop_event.set()
-            finally:
-                files_queue.task_done()
+                index += 1
+                try:
+                    self._upload_file(context.job_id, entry, user_database_id, folder_path, index)
+                    context.record_upload(index)
+                except Exception as exc:  # pragma: no cover - surfaced to caller
+                    context.upload_error = exc
+                    context.stop_event.set()
+                    try:
+                        self.job_registry.append_log(context.job_id, f'Upload error: {exc}')
+                    except Exception:
+                        pass
+                finally:
+                    context.files_queue.task_done()
+        finally:
+            while not context.files_queue.empty():
+                try:
+                    context.files_queue.get_nowait()
+                    context.files_queue.task_done()
+                except queue.Empty:
+                    break
 
     def _upload_file(self, job_id: str, file_path: Path, user_database_id: str, folder_path: str, index: int) -> None:
         file_size = file_path.stat().st_size
@@ -339,7 +404,7 @@ class YtDlpImporter:
                     'current_file': file_name,
                     'current_file_index': index,
                     'files_completed': index,
-                    'total_files': max(index, self._job_counters.get(job_id, {}).get('total_files', index)),
+                    'total_files': index,
                 },
             )
         finally:
