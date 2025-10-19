@@ -68,7 +68,10 @@ class _DirectoryObserver(threading.Thread):
     def _poll(self) -> None:
         context = self._context
         try:
-            while not context.stop_event.is_set():
+            while True:
+                if context.stop_event.is_set() and not context.process_completed.is_set():
+                    break
+
                 ready_files = self._scan_directory()
                 if ready_files:
                     for path in ready_files:
@@ -87,11 +90,14 @@ class _DirectoryObserver(threading.Thread):
                             )
                         except Exception:  # pragma: no cover - logging should never break pipeline
                             pass
+
+                    if context.process_completed.is_set() and not self._pending_entries_exist():
+                        break
+
                     continue
 
-                if context.process_completed.is_set():
-                    if not self._pending_entries_exist():
-                        break
+                if context.process_completed.is_set() and not self._pending_entries_exist():
+                    break
 
                 time.sleep(0.5)
         except Exception as exc:  # pragma: no cover - surfaced to caller
