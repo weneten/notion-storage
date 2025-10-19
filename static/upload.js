@@ -1066,7 +1066,8 @@ const remoteImportState = {
     socketConnected: false,
     socketSubscribedJobId: null,
     lastLoggedMessage: null,
-    lastLoggedProgressText: null
+    lastLoggedProgressText: null,
+    initialized: false
 };
 
 function getRemoteImportElements() {
@@ -1539,10 +1540,16 @@ async function handleRemoteImportSubmit(event) {
 }
 
 function initializeRemoteImportWorkflow() {
+    if (remoteImportState.initialized) {
+        return;
+    }
+
     const elements = getRemoteImportElements();
     if (!elements.form) {
         return;
     }
+
+    remoteImportState.initialized = true;
 
     resetRemoteImportForm();
     elements.form.addEventListener('submit', handleRemoteImportSubmit);
@@ -1579,7 +1586,15 @@ function initializeRemoteImportWorkflow() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', initializeRemoteImportWorkflow);
+function runWhenDocumentReady(callback) {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', callback);
+    } else {
+        callback();
+    }
+}
+
+runWhenDocumentReady(initializeRemoteImportWorkflow);
 
 // Expose helpers for debugging/testing
 window.__remoteImport = {
