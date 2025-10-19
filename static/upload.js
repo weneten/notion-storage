@@ -1443,7 +1443,9 @@ function onRemoteImportSocketDisconnect() {
 }
 
 async function handleRemoteImportSubmit(event) {
-    event.preventDefault();
+    if (event && typeof event.preventDefault === 'function') {
+        event.preventDefault();
+    }
     if (remoteImportState.isSubmitting) {
         return;
     }
@@ -1542,6 +1544,12 @@ function initializeRemoteImportWorkflow() {
 
     resetRemoteImportForm();
     elements.form.addEventListener('submit', handleRemoteImportSubmit);
+
+    if (elements.submitButton) {
+        elements.submitButton.addEventListener('click', (event) => {
+            handleRemoteImportSubmit(event);
+        });
+    }
 
     const modalElement = document.getElementById('remoteImportModal');
     if (modalElement) {
