@@ -1003,6 +1003,46 @@ const REMOTE_IMPORT_ENDPOINT = '/api/yt-dlp/jobs';
 const REMOTE_IMPORT_STATUS_ENDPOINT = jobId => `/api/yt-dlp/jobs/${encodeURIComponent(jobId)}`;
 const REMOTE_IMPORT_POLL_INTERVAL_MS = 3000;
 
+function normalizeRemoteImportUrl(rawUrl) {
+    if (!rawUrl) {
+        return '';
+    }
+
+    let normalized = rawUrl.trim();
+    if (!normalized) {
+        return '';
+    }
+
+    if (/^\/\//.test(normalized)) {
+        normalized = `https:${normalized}`;
+    } else if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(normalized)) {
+        normalized = `https://${normalized}`;
+    }
+
+    return normalized;
+}
+
+function isHttpUrl(url) {
+    return /^https?:\/\//i.test(url);
+}
+
+function validateNormalizedRemoteUrl(url) {
+    if (!url) {
+        return false;
+    }
+
+    if (!isHttpUrl(url)) {
+        return false;
+    }
+
+    try {
+        const parsed = new URL(url);
+        return Boolean(parsed.hostname);
+    } catch (error) {
+        return false;
+    }
+}
+
 function getRemoteImportActivityCard() {
     return document.getElementById('remoteImportActivity');
 }
@@ -1475,8 +1515,27 @@ async function handleRemoteImportSubmit(event) {
         return false;
     }
 
+    const normalizedUrl = normalizeRemoteImportUrl(sourceUrl);
+
+    if (!validateNormalizedRemoteUrl(normalizedUrl)) {
+        if (elements.sourceInput) {
+            elements.sourceInput.classList.add('is-invalid');
+            const feedback = elements.sourceInput.parentElement ? elements.sourceInput.parentElement.querySelector('.invalid-feedback') : null;
+            if (feedback) {
+                feedback.textContent = 'Enter a valid http(s) URL.';
+            }
+        }
+        showStatus('Remote import requires a valid http(s) URL.', 'error');
+        appendRemoteImportLog('Remote import blocked: invalid URL provided.', 'error');
+        return false;
+    }
+
+    if (elements.sourceInput) {
+        elements.sourceInput.value = normalizedUrl;
+    }
+
     const payload = {
-        url: sourceUrl
+        url: normalizedUrl
     };
 
     const resolvedDestination = destinationFolder || (window.currentFolder && window.currentFolder.trim()) || '/';
@@ -1490,7 +1549,7 @@ async function handleRemoteImportSubmit(event) {
     remoteImportState.isSubmitting = true;
     toggleRemoteImportFormDisabled(true);
     showStatus('Submitting remote import request...', 'info');
-    appendRemoteImportLog(`Submitting remote import request for ${sourceUrl} → ${resolvedDestination}`, 'info');
+    appendRemoteImportLog(`Submitting remote import request for ${normalizedUrl} → ${resolvedDestination}`, 'info');
     remoteImportState.lastLoggedMessage = null;
     remoteImportState.lastLoggedProgressText = null;
 

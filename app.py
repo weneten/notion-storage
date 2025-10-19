@@ -563,6 +563,11 @@ def _normalize_yt_dlp_inputs(payload: Dict[str, Any]) -> Dict[str, Any]:
             raise ValueError('url must be a string')
         normalized_url = url.strip()
 
+        if normalized_url.startswith('//'):
+            normalized_url = f'https:{normalized_url}'
+        elif '://' not in normalized_url:
+            normalized_url = f'https://{normalized_url.lstrip('/')}'
+
     if not normalized_url:
         raise ValueError('A URL must be supplied either via url or command')
 
