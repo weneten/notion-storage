@@ -2,6 +2,7 @@ import concurrent.futures
 import io
 import os
 import sys
+import threading
 import types
 from types import SimpleNamespace
 from pathlib import Path
@@ -205,22 +206,36 @@ def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately, 
 
     dispatched = {'value': False}
 
-    def fake_monitor(self, context):
-        if not dispatched['value']:
-            target = context.output_dir / 'example.bin'
-            target.write_bytes(b'payload')
-            context.files_queue.put(target)
-            context.record_discovery()
-            dispatched['value'] = True
-        context.process_done_event.wait()
-        context.files_queue.put(None)
+    class FakeObserver:
+        def __init__(self, context):
+            self.context = context
+            self._thread = threading.Thread(target=self._run, daemon=True)
+
+        def start(self):
+            self._thread.start()
+
+        def join(self):
+            self._thread.join()
+
+        def _run(self):
+            if not dispatched['value']:
+                target = self.context.output_dir / 'example.bin'
+                target.write_bytes(b'payload')
+                self.context.files_queue.put(target)
+                self.context.metrics.record_discovery()
+                dispatched['value'] = True
+            self.context.process_completed.wait()
+            self.context.files_queue.put(None)
+
+    def stub_create_observer(self, context):
+        return FakeObserver(context)
 
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
     monkeypatch.setattr(
         flask_app.yt_dlp_importer,
-        '_monitor_downloads',
-        types.MethodType(fake_monitor, flask_app.yt_dlp_importer),
+        '_create_directory_observer',
+        types.MethodType(stub_create_observer, flask_app.yt_dlp_importer),
         raising=False,
     )
 
@@ -264,15 +279,29 @@ def test_job_resolves_missing_user_database_id(monkeypatch, run_jobs_immediately
 
     dispatched = {'value': False}
 
-    def fake_monitor(self, context):
-        if not dispatched['value']:
-            target = context.output_dir / 'resolved.bin'
-            target.write_bytes(b'content')
-            context.files_queue.put(target)
-            context.record_discovery()
-            dispatched['value'] = True
-        context.process_done_event.wait()
-        context.files_queue.put(None)
+    class FakeObserver:
+        def __init__(self, context):
+            self.context = context
+            self._thread = threading.Thread(target=self._run, daemon=True)
+
+        def start(self):
+            self._thread.start()
+
+        def join(self):
+            self._thread.join()
+
+        def _run(self):
+            if not dispatched['value']:
+                target = self.context.output_dir / 'resolved.bin'
+                target.write_bytes(b'content')
+                self.context.files_queue.put(target)
+                self.context.metrics.record_discovery()
+                dispatched['value'] = True
+            self.context.process_completed.wait()
+            self.context.files_queue.put(None)
+
+    def stub_create_observer(self, context):
+        return FakeObserver(context)
 
     class ResolvingUploadManager:
         def __init__(self):
@@ -305,8 +334,8 @@ def test_job_resolves_missing_user_database_id(monkeypatch, run_jobs_immediately
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
     monkeypatch.setattr(
         flask_app.yt_dlp_importer,
-        '_monitor_downloads',
-        types.MethodType(fake_monitor, flask_app.yt_dlp_importer),
+        '_create_directory_observer',
+        types.MethodType(stub_create_observer, flask_app.yt_dlp_importer),
         raising=False,
     )
 
@@ -386,17 +415,31 @@ def test_yt_dlp_sequential_file_processing(
 
     monkeypatch.setattr(importer_module.Path, 'unlink', tracking_unlink)
 
-    def fake_monitor(self, context):
-        for path in file_paths:
-            context.files_queue.put(path)
-            context.record_discovery()
-        context.process_done_event.wait()
-        context.files_queue.put(None)
+    class FakeObserver:
+        def __init__(self, context):
+            self.context = context
+            self._thread = threading.Thread(target=self._run, daemon=True)
+
+        def start(self):
+            self._thread.start()
+
+        def join(self):
+            self._thread.join()
+
+        def _run(self):
+            for path in file_paths:
+                self.context.files_queue.put(path)
+                self.context.metrics.record_discovery()
+            self.context.process_completed.wait()
+            self.context.files_queue.put(None)
+
+    def stub_create_observer(self, context):
+        return FakeObserver(context)
 
     monkeypatch.setattr(
         flask_app.yt_dlp_importer,
-        '_monitor_downloads',
-        types.MethodType(fake_monitor, flask_app.yt_dlp_importer),
+        '_create_directory_observer',
+        types.MethodType(stub_create_observer, flask_app.yt_dlp_importer),
         raising=False,
     )
 
@@ -452,16 +495,27 @@ def test_job_fails_when_no_files_downloaded(monkeypatch, run_jobs_immediately, s
         def poll(self):
             return None
 
-    def idle_monitor(self, context):
-        context.process_done_event.wait()
-        context.files_queue.put(None)
+    class IdleObserver:
+        def __init__(self, context):
+            self.context = context
+            self._thread = threading.Thread(target=self._run, daemon=True)
+
+        def start(self):
+            self._thread.start()
+
+        def join(self):
+            self._thread.join()
+
+        def _run(self):
+            self.context.process_completed.wait()
+            self.context.files_queue.put(None)
 
     monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: '/usr/bin/yt-dlp')
     monkeypatch.setattr(flask_app.subprocess, 'Popen', lambda *args, **kwargs: DummyProcess())
     monkeypatch.setattr(
         flask_app.yt_dlp_importer,
-        '_monitor_downloads',
-        types.MethodType(idle_monitor, flask_app.yt_dlp_importer),
+        '_create_directory_observer',
+        types.MethodType(lambda self, context: IdleObserver(context), flask_app.yt_dlp_importer),
         raising=False,
     )
 

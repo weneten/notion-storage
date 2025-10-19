@@ -1447,12 +1447,12 @@ async function handleRemoteImportSubmit(event) {
         event.preventDefault();
     }
     if (remoteImportState.isSubmitting) {
-        return;
+        return false;
     }
 
     const elements = getRemoteImportElements();
     if (!elements.form) {
-        return;
+        return false;
     }
 
     resetRemoteImportValidation();
@@ -1471,7 +1471,7 @@ async function handleRemoteImportSubmit(event) {
         }
         showStatus('Please provide a source URL to import.', 'error');
         appendRemoteImportLog('Remote import blocked: a source URL is required.', 'error');
-        return;
+        return false;
     }
 
     const payload = {
@@ -1509,7 +1509,7 @@ async function handleRemoteImportSubmit(event) {
 
         if (!response.ok) {
             applyRemoteImportErrors(data || { message: 'The server rejected the import request.' });
-            return;
+            return false;
         }
 
         const jobPayload = data && (data.job || data);
@@ -1517,7 +1517,7 @@ async function handleRemoteImportSubmit(event) {
         if (!jobId) {
             showStatus('Import started but no job identifier was returned.', 'error');
             appendRemoteImportLog('Import started but no job identifier was returned.', 'error');
-            return;
+            return false;
         }
 
         const confirmationMessage = (data && data.message) || (jobPayload && jobPayload.message) || 'Import request accepted. Monitoring progress...';
@@ -1534,6 +1534,8 @@ async function handleRemoteImportSubmit(event) {
         remoteImportState.isSubmitting = false;
         toggleRemoteImportFormDisabled(false);
     }
+
+    return false;
 }
 
 function initializeRemoteImportWorkflow() {
@@ -1589,3 +1591,5 @@ window.__remoteImport = {
     onSocketConnect: onRemoteImportSocketConnect,
     onSocketDisconnect: onRemoteImportSocketDisconnect
 };
+
+window.handleRemoteImportSubmit = handleRemoteImportSubmit;
