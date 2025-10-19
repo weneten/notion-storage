@@ -1003,6 +1003,56 @@ const REMOTE_IMPORT_ENDPOINT = '/api/yt-dlp/jobs';
 const REMOTE_IMPORT_STATUS_ENDPOINT = jobId => `/api/yt-dlp/jobs/${encodeURIComponent(jobId)}`;
 const REMOTE_IMPORT_POLL_INTERVAL_MS = 3000;
 
+function getRemoteImportActivityCard() {
+    return document.getElementById('remoteImportActivity');
+}
+
+function getRemoteImportLogContainer() {
+    return document.getElementById('remoteImportLog');
+}
+
+function ensureRemoteImportActivityVisible() {
+    const card = getRemoteImportActivityCard();
+    if (card && card.style.display === 'none') {
+        card.style.display = 'block';
+    }
+}
+
+function appendRemoteImportLog(message, level = 'info') {
+    if (!message) {
+        return;
+    }
+
+    const container = getRemoteImportLogContainer();
+    if (!container) {
+        return;
+    }
+
+    ensureRemoteImportActivityVisible();
+
+    const entry = document.createElement('div');
+    entry.className = `remote-import-log-entry remote-import-log-${level}`;
+
+    const timestamp = document.createElement('span');
+    timestamp.className = 'remote-import-log-time';
+    timestamp.textContent = new Date().toLocaleTimeString();
+    entry.appendChild(timestamp);
+
+    const messageSpan = document.createElement('span');
+    messageSpan.className = 'remote-import-log-message';
+    messageSpan.textContent = message;
+    entry.appendChild(messageSpan);
+
+    container.appendChild(entry);
+    container.setAttribute('data-has-entries', 'true');
+
+    while (container.children.length > 200) {
+        container.removeChild(container.firstChild);
+    }
+
+    container.scrollTop = container.scrollHeight;
+}
+
 const remoteImportState = {
     timerId: null,
     jobId: null,
@@ -1014,7 +1064,9 @@ const remoteImportState = {
     isSubmitting: false,
     useSocket: false,
     socketConnected: false,
-    socketSubscribedJobId: null
+    socketSubscribedJobId: null,
+    lastLoggedMessage: null,
+    lastLoggedProgressText: null
 };
 
 function getRemoteImportElements() {
@@ -1088,6 +1140,7 @@ function applyRemoteImportErrors(errorData) {
 
     if (generalMessages.length > 0) {
         showStatus(generalMessages.join(' '), 'error');
+        appendRemoteImportLog(generalMessages.join(' '), 'error');
     }
 }
 
@@ -1142,6 +1195,8 @@ function stopRemoteImportTracking() {
     remoteImportState.lastStage = null;
     remoteImportState.useSocket = false;
     remoteImportState.socketSubscribedJobId = null;
+    remoteImportState.lastLoggedMessage = null;
+    remoteImportState.lastLoggedProgressText = null;
 }
 
 function processRemoteImportUpdate(payload) {
@@ -1224,6 +1279,19 @@ function processRemoteImportUpdate(payload) {
     const terminalSuccess = statusTokens.some(token => terminalSuccessTokens.has(token));
     const terminalFailure = statusTokens.some(token => terminalFailureTokens.has(token));
 
+    const logLevel = terminalFailure ? 'error' : (terminalSuccess ? 'success' : 'info');
+    const logMessage = progressText ? `${combinedMessage}${progressText}` : combinedMessage;
+    if (
+        logMessage && (
+            logMessage !== remoteImportState.lastLoggedMessage ||
+            progressText !== remoteImportState.lastLoggedProgressText
+        )
+    ) {
+        appendRemoteImportLog(logMessage, logLevel);
+        remoteImportState.lastLoggedMessage = logMessage;
+        remoteImportState.lastLoggedProgressText = progressText;
+    }
+
     const filesCompleted = typeof progress.files_completed === 'number' ? progress.files_completed : null;
     if (filesCompleted !== null) {
         if (filesCompleted > (remoteImportState.lastFilesCompleted || 0)) {
@@ -1296,6 +1364,7 @@ async function pollRemoteImportStatus(jobId) {
     } catch (error) {
         console.error('Error polling remote import status:', error);
         showStatus(`Unable to retrieve import status: ${error.message}`, 'error');
+        appendRemoteImportLog(`Unable to retrieve import status: ${error.message}`, 'error');
         stopRemoteImportTracking();
     }
 }
@@ -1307,6 +1376,7 @@ function startRemoteImportTracking(jobId, initialPayload) {
     remoteImportState.lastStage = null;
     remoteImportState.useSocket = remoteImportState.socketConnected;
     remoteImportState.socketSubscribedJobId = remoteImportState.useSocket ? jobId : null;
+    appendRemoteImportLog(`Monitoring remote import job ${jobId}`, 'info');
 
     if (initialPayload) {
         processRemoteImportUpdate(initialPayload && (initialPayload.job || initialPayload));
@@ -1398,6 +1468,7 @@ async function handleRemoteImportSubmit(event) {
             }
         }
         showStatus('Please provide a source URL to import.', 'error');
+        appendRemoteImportLog('Remote import blocked: a source URL is required.', 'error');
         return;
     }
 
@@ -1416,6 +1487,9 @@ async function handleRemoteImportSubmit(event) {
     remoteImportState.isSubmitting = true;
     toggleRemoteImportFormDisabled(true);
     showStatus('Submitting remote import request...', 'info');
+    appendRemoteImportLog(`Submitting remote import request for ${sourceUrl} → ${resolvedDestination}`, 'info');
+    remoteImportState.lastLoggedMessage = null;
+    remoteImportState.lastLoggedProgressText = null;
 
     try {
         const response = await fetch(REMOTE_IMPORT_ENDPOINT, {
@@ -1440,17 +1514,20 @@ async function handleRemoteImportSubmit(event) {
         const jobId = jobPayload && (jobPayload.job_id || jobPayload.jobId || jobPayload.id || jobPayload.identifier);
         if (!jobId) {
             showStatus('Import started but no job identifier was returned.', 'error');
+            appendRemoteImportLog('Import started but no job identifier was returned.', 'error');
             return;
         }
 
         const confirmationMessage = (data && data.message) || (jobPayload && jobPayload.message) || 'Import request accepted. Monitoring progress...';
         showStatus(confirmationMessage, 'info');
+        appendRemoteImportLog(`${confirmationMessage} Job ID: ${jobId}`, 'info');
         closeRemoteImportModal();
         resetRemoteImportForm();
         startRemoteImportTracking(jobId, jobPayload);
     } catch (error) {
         console.error('Remote import submission failed:', error);
         showStatus(`Failed to start remote import: ${error.message}`, 'error');
+        appendRemoteImportLog(`Failed to start remote import: ${error.message}`, 'error');
     } finally {
         remoteImportState.isSubmitting = false;
         toggleRemoteImportFormDisabled(false);

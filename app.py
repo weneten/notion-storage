@@ -29,6 +29,7 @@ import re
 import shlex
 import subprocess
 import shutil
+import logging
 from flask_socketio import emit
 from collections import defaultdict
 import gc
@@ -38,6 +39,19 @@ from werkzeug.utils import secure_filename
 from datetime import datetime, timezone
 
 load_dotenv()
+
+
+LOG_LEVEL_NAME = os.getenv('NOTION_STORAGE_LOG_LEVEL', 'INFO').upper()
+LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
+if not logging.getLogger().handlers:
+    logging.basicConfig(
+        level=LOG_LEVEL,
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    )
+else:
+    logging.getLogger().setLevel(LOG_LEVEL)
+
+logger = logging.getLogger(__name__)
 
 
 def _get_int_env(var_name: str, default: int, minimum: int = 1) -> int:
@@ -310,6 +324,7 @@ class YtDlpJobRegistry:
         self._lock = threading.RLock()
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._socketio = socketio
+        self._logger = logging.getLogger(f'{__name__}.yt_dlp_registry')
 
     def set_socketio(self, socketio: Optional[SocketIO]) -> None:
         """Attach a Socket.IO instance for job update broadcasting."""
@@ -355,6 +370,13 @@ class YtDlpJobRegistry:
             self._jobs[job['id']] = job
             public_job = self._job_public_view(job)
 
+        self._logger.info(
+            'Registered yt-dlp job %s (status=%s, url=%s, folder=%s)',
+            job.get('id'),
+            job.get('status'),
+            job.get('url'),
+            job.get('folder_path'),
+        )
         self._emit_job_event('created', public_job)
         return public_job
 
@@ -384,6 +406,10 @@ class YtDlpJobRegistry:
             job['updated_at'] = _utcnow_isoformat()
             public_job = self._job_public_view(job)
 
+        if 'status' in updates:
+            self._logger.info('Job %s status updated to %s', job_id, updates.get('status'))
+        else:
+            self._logger.debug('Job %s updated with %s', job_id, updates)
         self._emit_job_event('updated', public_job)
         return public_job
 
@@ -397,6 +423,7 @@ class YtDlpJobRegistry:
             job['updated_at'] = _utcnow_isoformat()
             public_job = self._job_public_view(job)
 
+        self._logger.debug('Job %s progress update: %s', job_id, updates)
         self._emit_job_event('progress', public_job)
         return public_job
 
@@ -412,6 +439,8 @@ class YtDlpJobRegistry:
             if len(entries) > 200:
                 del entries[:-200]
             job['updated_at'] = timestamp
+
+        self._logger.debug('Job %s log entry: %s', job_id, line)
 
     def set_future(self, job_id: str, future: concurrent.futures.Future) -> None:
         with self._lock:
@@ -459,6 +488,7 @@ class YtDlpJobRegistry:
             job['terminal_state'] = 'cancelled'
             public_job = self._job_public_view(job)
 
+        self._logger.info('Job %s cancelled by user', job_id)
         self._emit_job_event('cancelled', public_job)
         return public_job
 
@@ -700,6 +730,8 @@ def cleanup_old_sessions():
         print(f"Error scheduling session cleanup timer: {timer_error}")
     
 app = Flask(__name__)
+app.logger.setLevel(LOG_LEVEL)
+app.logger.propagate = True
 # Use a safe default for development if SECRET_KEY is not provided
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
 CORS(app)  # Enable CORS for all routes
@@ -3263,22 +3295,42 @@ def list_yt_dlp_jobs():
     return jsonify({'jobs': yt_dlp_job_registry.list()})
 
 
+def _redact_yt_dlp_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a logging-safe snapshot of an incoming yt-dlp payload."""
+
+    if not isinstance(payload, dict):
+        return {}
+
+    redacted: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if key in {'command', 'advanced_command'} and value:
+            redacted[key] = '<redacted>'
+        else:
+            redacted[key] = value
+    return redacted
+
+
 @app.route('/api/yt-dlp/jobs', methods=['POST'])
 @login_required
 def create_yt_dlp_job():
     payload = request.get_json(silent=True) or {}
+    safe_payload = _redact_yt_dlp_payload(payload)
+    app.logger.info('Received yt-dlp import request: %s', safe_payload)
 
     try:
         normalized = _normalize_yt_dlp_inputs(payload)
     except ValueError as exc:
+        app.logger.warning('Rejected yt-dlp job request: %s | payload=%s', exc, safe_payload)
         return jsonify({'error': str(exc)}), 400
 
     normalized_arguments = normalized.get('normalized_arguments') or []
     if not normalized_arguments:
+        app.logger.error('Failed to build yt-dlp command for payload=%s', safe_payload)
         return jsonify({'error': 'No command arguments were generated for yt-dlp'}), 500
 
     executable = normalized_arguments[0]
     if shutil.which(executable) is None:
+        app.logger.error("yt-dlp executable '%s' not found for payload=%s", executable, safe_payload)
         return (
             jsonify(
                 {
@@ -3335,6 +3387,13 @@ def create_yt_dlp_job():
     }
 
     yt_dlp_job_registry.create(job_record)
+    app.logger.info(
+        'Queued yt-dlp job %s for url=%s destination=%s user=%s',
+        job_id,
+        normalized['url'],
+        folder_path,
+        requested_by,
+    )
     future = yt_dlp_executor.submit(_execute_yt_dlp_job, job_id)
     yt_dlp_job_registry.set_future(job_id, future)
 
