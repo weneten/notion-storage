@@ -686,7 +686,9 @@ def _run_yt_dlp_preflight_checks(user_id: Optional[str]) -> tuple[Dict[str, Any]
 
 
 def _execute_yt_dlp_job(job_id: str) -> None:
-    yt_dlp_importer.execute(job_id, _parse_yt_dlp_progress)
+    snapshot = yt_dlp_job_registry.get_internal(job_id)
+    resolved_database_id = snapshot.get('user_database_id') if snapshot else None
+    yt_dlp_importer.execute(job_id, _parse_yt_dlp_progress, resolved_database_id)
 
 # Function to clean up old upload sessions periodically
 def cleanup_old_sessions():

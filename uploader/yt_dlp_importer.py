@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
@@ -44,6 +45,8 @@ class _PipelineContext:
     metrics: _JobMetrics = field(default_factory=_JobMetrics)
     discovery_error: Optional[BaseException] = None
     upload_error: Optional[BaseException] = None
+    discovery_error_message: Optional[str] = None
+    upload_error_message: Optional[str] = None
 
 
 class _DirectoryObserver(threading.Thread):
@@ -60,6 +63,18 @@ class _DirectoryObserver(threading.Thread):
     def run(self) -> None:  # pragma: no cover - thin wrapper around _poll
         try:
             self._poll()
+        except Exception as exc:  # pragma: no cover - surfaced to caller
+            context = self._context
+            context.discovery_error = exc
+            if context.discovery_error_message is None:
+                context.discovery_error_message = f'Failed to prepare downloaded files: {exc}'
+            logger.exception('Directory observer failed for job %s', context.job_id)
+            try:
+                self._job_registry.append_log(context.job_id, context.discovery_error_message)
+                self._job_registry.append_log(context.job_id, traceback.format_exc())
+            except Exception:
+                pass
+            context.stop_event.set()
         finally:
             if not self._sentinel_emitted:
                 self._context.files_queue.put(None)
@@ -67,48 +82,38 @@ class _DirectoryObserver(threading.Thread):
 
     def _poll(self) -> None:
         context = self._context
-        try:
-            while True:
-                if context.stop_event.is_set() and not context.process_completed.is_set():
-                    break
+        while True:
+            if context.stop_event.is_set() and not context.process_completed.is_set():
+                break
 
-                ready_files = self._scan_directory()
-                if ready_files:
-                    for path in ready_files:
-                        context.files_queue.put(path)
-                        context.metrics.record_discovery()
-                        self._processed.add(path)
-                        try:
-                            size = path.stat().st_size
-                        except FileNotFoundError:
-                            size = 0
-                        logger.info('Job %s discovered file %s (%s bytes)', context.job_id, path.name, size)
-                        try:
-                            self._job_registry.append_log(
-                                context.job_id,
-                                f'Discovered {path.name} ({size} bytes)',
-                            )
-                        except Exception:  # pragma: no cover - logging should never break pipeline
-                            pass
-
-                    if context.process_completed.is_set() and not self._pending_entries_exist():
-                        break
-
-                    continue
+            ready_files = self._scan_directory()
+            if ready_files:
+                for path in ready_files:
+                    context.files_queue.put(path)
+                    context.metrics.record_discovery()
+                    self._processed.add(path)
+                    try:
+                        size = path.stat().st_size
+                    except FileNotFoundError:
+                        size = 0
+                    logger.info('Job %s discovered file %s (%s bytes)', context.job_id, path.name, size)
+                    try:
+                        self._job_registry.append_log(
+                            context.job_id,
+                            f'Discovered {path.name} ({size} bytes)',
+                        )
+                    except Exception:  # pragma: no cover - logging should never break pipeline
+                        pass
 
                 if context.process_completed.is_set() and not self._pending_entries_exist():
                     break
 
-                time.sleep(0.5)
-        except Exception as exc:  # pragma: no cover - surfaced to caller
-            context.discovery_error = exc
-            try:
-                self._job_registry.append_log(context.job_id, f'File discovery error: {exc}')
-            except Exception:
-                pass
-        finally:
-            context.files_queue.put(None)
-            self._sentinel_emitted = True
+                continue
+
+            if context.process_completed.is_set() and not self._pending_entries_exist():
+                break
+
+            time.sleep(0.5)
 
     def _scan_directory(self) -> List[Path]:
         context = self._context
@@ -202,13 +207,31 @@ class _UploadWorker(threading.Thread):
                     context.metrics.record_upload(index)
                 except Exception as exc:  # pragma: no cover - propagated to main thread
                     context.upload_error = exc
+                    context.upload_error_message = (
+                        f'Failed to upload {item.name if isinstance(item, Path) else "file"}: {exc}'
+                    )
                     context.stop_event.set()
+                    logger.exception('Upload worker failed for job %s', context.job_id)
                     try:
-                        self._job_registry.append_log(context.job_id, f'Upload error: {exc}')
+                        summary = context.upload_error_message or f'Upload error: {exc}'
+                        self._job_registry.append_log(context.job_id, summary)
+                        self._job_registry.append_log(context.job_id, traceback.format_exc())
                     except Exception:
                         pass
+                    break
                 finally:
                     context.files_queue.task_done()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            context.upload_error = exc
+            if context.upload_error_message is None:
+                context.upload_error_message = f'Upload worker crashed: {exc}'
+            context.stop_event.set()
+            logger.exception('Upload worker crashed for job %s', context.job_id)
+            try:
+                self._job_registry.append_log(context.job_id, context.upload_error_message)
+                self._job_registry.append_log(context.job_id, traceback.format_exc())
+            except Exception:
+                pass
         finally:
             self._drain_queue()
 
@@ -336,7 +359,12 @@ class YtDlpImporter:
         self.ensure_folder_structure = ensure_folder_structure
 
     # ------------------------------------------------------------------ Public
-    def execute(self, job_id: str, parse_progress: Callable[[str], Optional[Dict[str, Any]]]) -> None:
+    def execute(
+        self,
+        job_id: str,
+        parse_progress: Callable[[str], Optional[Dict[str, Any]]],
+        resolved_database_id: Optional[str] = None,
+    ) -> None:
         job_snapshot = self.job_registry.get_internal(job_id)
         if not job_snapshot:
             logger.warning('Job %s missing from registry; aborting execution', job_id)
@@ -350,50 +378,102 @@ class YtDlpImporter:
                 status='failed',
                 error='Streaming upload manager is not configured',
             )
-            self.job_registry.update_progress(job_id, {'stage': 'failed'})
+            failure_message = 'Streaming upload manager is not configured'
+            self.job_registry.update_progress(
+                job_id,
+                {
+                    'stage': 'failed',
+                    'status_message': failure_message,
+                },
+            )
+            try:
+                self.job_registry.append_log(job_id, failure_message)
+            except Exception:
+                pass
             logger.error('Upload manager not configured; aborting job %s', job_id)
             return
 
-        user_database_id = job_snapshot.get('user_database_id')
+        user_database_id = resolved_database_id or job_snapshot.get('user_database_id')
         folder_path = (job_snapshot.get('folder_path') or '/').strip() or '/'
-        if not user_database_id:
-            resolved = self._resolve_user_database_id(job_snapshot.get('requested_by'))
-            if resolved:
-                user_database_id = resolved
-                job_snapshot['user_database_id'] = resolved
-                self.job_registry.update(job_id, user_database_id=resolved)
-                logger.info('Resolved database %s for job %s', resolved, job_id)
-            else:
-                self.job_registry.update(
-                    job_id,
-                    status='failed',
-                    error='User database ID is required to upload files',
-                )
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
-                logger.error('Unable to resolve database for job %s', job_id)
-                return
+        if user_database_id:
+            if job_snapshot.get('user_database_id') != user_database_id:
+                job_snapshot['user_database_id'] = user_database_id
+                self.job_registry.update(job_id, user_database_id=user_database_id)
+        else:
+            message = 'User database ID is required to upload files'
+            self.job_registry.update(
+                job_id,
+                status='failed',
+                error=message,
+            )
+            self.job_registry.update_progress(
+                job_id,
+                {
+                    'stage': 'failed',
+                    'status_message': message,
+                },
+            )
+            try:
+                self.job_registry.append_log(job_id, message)
+            except Exception:
+                pass
+            logger.error('Unable to resolve database for job %s', job_id)
+            return
 
         if self.ensure_folder_structure:
             try:
                 self.ensure_folder_structure(user_database_id, folder_path)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception('Folder structure preparation failed for job %s', job_id)
-                self.job_registry.update(job_id, status='failed', error=str(exc))
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                message = str(exc)
+                self.job_registry.update(job_id, status='failed', error=message)
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'failed',
+                        'status_message': message,
+                    },
+                )
+                try:
+                    self.job_registry.append_log(job_id, f'Folder preparation failed: {message}')
+                except Exception:
+                    pass
                 return
 
         normalized_command = job_snapshot.get('normalized_command')
         if not normalized_command:
-            self.job_registry.update(job_id, status='failed', error='No command arguments were generated for yt-dlp')
-            self.job_registry.update_progress(job_id, {'stage': 'failed'})
+            message = 'No command arguments were generated for yt-dlp'
+            self.job_registry.update(job_id, status='failed', error=message)
+            self.job_registry.update_progress(
+                job_id,
+                {
+                    'stage': 'failed',
+                    'status_message': message,
+                },
+            )
+            try:
+                self.job_registry.append_log(job_id, message)
+            except Exception:
+                pass
             logger.error('No normalized command found for job %s', job_id)
             return
 
         with tempfile.TemporaryDirectory(prefix=f"yt-dlp-{job_id}-") as tmpdir:
             command = list(self._build_command(normalized_command, tmpdir))
             if not command:
-                self.job_registry.update(job_id, status='failed', error='Unable to construct yt-dlp command')
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                message = 'Unable to construct yt-dlp command'
+                self.job_registry.update(job_id, status='failed', error=message)
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'failed',
+                        'status_message': message,
+                    },
+                )
+                try:
+                    self.job_registry.append_log(job_id, message)
+                except Exception:
+                    pass
                 logger.error('Failed to build command for job %s', job_id)
                 return
 
@@ -401,7 +481,17 @@ class YtDlpImporter:
             if shutil.which(executable) is None:
                 message = f"Executable '{executable}' is not available on the server"
                 self.job_registry.update(job_id, status='failed', error=message)
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'failed',
+                        'status_message': message,
+                    },
+                )
+                try:
+                    self.job_registry.append_log(job_id, message)
+                except Exception:
+                    pass
                 logger.error('Executable %s missing for job %s', executable, job_id)
                 return
 
@@ -420,8 +510,19 @@ class YtDlpImporter:
                 )
             except Exception as exc:  # pragma: no cover - process launch failure is rare
                 logger.exception('Failed to start yt-dlp process for job %s', job_id)
-                self.job_registry.update(job_id, status='failed', error=str(exc))
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                message = str(exc)
+                self.job_registry.update(job_id, status='failed', error=message)
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'failed',
+                        'status_message': message,
+                    },
+                )
+                try:
+                    self.job_registry.append_log(job_id, f'Failed to start yt-dlp: {message}')
+                except Exception:
+                    pass
                 return
 
             self.job_registry.set_process(job_id, process)
@@ -451,21 +552,49 @@ class YtDlpImporter:
             logger.info('yt-dlp process finished for job %s with exit code %s', job_id, exit_code)
 
             if context.discovery_error:
-                error_message = f'Failed to prepare downloaded files: {context.discovery_error}'
+                error_message = context.discovery_error_message or (
+                    f'Failed to prepare downloaded files: {context.discovery_error}'
+                )
                 logger.error('Job %s discovery error: %s', job_id, context.discovery_error)
-                self.job_registry.update(job_id, status='failed', error=error_message, completed_at=self._utcnow())
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                self.job_registry.update(
+                    job_id,
+                    status='failed',
+                    error=error_message,
+                    completed_at=self._utcnow(),
+                )
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'failed',
+                        'status_message': error_message,
+                    },
+                )
+                try:
+                    self.job_registry.append_log(job_id, error_message)
+                except Exception:
+                    pass
                 return
 
             if context.upload_error:
+                error_message = context.upload_error_message or str(context.upload_error)
                 logger.error('Job %s upload error: %s', job_id, context.upload_error)
                 self.job_registry.update(
                     job_id,
                     status='failed',
-                    error=str(context.upload_error),
+                    error=error_message,
                     completed_at=self._utcnow(),
                 )
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'failed',
+                        'status_message': error_message,
+                    },
+                )
+                try:
+                    self.job_registry.append_log(job_id, error_message)
+                except Exception:
+                    pass
                 return
 
             final_snapshot = self.job_registry.get_internal(job_id)
@@ -478,12 +607,22 @@ class YtDlpImporter:
                 logger.error('yt-dlp exited with code %s for job %s', exit_code, job_id)
                 self.job_registry.append_log(job_id, message)
                 self.job_registry.update(job_id, status='failed', error=message, completed_at=self._utcnow())
-                self.job_registry.update_progress(job_id, {'stage': 'failed'})
+                self.job_registry.update_progress(
+                    job_id,
+                    {
+                        'stage': 'failed',
+                        'status_message': message,
+                    },
+                )
                 return
 
             if context.metrics.files_discovered == 0:
                 message = 'yt-dlp completed without downloading any files.'
                 logger.error('Job %s completed without downloads', job_id)
+                try:
+                    self.job_registry.append_log(job_id, message)
+                except Exception:
+                    pass
                 self.job_registry.update(job_id, status='failed', error=message, completed_at=self._utcnow())
                 self.job_registry.update_progress(
                     job_id,
@@ -583,35 +722,3 @@ class YtDlpImporter:
         from datetime import datetime, timezone
 
         return datetime.now(timezone.utc).isoformat()
-
-    def _resolve_user_database_id(self, user_id: Optional[str]) -> Optional[str]:
-        if not user_id:
-            return None
-
-        manager = self.upload_manager
-        if manager is None:
-            return None
-
-        candidates: List[Any] = []
-
-        def _append(candidate: Any) -> None:
-            if candidate and candidate not in candidates:
-                candidates.append(candidate)
-
-        _append(getattr(manager, 'notion_uploader', None))
-        nested = getattr(manager, 'uploader', None)
-        _append(nested)
-        if nested is not None:
-            _append(getattr(nested, 'notion_uploader', None))
-
-        for uploader in candidates:
-            resolver = getattr(uploader, 'get_user_database_id', None)
-            if not callable(resolver):
-                continue
-            try:
-                resolved = resolver(user_id)
-            except Exception:
-                continue
-            if resolved:
-                return resolved
-        return None
