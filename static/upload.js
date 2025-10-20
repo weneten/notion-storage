@@ -1662,10 +1662,13 @@ async function handleRemoteImportSubmit(event) {
         const data = hasJson ? await response.json() : null;
 
         if (!response.ok) {
-            shouldUnlockForm = false;
+            const isServerError = response.status >= 500;
+            if (isServerError) {
+                shouldUnlockForm = false;
+            }
             applyRemoteImportErrors(
                 data || { message: 'The server rejected the import request.' },
-                { lockForm: true, appendToAlert: true }
+                { lockForm: isServerError, appendToAlert: true }
             );
             return false;
         }
