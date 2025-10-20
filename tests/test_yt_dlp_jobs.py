@@ -3,6 +3,7 @@ import io
 import os
 import sys
 import threading
+import time
 import types
 from types import SimpleNamespace
 from pathlib import Path
@@ -197,6 +198,65 @@ def test_create_job_requires_yt_dlp_binary(monkeypatch):
     payload = resp.get_json()
     assert payload['error'].startswith("Executable 'yt-dlp'")
     assert flask_app.yt_dlp_job_registry.list() == []
+
+
+def test_remote_import_job_executes_with_fake_binary(tmp_path, monkeypatch, stub_importer_dependencies, run_jobs_immediately):
+    fake_executable = Path(__file__).parent / 'remote_import' / 'fake_yt_dlp.py'
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    executable_path = bin_dir / 'yt-dlp'
+    executable_path.write_bytes(fake_executable.read_bytes())
+    executable_path.chmod(0o755)
+
+    original_path = os.environ.get('PATH', '')
+    monkeypatch.setenv('PATH', f"{bin_dir}{os.pathsep}{original_path}")
+    monkeypatch.setattr(
+        flask_app.shutil,
+        'which',
+        lambda exe: executable_path.as_posix() if exe == 'yt-dlp' else None,
+    )
+
+    client = flask_app.app.test_client()
+    response = client.post(
+        '/api/yt-dlp/jobs',
+        json={'url': 'https://example.com/video', 'user_database_id': 'test-db'},
+    )
+
+    assert response.status_code == 201
+    job_id = response.get_json()['job']['id']
+
+    snapshot = None
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        snapshot = flask_app.yt_dlp_job_registry.get(job_id)
+        if snapshot and snapshot.get('status') == 'completed':
+            break
+        time.sleep(0.1)
+    else:  # pragma: no cover - defensive guard for flakes
+        pytest.fail('yt-dlp job did not reach completed state')
+
+    assert snapshot is not None
+    progress = snapshot['progress']
+    assert progress['stage'] == 'done'
+    assert progress['percentage'] == 100.0
+    assert progress['upload_percentage'] == 100.0
+
+    log_messages = [entry['message'] for entry in snapshot['logs']]
+    assert any(line.startswith('[download]') for line in log_messages)
+    assert any('[upload] preparing files' in line for line in log_messages)
+    assert any('Discovered 001_fake_video.mp4' in line for line in log_messages)
+    assert any('Completed successfully with 2 files' in line for line in log_messages)
+
+    upload_manager = stub_importer_dependencies
+    assert flask_app.yt_dlp_importer.upload_manager is upload_manager
+    assert [entry['filename'] for entry in upload_manager.created] == [
+        '001_fake_video.mp4',
+        '002_fake_video.mp4',
+    ]
+    assert [entry['size'] for entry in upload_manager.processed_streams] == [
+        len(b'fake video payload #1'),
+        len(b'fake video payload #2'),
+    ]
 
 
 def test_create_job_runs_and_tracks_progress(monkeypatch, run_jobs_immediately, tmp_path):
