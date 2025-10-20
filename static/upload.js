@@ -1000,6 +1000,7 @@ const uploadFile = async () => {
 // ---------------------------------------------------------------------------
 
 const REMOTE_IMPORT_ENDPOINT = '/api/yt-dlp/jobs';
+const REMOTE_IMPORT_PREFLIGHT_ENDPOINT = '/api/yt-dlp/preflight';
 const REMOTE_IMPORT_STATUS_ENDPOINT = jobId => `/api/yt-dlp/jobs/${encodeURIComponent(jobId)}`;
 const REMOTE_IMPORT_POLL_INTERVAL_MS = 3000;
 
@@ -1107,7 +1108,10 @@ const remoteImportState = {
     socketSubscribedJobId: null,
     lastLoggedMessage: null,
     lastLoggedProgressText: null,
-    initialized: false
+    initialized: false,
+    formLocked: false,
+    preflightPassed: false,
+    activeErrorMessage: null
 };
 
 function getRemoteImportElements() {
@@ -1121,8 +1125,44 @@ function getRemoteImportElements() {
     };
 }
 
+function updateRemoteImportErrorAlert(message, { append = false } = {}) {
+    const { errorAlert } = getRemoteImportElements();
+    if (!errorAlert) {
+        return '';
+    }
+
+    const trimmedMessage = typeof message === 'string' ? message.trim() : '';
+    if (!trimmedMessage) {
+        errorAlert.classList.add('d-none');
+        errorAlert.textContent = '';
+        return '';
+    }
+
+    const existing = (errorAlert.textContent || '').trim();
+    const combined = append && existing ? `${existing}\n${trimmedMessage}` : trimmedMessage;
+    errorAlert.classList.remove('d-none');
+    errorAlert.textContent = combined;
+    return combined;
+}
+
+function setRemoteImportSubmitDisabled(isDisabled) {
+    const { submitButton } = getRemoteImportElements();
+    if (submitButton) {
+        submitButton.disabled = Boolean(isDisabled);
+    }
+}
+
+function clearRemoteImportErrors() {
+    remoteImportState.activeErrorMessage = null;
+    updateRemoteImportErrorAlert('');
+
+    if (!remoteImportState.formLocked) {
+        setRemoteImportSubmitDisabled(!remoteImportState.preflightPassed);
+    }
+}
+
 function resetRemoteImportValidation() {
-    const { sourceInput, destinationInput, commandInput, errorAlert } = getRemoteImportElements();
+    const { sourceInput, destinationInput, commandInput } = getRemoteImportElements();
     [sourceInput, destinationInput, commandInput].forEach(input => {
         if (input) {
             input.classList.remove('is-invalid');
@@ -1133,13 +1173,12 @@ function resetRemoteImportValidation() {
         }
     });
 
-    if (errorAlert) {
-        errorAlert.classList.add('d-none');
-        errorAlert.textContent = '';
-    }
+    remoteImportState.formLocked = false;
+    clearRemoteImportErrors();
+    toggleRemoteImportFormDisabled(false);
 }
 
-function applyRemoteImportErrors(errorData) {
+function applyRemoteImportErrors(errorData, { lockForm = false, appendToAlert = false } = {}) {
     const elements = getRemoteImportElements();
     const fieldErrors = (errorData && (errorData.field_errors || errorData.errors)) || {};
     const generalMessages = [];
@@ -1174,15 +1213,24 @@ function applyRemoteImportErrors(errorData) {
         generalMessages.push(fieldErrors.join(' '));
     }
 
-    if (elements.errorAlert && generalMessages.length > 0) {
-        elements.errorAlert.classList.remove('d-none');
-        elements.errorAlert.textContent = generalMessages.join(' ');
+    const combinedMessage = generalMessages.join(' ').trim();
+    if (combinedMessage) {
+        const messageShown = updateRemoteImportErrorAlert(combinedMessage, { append: appendToAlert });
+        remoteImportState.activeErrorMessage = messageShown;
+        showStatus(combinedMessage, 'error');
+        appendRemoteImportLog(combinedMessage, 'error');
     }
 
-    if (generalMessages.length > 0) {
-        showStatus(generalMessages.join(' '), 'error');
-        appendRemoteImportLog(generalMessages.join(' '), 'error');
+    if (lockForm) {
+        remoteImportState.formLocked = true;
     }
+
+    if (remoteImportState.formLocked) {
+        toggleRemoteImportFormDisabled(true);
+        setRemoteImportSubmitDisabled(true);
+    }
+
+    return combinedMessage;
 }
 
 function toggleRemoteImportFormDisabled(isDisabled) {
@@ -1192,6 +1240,50 @@ function toggleRemoteImportFormDisabled(isDisabled) {
             input.disabled = isDisabled;
         }
     });
+}
+
+async function runRemoteImportPreflight() {
+    const elements = getRemoteImportElements();
+    if (!elements.submitButton) {
+        return false;
+    }
+
+    try {
+        const response = await fetch(REMOTE_IMPORT_PREFLIGHT_ENDPOINT, {
+            method: 'GET',
+            credentials: 'include'
+        });
+
+        const contentType = response.headers.get('content-type') || '';
+        const isJson = contentType.includes('application/json');
+        const data = isJson ? await response.json() : null;
+
+        if (!response.ok || !data || data.status !== 'ok') {
+            const message = (data && (data.message || data.error || data.detail)) || 'Remote import preflight failed.';
+            remoteImportState.preflightPassed = false;
+            setRemoteImportSubmitDisabled(true);
+            const shown = updateRemoteImportErrorAlert(message, { append: false });
+            remoteImportState.activeErrorMessage = shown;
+            return false;
+        }
+
+        remoteImportState.preflightPassed = true;
+        if (!remoteImportState.formLocked) {
+            setRemoteImportSubmitDisabled(false);
+            if (!remoteImportState.activeErrorMessage) {
+                updateRemoteImportErrorAlert('');
+            }
+        }
+
+        return true;
+    } catch (error) {
+        console.error('Remote import preflight failed:', error);
+        remoteImportState.preflightPassed = false;
+        setRemoteImportSubmitDisabled(true);
+        const shown = updateRemoteImportErrorAlert(`Remote import preflight failed: ${error.message}`, { append: false });
+        remoteImportState.activeErrorMessage = shown;
+        return false;
+    }
 }
 
 function resetRemoteImportForm() {
@@ -1553,6 +1645,8 @@ async function handleRemoteImportSubmit(event) {
     remoteImportState.lastLoggedMessage = null;
     remoteImportState.lastLoggedProgressText = null;
 
+    let shouldUnlockForm = true;
+
     try {
         const response = await fetch(REMOTE_IMPORT_ENDPOINT, {
             method: 'POST',
@@ -1568,7 +1662,11 @@ async function handleRemoteImportSubmit(event) {
         const data = hasJson ? await response.json() : null;
 
         if (!response.ok) {
-            applyRemoteImportErrors(data || { message: 'The server rejected the import request.' });
+            shouldUnlockForm = false;
+            applyRemoteImportErrors(
+                data || { message: 'The server rejected the import request.' },
+                { lockForm: true, appendToAlert: true }
+            );
             return false;
         }
 
@@ -1588,11 +1686,21 @@ async function handleRemoteImportSubmit(event) {
         startRemoteImportTracking(jobId, jobPayload);
     } catch (error) {
         console.error('Remote import submission failed:', error);
-        showStatus(`Failed to start remote import: ${error.message}`, 'error');
-        appendRemoteImportLog(`Failed to start remote import: ${error.message}`, 'error');
+        shouldUnlockForm = false;
+        applyRemoteImportErrors(
+            { message: `Failed to start remote import: ${error.message}` },
+            { lockForm: true, appendToAlert: true }
+        );
     } finally {
         remoteImportState.isSubmitting = false;
-        toggleRemoteImportFormDisabled(false);
+        if (shouldUnlockForm) {
+            toggleRemoteImportFormDisabled(false);
+            setRemoteImportSubmitDisabled(!remoteImportState.preflightPassed);
+        } else {
+            remoteImportState.formLocked = true;
+            toggleRemoteImportFormDisabled(true);
+            setRemoteImportSubmitDisabled(true);
+        }
     }
 
     return false;
@@ -1627,6 +1735,7 @@ function initializeRemoteImportWorkflow() {
             if (destinationInput) {
                 destinationInput.value = (window.currentFolder && window.currentFolder.trim()) ? window.currentFolder : '/';
             }
+            runRemoteImportPreflight();
         };
 
         const onHidden = () => {
@@ -1643,6 +1752,8 @@ function initializeRemoteImportWorkflow() {
             modalElement.addEventListener('hidden.bs.modal', onHidden);
         }
     }
+
+    runRemoteImportPreflight();
 }
 
 function runWhenDocumentReady(callback) {

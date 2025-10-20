@@ -83,6 +83,13 @@ def disable_login(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def stub_current_user(monkeypatch):
+    dummy_user = SimpleNamespace(id='test-user', is_authenticated=True)
+    monkeypatch.setattr(flask_app, 'current_user', dummy_user)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def clear_job_registry():
     with flask_app.yt_dlp_job_registry._lock:  # pylint: disable=protected-access
         flask_app.yt_dlp_job_registry._jobs.clear()  # pylint: disable=protected-access
@@ -158,6 +165,67 @@ def test_create_job_requires_url():
     resp = client.post('/api/yt-dlp/jobs', json={})
     assert resp.status_code == 400
     assert 'error' in resp.get_json()
+
+
+def test_preflight_success():
+    client = flask_app.app.test_client()
+    resp = client.get('/api/yt-dlp/preflight')
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload['status'] == 'ok'
+    assert payload['checks']['yt_dlp_executable']['status'] == 'ok'
+    assert payload['checks']['notion_database']['status'] == 'ok'
+    assert payload['checks']['temporary_directory']['status'] == 'ok'
+
+
+def test_preflight_missing_executable(monkeypatch):
+    client = flask_app.app.test_client()
+
+    monkeypatch.setattr(flask_app.shutil, 'which', lambda exe: None)
+
+    resp = client.get('/api/yt-dlp/preflight')
+
+    assert resp.status_code == 503
+    payload = resp.get_json()
+    assert payload['status'] == 'error'
+    assert "Executable 'yt-dlp'" in payload['message']
+    assert payload['checks']['yt_dlp_executable']['status'] == 'error'
+
+
+def test_preflight_missing_database(monkeypatch):
+    client = flask_app.app.test_client()
+
+    monkeypatch.setattr(flask_app.uploader, 'get_user_database_id', lambda user_id: None)
+
+    resp = client.get('/api/yt-dlp/preflight')
+
+    assert resp.status_code == 503
+    payload = resp.get_json()
+    assert payload['status'] == 'error'
+    assert 'No Notion database' in payload['message']
+    assert payload['checks']['notion_database']['status'] == 'error'
+
+
+def test_preflight_temp_directory_failure(monkeypatch):
+    client = flask_app.app.test_client()
+
+    class FailingTempFile:
+        def __enter__(self):
+            raise PermissionError('denied')
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(flask_app.tempfile, 'NamedTemporaryFile', lambda *args, **kwargs: FailingTempFile())
+
+    resp = client.get('/api/yt-dlp/preflight')
+
+    assert resp.status_code == 503
+    payload = resp.get_json()
+    assert payload['status'] == 'error'
+    assert 'temporary directory' in payload['message']
+    assert payload['checks']['temporary_directory']['status'] == 'error'
 
 
 def test_create_job_accepts_url_without_scheme():
