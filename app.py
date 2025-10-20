@@ -612,6 +612,79 @@ def _normalize_yt_dlp_inputs(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _run_yt_dlp_preflight_checks(user_id: Optional[str]) -> tuple[Dict[str, Any], List[str]]:
+    """Evaluate the prerequisites for running a yt-dlp import."""
+
+    checks: Dict[str, Any] = {
+        'yt_dlp_executable': {
+            'status': 'unknown',
+            'detail': None,
+        },
+        'notion_database': {
+            'status': 'unknown',
+            'detail': None,
+        },
+        'temporary_directory': {
+            'status': 'unknown',
+            'detail': None,
+        },
+    }
+    errors: List[str] = []
+
+    executable = 'yt-dlp'
+    executable_path = shutil.which(executable)
+    if executable_path:
+        checks['yt_dlp_executable']['status'] = 'ok'
+        checks['yt_dlp_executable']['detail'] = executable_path
+    else:
+        msg = (
+            f"Executable '{executable}' is not available on the server. "
+            'Install yt-dlp or adjust PATH before importing from a remote URL.'
+        )
+        checks['yt_dlp_executable']['status'] = 'error'
+        checks['yt_dlp_executable']['detail'] = msg
+        errors.append(msg)
+
+    database_id: Optional[str] = None
+    if user_id:
+        try:
+            database_id = uploader.get_user_database_id(user_id)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.exception('Failed to resolve Notion database for user %s', user_id)
+            msg = f'Unable to resolve Notion database for the current user: {exc}'
+            checks['notion_database']['status'] = 'error'
+            checks['notion_database']['detail'] = msg
+            errors.append(msg)
+        else:
+            if database_id:
+                checks['notion_database']['status'] = 'ok'
+                checks['notion_database']['detail'] = database_id
+            else:
+                msg = 'No Notion database is associated with the current user.'
+                checks['notion_database']['status'] = 'error'
+                checks['notion_database']['detail'] = msg
+                errors.append(msg)
+    else:
+        msg = 'No authenticated user is associated with this request.'
+        checks['notion_database']['status'] = 'error'
+        checks['notion_database']['detail'] = msg
+        errors.append(msg)
+
+    try:
+        with tempfile.NamedTemporaryFile(prefix='yt-dlp-preflight-', delete=True) as tmp_file:
+            tmp_file.write(b'check')
+            tmp_file.flush()
+        checks['temporary_directory']['status'] = 'ok'
+        checks['temporary_directory']['detail'] = tempfile.gettempdir()
+    except Exception as exc:
+        msg = f'Unable to write to the temporary directory: {exc}'
+        checks['temporary_directory']['status'] = 'error'
+        checks['temporary_directory']['detail'] = msg
+        errors.append(msg)
+
+    return checks, errors
+
+
 def _execute_yt_dlp_job(job_id: str) -> None:
     yt_dlp_importer.execute(job_id, _parse_yt_dlp_progress)
 
@@ -3298,6 +3371,25 @@ def get_upload_status(upload_id):
 @login_required
 def list_yt_dlp_jobs():
     return jsonify({'jobs': yt_dlp_job_registry.list()})
+
+
+@app.route('/api/yt-dlp/preflight', methods=['GET'])
+@login_required
+def get_yt_dlp_preflight_status():
+    user_id = getattr(current_user, 'id', None)
+    checks, errors = _run_yt_dlp_preflight_checks(user_id)
+
+    response_payload = {
+        'status': 'ok' if not errors else 'error',
+        'checks': checks,
+    }
+
+    if errors:
+        response_payload['message'] = ' '.join(errors)
+        return jsonify(response_payload), 503
+
+    response_payload['message'] = 'All yt-dlp preflight checks passed.'
+    return jsonify(response_payload)
 
 
 def _redact_yt_dlp_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
