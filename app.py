@@ -218,6 +218,9 @@ def cleanup_old_sessions():
 load_dotenv()
 
 
+DEFAULT_MAX_CONCURRENT_UPLOADS = 3
+
+
 def _get_positive_int_from_env(var_name: str, default: int) -> int:
     """Return a positive integer from the environment or a default."""
 
@@ -238,7 +241,7 @@ def _get_positive_int_from_env(var_name: str, default: int) -> int:
     return value
 
 
-MAX_CONCURRENT_UPLOADS = _get_positive_int_from_env('MAX_CONCURRENT_UPLOADS', 3)
+MAX_CONCURRENT_UPLOADS = _get_positive_int_from_env('MAX_CONCURRENT_UPLOADS', DEFAULT_MAX_CONCURRENT_UPLOADS)
 
 app = Flask(__name__)
 # Use a safe default for development if SECRET_KEY is not provided
@@ -769,6 +772,7 @@ def home():
             next_cursor=next_cursor,
             cache_timestamp=last_sync,
             max_concurrent_uploads=MAX_CONCURRENT_UPLOADS,
+            default_max_concurrent_uploads=DEFAULT_MAX_CONCURRENT_UPLOADS,
         )
     except Exception as e:
         return f"Error loading home page: {str(e)}", 500

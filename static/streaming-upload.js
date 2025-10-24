@@ -10,7 +10,17 @@ window.pendingUploads = window.pendingUploads || new Set();
 const PENDING_UPLOAD_POLL_INTERVAL_MS = 2000;
 const UPLOAD_HEARTBEAT_INTERVAL_MS = 20000;
 const FILE_SYNC_INTERVAL_MS = 30000;
-const DEFAULT_MAX_CONCURRENT_UPLOADS = 3;
+const DEFAULT_MAX_CONCURRENT_UPLOADS = (() => {
+    const configDefaults = window.uploadConfig?.defaults;
+    const rawDefault = configDefaults?.maxConcurrentUploads;
+    const parsedDefault = Number(rawDefault);
+
+    if (Number.isFinite(parsedDefault) && parsedDefault > 0) {
+        return Math.floor(parsedDefault);
+    }
+
+    return 3;
+})();
 
 function getConfiguredMaxConcurrentUploads() {
     const config = window.uploadConfig || {};
