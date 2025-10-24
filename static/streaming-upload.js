@@ -10,6 +10,29 @@ window.pendingUploads = window.pendingUploads || new Set();
 const PENDING_UPLOAD_POLL_INTERVAL_MS = 2000;
 const UPLOAD_HEARTBEAT_INTERVAL_MS = 20000;
 const FILE_SYNC_INTERVAL_MS = 30000;
+const DEFAULT_MAX_CONCURRENT_UPLOADS = 3;
+
+function getConfiguredMaxConcurrentUploads() {
+    const config = window.uploadConfig || {};
+    const rawValue = config.maxConcurrentUploads;
+
+    if (rawValue === undefined || rawValue === null) {
+        return DEFAULT_MAX_CONCURRENT_UPLOADS;
+    }
+
+    const parsed = Number(rawValue);
+    if (Number.isFinite(parsed) && parsed > 0) {
+        return Math.floor(parsed);
+    }
+
+    console.warn(
+        'Invalid maxConcurrentUploads value provided:',
+        rawValue,
+        'Using default of',
+        DEFAULT_MAX_CONCURRENT_UPLOADS
+    );
+    return DEFAULT_MAX_CONCURRENT_UPLOADS;
+}
 
 function ensurePendingUploadState() {
     if (!window.__pendingUploadState) {
@@ -925,7 +948,7 @@ const uploadFile = async () => {
         elements: createProgressBarElements(file.name, file.size)
     }));
 
-    const maxConcurrent = 3;
+    const maxConcurrent = getConfiguredMaxConcurrentUploads();
     const executing = [];
     const allUploads = [];
 
