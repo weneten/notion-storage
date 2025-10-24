@@ -217,6 +217,32 @@ def cleanup_old_sessions():
 # Load environment variables from .env file
 load_dotenv()
 
+
+DEFAULT_MAX_CONCURRENT_UPLOADS = 3
+
+
+def _get_positive_int_from_env(var_name: str, default: int) -> int:
+    """Return a positive integer from the environment or a default."""
+
+    raw_value = os.environ.get(var_name)
+    if raw_value is None:
+        return default
+
+    try:
+        value = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        print(f"Invalid value for {var_name!r}: {raw_value!r}. Using default {default}.")
+        return default
+
+    if value <= 0:
+        print(f"Non-positive value for {var_name!r}: {raw_value!r}. Using default {default}.")
+        return default
+
+    return value
+
+
+MAX_CONCURRENT_UPLOADS = _get_positive_int_from_env('MAX_CONCURRENT_UPLOADS', DEFAULT_MAX_CONCURRENT_UPLOADS)
+
 app = Flask(__name__)
 # Use a safe default for development if SECRET_KEY is not provided
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key')
@@ -739,7 +765,15 @@ def home():
                 next_cursor = 0
                 last_sync = 0
             refresh_cache_async(user_database_id)
-        return render_template('home.html', entries=entries, current_folder=current_folder, next_cursor=next_cursor, cache_timestamp=last_sync)
+        return render_template(
+            'home.html',
+            entries=entries,
+            current_folder=current_folder,
+            next_cursor=next_cursor,
+            cache_timestamp=last_sync,
+            max_concurrent_uploads=MAX_CONCURRENT_UPLOADS,
+            default_max_concurrent_uploads=DEFAULT_MAX_CONCURRENT_UPLOADS,
+        )
     except Exception as e:
         return f"Error loading home page: {str(e)}", 500
 
