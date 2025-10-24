@@ -210,6 +210,11 @@
     window.cacheTimestamp = {{ cache_timestamp or 0 }};
     window.cachedEntries = {{ entries | tojson }};
 </script>
+<script>
+    window.uploadConfig = Object.assign({}, window.uploadConfig, {
+        maxConcurrentUploads: {{ max_concurrent_uploads | tojson }}
+    });
+</script>
 <script src="{{ url_for('static', filename='streaming-upload.js') }}"></script>
 
 <script>
