@@ -29,7 +29,7 @@ from flask_socketio import emit
 from collections import defaultdict
 import gc
 import zipstream
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 from werkzeug.utils import secure_filename
 from datetime import datetime, timezone
 
@@ -341,6 +341,32 @@ def clear_user_credentials(user_id: Optional[str] = None) -> None:
             _user_auth_cache.clear()
         else:
             _user_auth_cache.pop(user_id, None)
+
+
+def _get_folder_from_request(default: str = '/') -> str:
+    """Return the requested folder path while preserving special characters.
+
+    Some HTTP servers treat semicolons as secondary separators in the query
+    string. When that happens Werkzeug's default parsing can truncate folder
+    names such as ``"Steins;Gate"`` to ``"Steins"``. Re-parsing the raw query
+    string with an explicit separator preserves the intended value and keeps
+    navigation working even behind stricter proxies.
+    """
+
+    folder = request.args.get('folder')
+    raw_query = request.query_string.decode('utf-8', 'ignore') if request.query_string else ''
+
+    if raw_query and 'folder=' in raw_query:
+        try:
+            parsed = parse_qs(raw_query, keep_blank_values=True, separator='&')
+        except TypeError:  # ``separator`` argument added in Python 3.11
+            parsed = parse_qs(raw_query, keep_blank_values=True)
+
+        values = parsed.get('folder')
+        if values:
+            folder = values[-1]
+
+    return folder or default
 
 
 _HTTP_STATUS_RE = re.compile(r"HTTP\s+(\d{3})")
@@ -748,7 +774,7 @@ def load_user(user_id):
 def home():
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
-        current_folder = request.args.get('folder', '/')
+        current_folder = _get_folder_from_request()
         page_size = int(request.args.get('page_size', 50))
         entries = []
         next_cursor = None
@@ -994,7 +1020,7 @@ def download_file(filename):
 @login_required
 def download_folder():
     """Download all files within a folder as a ZIP archive."""
-    folder_path = request.args.get('folder', '/')
+    folder_path = _get_folder_from_request()
     try:
         user_database_id = uploader.get_user_database_id(current_user.id)
         if not user_database_id:
@@ -1654,7 +1680,7 @@ def get_files_api():
             print("🚨 DIAGNOSTIC: User database not found")
             return jsonify({'error': 'User database not found'}), 404
         
-        current_folder = request.args.get('folder', '/')
+        current_folder = _get_folder_from_request()
         files_response, _ = get_cached_files(user_database_id)
         files = (files_response or {}).get('results', [])
         
@@ -1728,7 +1754,7 @@ def get_entries_api():
         if not user_database_id:
             return jsonify({'error': 'User database not found'}), 404
 
-        current_folder = request.args.get('folder', '/')
+        current_folder = _get_folder_from_request()
         files_response, _ = get_cached_files(user_database_id)
         files = (files_response or {}).get('results', [])
 
@@ -1820,7 +1846,7 @@ def sync_files_api():
         return jsonify({'error': 'User database not found'}), 404
     cursor = request.args.get('cursor', type=int, default=0)
     page_size = request.args.get('page_size', type=int, default=50)
-    folder = request.args.get('folder', '/')
+    folder = _get_folder_from_request()
     since = request.args.get('since', type=float)
     files_data, last_sync = get_cached_files(user_database_id, fetch_if_missing=False)
     if files_data is None:
@@ -1947,7 +1973,7 @@ def list_files_api():
         if not user_database_id:
             return jsonify({"error": "No user database ID found"}), 404
             
-        current_folder = request.args.get('folder', '/')
+        current_folder = _get_folder_from_request()
         files_data, _ = get_cached_files(user_database_id)
         
         # Format files for API response (matches old code format)
