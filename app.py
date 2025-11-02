@@ -29,7 +29,7 @@ from flask_socketio import emit
 from collections import defaultdict
 import gc
 import zipstream
-from urllib.parse import parse_qs, quote
+from urllib.parse import parse_qs, quote, unquote_plus
 from werkzeug.utils import secure_filename
 from datetime import datetime, timezone
 
@@ -343,6 +343,25 @@ def clear_user_credentials(user_id: Optional[str] = None) -> None:
             _user_auth_cache.pop(user_id, None)
 
 
+def _get_query_values_no_alt_separator(query: str, key: str) -> List[str]:
+    """Return values for *key* without treating semicolons as separators."""
+
+    values: List[str] = []
+    for chunk in query.split('&'):
+        if not chunk:
+            continue
+
+        if '=' in chunk:
+            raw_key, raw_value = chunk.split('=', 1)
+        else:
+            raw_key, raw_value = chunk, ''
+
+        if unquote_plus(raw_key) == key:
+            values.append(unquote_plus(raw_value))
+
+    return values
+
+
 def _get_folder_from_request(default: str = '/') -> str:
     """Return the requested folder path while preserving special characters.
 
@@ -360,9 +379,10 @@ def _get_folder_from_request(default: str = '/') -> str:
         try:
             parsed = parse_qs(raw_query, keep_blank_values=True, separator='&')
         except TypeError:  # ``separator`` argument added in Python 3.11
-            parsed = parse_qs(raw_query, keep_blank_values=True)
+            values = _get_query_values_no_alt_separator(raw_query, 'folder')
+        else:
+            values = parsed.get('folder')
 
-        values = parsed.get('folder')
         if values:
             folder = values[-1]
 
