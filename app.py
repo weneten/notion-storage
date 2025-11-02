@@ -389,6 +389,19 @@ def _get_folder_from_request(default: str = '/') -> str:
     return folder or default
 
 
+@app.template_filter('encode_query_component')
+def encode_query_component(value: Any) -> str:
+    """URL-encode a query component while preserving slashes."""
+
+    if value is None:
+        return ''
+
+    if not isinstance(value, str):
+        value = str(value)
+
+    return quote(value, safe='/')
+
+
 _HTTP_STATUS_RE = re.compile(r"HTTP\s+(\d{3})")
 
 
